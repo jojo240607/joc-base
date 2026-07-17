@@ -14,6 +14,10 @@ add_executable(${PROJECT_NAME}.elf
     src/main.c
     src/syscalls.c
     src/system_stm32f4xx.c
+    src/clock.c
+    src/serial.c
+    src/uart_stm32.c
+    src/gpio_pin.c
     startup/startup_stm32f407xx.s
 )
 
