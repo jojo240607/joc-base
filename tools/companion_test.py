@@ -127,6 +127,27 @@ def main():
             break
     results["adc_temp"] = adc_temp_ok
 
+    # 5) Temperature sensor driver: ask the board for the die temperature and
+    #    confirm it reports a sane Celsius value via the dedicated driver.
+    temp_ok = False
+    ser.reset_input_buffer()
+    ser.write(b"TEMP\n")
+    d = time.time() + TIMEOUT
+    while time.time() < d:
+        line = ser.readline().decode(errors="replace").strip()
+        if not line:
+            continue
+        print(f"  board> {line}")
+        if line == "TEMP":          # ignore the locally-echoed command
+            continue
+        if line.startswith("TEMP "):
+            m = re.search(r"C=(-?\d+)\.(\d+)", line)
+            if m:
+                temp = int(m.group(1)) + int(m.group(2)) / 10.0
+                temp_ok = (-20.0 <= temp <= 120.0)
+            break
+    results["temp"] = temp_ok
+
     ser.close()
 
     print("\n[companion] RESULTS:")

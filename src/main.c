@@ -22,6 +22,7 @@
 #include "uart_stm32.h"
 #include "gpio_pin.h"
 #include "adc_stm32.h"
+#include "temp_sensor_stm32.h"
 #include "selftest.h"
 
 int main(void)
@@ -38,16 +39,18 @@ int main(void)
 
     /* 3b. ADC1 on PA0 (channel 0); PA0 is the on-board blue button (pulled high) */
     adc_stm32 *adc = adc_stm32_create(ADC1, 0);
+    /* 3c. on-chip temperature sensor (ADC1_IN16), reuses the same ADC object */
+    temp_sensor_stm32 *temp = temp_sensor_stm32_create(adc, 3300UL);
 
     printf("Hello from STM32F407 Discovery (OOC)!\r\n");
     printf("System clock: %lu Hz, USART1 @ 115200 8N1\r\n",
            (unsigned long)clock_get_sysclk_hz(clk));
 
     /* 4. on-board self-test (BIST) at boot */
-    selftest *st = selftest_create(clk, uart, led, adc);
+    selftest *st = selftest_create(clk, uart, led, adc, temp);
     selftest_run(st);
 
-    printf("READY. Commands: PING / ECHO <text> / BIST / ADC\r\n");
+    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP\r\n");
 
     /* 5. command loop (PC companion test exercises this) */
     char line[64];
@@ -81,6 +84,22 @@ int main(void)
                     adc_stm32_set_channel(adc, 0U);   /* restore PA0 */
                     printf("ADC CH%lu raw=%lu mV=%lu\r\n",
                            (unsigned long)ch, (unsigned long)raw, (unsigned long)mv);
+                }
+                else if (strcmp(line, "TEMP") == 0) {
+                    uint32_t traw;
+                    {   /* sample the temperature sensor (CH16) for display */
+                        uint32_t saved = adc->channel;
+                        adc_stm32_set_channel(adc, 16U);
+                        traw = adc_stm32_read(adc);
+                        adc_stm32_set_channel(adc, saved);
+                    }
+                    int32_t t10 = temp_sensor_stm32_read_celsius_x10(temp);
+                    int32_t ip = t10 / 10;
+                    int32_t fp = (t10 < 0) ? -(t10 % 10) : (t10 % 10);
+                    printf("TEMP raw=%lu cal1=%u cal2=%u C=%ld.%ld\r\n",
+                           (unsigned long)traw,
+                           (unsigned)temp->ts_cal1, (unsigned)temp->ts_cal2,
+                           (long)ip, (long)fp);
                 }
                 else
                     printf("ERR unknown\r\n");

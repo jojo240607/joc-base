@@ -6,6 +6,7 @@
 #include "uart_stm32.h"
 #include "gpio_pin.h"
 #include "adc_stm32.h"
+#include "temp_sensor_stm32.h"
 
 typedef struct _selftest selftest;
 
@@ -21,6 +22,7 @@ struct selftestVtable {
     int (*test_uart)(selftest *self);
     int (*test_gpio)(selftest *self);
     int (*test_adc)(selftest *self);
+    int (*test_temp)(selftest *self);
 };
 
 struct _selftest {
@@ -30,9 +32,11 @@ struct _selftest {
     uart_stm32 *uart;
     gpio_pin *led;
     adc_stm32 *adc;
+    temp_sensor_stm32 *temp;
 };
 
-selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led, adc_stm32 *adc);
+selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led,
+                          adc_stm32 *adc, temp_sensor_stm32 *temp);
 void selftest_destroy(selftest *self);
 void selftest_init(selftest *self);
 void selftest_deinit(selftest *self);

@@ -19,6 +19,7 @@ add_executable(${PROJECT_NAME}.elf
     src/uart_stm32.c
     src/gpio_pin.c
     src/adc_stm32.c
+    src/temp_sensor_stm32.c
     src/selftest.c
     startup/startup_stm32f407xx.s
 )

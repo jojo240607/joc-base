@@ -25,6 +25,7 @@
 │   ├── uart_stm32.c/.h          # OOC 具体串口类，继承 serial，USART1 PA9/PA10
 │   ├── gpio_pin.c/.h            # OOC GPIO 引脚类（LED 等）
 │   ├── adc_stm32.c/.h           # OOC ADC 类（ADC1/2/3，单次转换 + mV 换算）
+│   ├── temp_sensor_stm32.c/.h   # OOC 片内温度传感器类（ADC1_IN16 + 出厂校准换算℃）
 │   ├── syscalls.c               # newlib 桩，printf 重定向到串口控制台
 │   ├── system_stm32f4xx.c       # 官方 CMSIS 系统文件（只配 FPU/VTOR）
 │   ├── device/                  # 官方 STM32F4 设备头（仅 F407）
@@ -100,13 +101,16 @@ System clock: 168000000 Hz, USART1 @ 115200 8N1
 [BIST] gpio  : PASS
        VREFINT raw=1517 (expect ~1500)
 [BIST] adc   : PASS
+       die temp = 47.5 C (cal1=941 cal2=1197)
+[BIST] temp  : PASS
 SELF-TEST: PASS
-READY. Commands: PING / ECHO <text> / BIST / ADC [ch]
+READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP
 ```
 
 随后固件进入命令行循环，可手动输入 `PING`（回 `PONG`）、`ECHO <文本>`（原样回显）、
 `BIST`（重跑自测并打印 `SELF-TEST:`）、`ADC [ch]`（采样 ADC 并打印 `raw`/`mV`，
-缺省通道 0 = PA0；例如 `ADC 16` 读片内温度传感器），每收到一条命令绿色 LED（LD4，PD12）翻转一次。
+缺省通道 0 = PA0；例如 `ADC 16` 读片内温度传感器）、`TEMP`（读芯片自身温度，
+打印 `raw`、出厂校准 `cal1/cal2` 与换算后的 `C=xx.x`），每收到一条命令绿色 LED（LD4，PD12）翻转一次。
 
 > 若 COM8 不是你的端口，以 Windows 设备管理器里显示的为准。
 
@@ -129,7 +133,8 @@ READY. Commands: PING / ECHO <text> / BIST / ADC [ch]
 - 调用方式：静态方法 `self->fun->method(self)`，虚方法 `self->vtable->method(self)`。
 
 当前类关系：`uart_stm32` ─继承─> `serial`（抽象串口基类）；
-`clock`、`gpio_pin`、`adc_stm32` 为独立叶子类。
+`clock`、`gpio_pin`、`adc_stm32`、`temp_sensor_stm32` 为独立叶子类
+（`temp_sensor_stm32` 内部复用 `adc_stm32` 对象，读温度时临时切到 CH16）。
 - **调试连不上**：确认 ST-Link 已插入、板子供电正常；GDB Server 默认端口 61234。
 
 ## 板载自测（BIST）与 PC 陪测
@@ -142,8 +147,11 @@ READY. Commands: PING / ECHO <text> / BIST / ADC [ch]
 - `adc`：切换 ADC 到片内 **VREFINT（CH17，约 1.21 V）** 读一次，
   12 位原始值应在合理区间（实测约 1517，对应 VDDA≈3.3 V），借此验证
   ADC 时钟 / 序列 / EOC / 数据读取整条通路；读完后切回外部通道（PA0）。
+- `temp`：用 `temp_sensor_stm32` 读片内温度传感器（ADC1_IN16），按出厂校准
+  `TS_CAL1`(30 ℃)/`TS_CAL2`(110 ℃) 线性插值换算摄氏温度，结果应在合理区间
+  （实测约 47 ℃，即 168 MHz 全速运行的裸die自升温），证明温度传感器驱动正确。
 
-三项全过打印 `SELF-TEST: PASS`，否则 `FAIL`。随后进入命令行循环，供 **PC 陪测脚本**
+全过打印 `SELF-TEST: PASS`，否则 `FAIL`。随后进入命令行循环，供 **PC 陪测脚本**
 验证 USART 的 TX+RX 回环：
 
 ```bat

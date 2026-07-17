@@ -11,6 +11,7 @@ static int selftest_vclock(selftest *self);
 static int selftest_vuart(selftest *self);
 static int selftest_vgpio(selftest *self);
 static int selftest_vadc(selftest *self);
+static int selftest_vtemp(selftest *self);
 
 const struct selftestFun selftest_fun = {
     .destroy = selftest_destroy,
@@ -19,7 +20,8 @@ const struct selftestFun selftest_fun = {
     .run = selftest_run,
 };
 
-selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led, adc_stm32 *adc)
+selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led,
+                           adc_stm32 *adc, temp_sensor_stm32 *temp)
 {
     selftest *self = (selftest *)malloc(sizeof(selftest));
     if (!self) return NULL;
@@ -28,6 +30,7 @@ selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led, adc_stm32
     self->uart = uart;
     self->led = led;
     self->adc = adc;
+    self->temp = temp;
     selftest_init(self);
     return self;
 }
@@ -51,6 +54,7 @@ void selftest_init(selftest *self)
     self->vtable->test_uart  = selftest_vuart;
     self->vtable->test_gpio  = selftest_vgpio;
     self->vtable->test_adc   = selftest_vadc;
+    self->vtable->test_temp  = selftest_vtemp;
 }
 
 void selftest_deinit(selftest *self)
@@ -85,6 +89,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_adc(self);
     printf("[BIST] adc   : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_temp(self);
+    printf("[BIST] temp  : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     printf("SELF-TEST: %s\r\n", pass ? "PASS" : "FAIL");
@@ -141,4 +149,22 @@ static int selftest_vadc(selftest *self)
     printf("       VREFINT raw=%lu (expect ~1500) %s\r\n",
            (unsigned long)vref, vref_ok ? "" : "[OUT OF RANGE]");
     return vref_ok;
+}
+
+static int selftest_vtemp(selftest *self)
+{
+    temp_sensor_stm32 *temp = self->temp;
+    if (!temp) return 0;
+
+    int32_t t10 = temp_sensor_stm32_read_celsius_x10(temp);
+    int32_t ip = t10 / 10;
+    int32_t fp = (t10 < 0) ? -(t10 % 10) : (t10 % 10);
+    printf("       die temp = %ld.%ld C (cal1=%u cal2=%u)\r\n",
+           (long)ip, (long)fp,
+           (unsigned)temp->ts_cal1, (unsigned)temp->ts_cal2);
+
+    /* A running STM32 die is typically 10..90 C; accept a wide band so the
+       test is robust to ambient/self-heating, while still rejecting garbage. */
+    int temp_ok = (t10 > -200 && t10 < 1200);   /* -20.0 C .. 120.0 C */
+    return temp_ok;
 }
