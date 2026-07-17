@@ -1,0 +1,19 @@
+{
+  "cmake.generator": "Ninja",
+  "cmake.toolchainFile": "${workspaceFolder}/cmake/toolchain.cmake",
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.parallelJobs": 4,
+  "cmake.configureOnOpen": true,
+  "cmake.statusbar.advanced": true,
+  "C_Cpp.default.compilerPath": "D:/soft/ST/STM32CubeCLT_1.19.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe",
+  "C_Cpp.default.defines": ["STM32F407xx", "HSE_VALUE=8000000UL"],
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/src",
+    "${workspaceFolder}/src/device",
+    "${workspaceFolder}/src/cmsis"
+  ],
+  "C_Cpp.default.cStandard": "c11",
+  "files.associations": {
+    "*.ld": "linkerScript"
+  }
+}

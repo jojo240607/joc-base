@@ -1,0 +1,7 @@
+# GDB init for STM32F407 Discovery via ST-LINK_gdbserver
+set pagination off
+target remote localhost:61234
+load
+monitor reset halt
+break main
+continue

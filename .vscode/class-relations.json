@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "entries": {
+    "base": {
+      "file": "moban/base.h",
+      "parent": null,
+      "children": [
+        "son",
+        "son1"
+      ],
+      "hasVtable": true,
+      "isInterface": false
+    },
+    "son": {
+      "file": "moban/son.h",
+      "parent": "base",
+      "children": [],
+      "hasVtable": false,
+      "isInterface": false
+    },
+    "son1": {
+      "file": "moban/son1.h",
+      "parent": "base",
+      "children": [],
+      "hasVtable": true,
+      "isInterface": false
+    },
+    "Ibase": {
+      "file": "moban/Ibase.h",
+      "parent": null,
+      "children": [
+        "ison",
+        "ison1"
+      ],
+      "hasVtable": true,
+      "isInterface": true
+    },
+    "ison": {
+      "file": "moban/ison.h",
+      "parent": "Ibase",
+      "children": [],
+      "hasVtable": true,
+      "isInterface": false
+    },
+    "ison1": {
+      "file": "moban/ison1.h",
+      "parent": "Ibase",
+      "children": [],
+      "hasVtable": false,
+      "isInterface": false
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug ST-Link (F407)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/stm32f407_minimal.elf",
+      "cwd": "${workspaceFolder}",
+      "miDebuggerPath": "D:/soft/ST/STM32CubeCLT_1.19.0/GNU-tools-for-STM32/bin/arm-none-eabi-gdb.exe",
+      "miDebuggerServerAddress": "localhost:61234",
+      "preLaunchTask": "Start ST-Link GDB Server",
+      "setupCommands": [
+        { "text": "set pagination off" },
+        { "text": "load" },
+        { "text": "monitor reset halt" },
+        { "text": "break main" }
+      ],
+      "logging": { "engineLogging": false }
+    }
+  ]
+}
