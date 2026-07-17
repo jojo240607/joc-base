@@ -16,6 +16,7 @@ Exit code: 0 = all pass, 1 = failure, 2 = missing dependency / cannot open port.
 """
 import sys
 import time
+import re
 
 try:
     import serial
@@ -84,6 +85,47 @@ def main():
 
     results["ping"] = exchange("PING", "PONG")
     results["echo"] = exchange("ECHO hello-companion", "hello-companion")
+
+    # 3) ADC: ask the board to sample PA0 and confirm a well-formed reading.
+    adc_ok = False
+    ser.reset_input_buffer()
+    ser.write(b"ADC\n")
+    d = time.time() + TIMEOUT
+    while time.time() < d:
+        line = ser.readline().decode(errors="replace").strip()
+        if not line:
+            continue
+        print(f"  board> {line}")
+        if line == "ADC":          # ignore the locally-echoed command
+            continue
+        if line.startswith("ADC "):
+            m = re.search(r"raw=(\d+)", line)
+            if m:
+                raw = int(m.group(1))
+                adc_ok = (0 <= raw <= 4095)
+            break
+    results["adc"] = adc_ok
+
+    # 4) ADC channel switch: sample the internal temperature sensor (CH16),
+    #    a stable on-chip reference, to prove channel re-programming works.
+    adc_temp_ok = False
+    ser.reset_input_buffer()
+    ser.write(b"ADC 16\n")
+    d = time.time() + TIMEOUT
+    while time.time() < d:
+        line = ser.readline().decode(errors="replace").strip()
+        if not line:
+            continue
+        print(f"  board> {line}")
+        if line == "ADC 16":       # ignore the locally-echoed command
+            continue
+        if line.startswith("ADC "):
+            m = re.search(r"raw=(\d+)", line)
+            if m:
+                raw = int(m.group(1))
+                adc_temp_ok = (400 <= raw <= 2000)   # ~0.3..1.6 V @ 3.3V
+            break
+    results["adc_temp"] = adc_temp_ok
 
     ser.close()
 

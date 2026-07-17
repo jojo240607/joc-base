@@ -16,10 +16,12 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "clock.h"
 #include "serial.h"
 #include "uart_stm32.h"
 #include "gpio_pin.h"
+#include "adc_stm32.h"
 #include "selftest.h"
 
 int main(void)
@@ -34,15 +36,18 @@ int main(void)
     /* 3. green LED (LD4) on PD12 as an output pin object */
     gpio_pin *led = gpio_pin_create(GPIOD, 12, 1);   /* mode 1 = output */
 
+    /* 3b. ADC1 on PA0 (channel 0); PA0 is the on-board blue button (pulled high) */
+    adc_stm32 *adc = adc_stm32_create(ADC1, 0);
+
     printf("Hello from STM32F407 Discovery (OOC)!\r\n");
     printf("System clock: %lu Hz, USART1 @ 115200 8N1\r\n",
            (unsigned long)clock_get_sysclk_hz(clk));
 
     /* 4. on-board self-test (BIST) at boot */
-    selftest *st = selftest_create(clk, uart, led);
+    selftest *st = selftest_create(clk, uart, led, adc);
     selftest_run(st);
 
-    printf("READY. Commands: PING / ECHO <text> / BIST\r\n");
+    printf("READY. Commands: PING / ECHO <text> / BIST / ADC\r\n");
 
     /* 5. command loop (PC companion test exercises this) */
     char line[64];
@@ -65,6 +70,18 @@ int main(void)
                     printf("%s\r\n", line + 5);
                 else if (strcmp(line, "BIST") == 0)
                     selftest_run(st);        /* re-run self-test on demand */
+                else if (strncmp(line, "ADC", 3) == 0) {
+                    uint32_t ch = 0;
+                    if (line[3] == ' ')
+                        ch = (uint32_t)atoi(line + 4);
+                    if (ch > 18U) ch = 0U;
+                    adc_stm32_set_channel(adc, ch);
+                    uint32_t raw = adc_stm32_read(adc);
+                    uint32_t mv  = adc_stm32_read_mv(adc);
+                    adc_stm32_set_channel(adc, 0U);   /* restore PA0 */
+                    printf("ADC CH%lu raw=%lu mV=%lu\r\n",
+                           (unsigned long)ch, (unsigned long)raw, (unsigned long)mv);
+                }
                 else
                     printf("ERR unknown\r\n");
             }

@@ -10,6 +10,7 @@
 static int selftest_vclock(selftest *self);
 static int selftest_vuart(selftest *self);
 static int selftest_vgpio(selftest *self);
+static int selftest_vadc(selftest *self);
 
 const struct selftestFun selftest_fun = {
     .destroy = selftest_destroy,
@@ -18,7 +19,7 @@ const struct selftestFun selftest_fun = {
     .run = selftest_run,
 };
 
-selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led)
+selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led, adc_stm32 *adc)
 {
     selftest *self = (selftest *)malloc(sizeof(selftest));
     if (!self) return NULL;
@@ -26,6 +27,7 @@ selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led)
     self->clk = clk;
     self->uart = uart;
     self->led = led;
+    self->adc = adc;
     selftest_init(self);
     return self;
 }
@@ -48,6 +50,7 @@ void selftest_init(selftest *self)
     self->vtable->test_clock = selftest_vclock;
     self->vtable->test_uart  = selftest_vuart;
     self->vtable->test_gpio  = selftest_vgpio;
+    self->vtable->test_adc   = selftest_vadc;
 }
 
 void selftest_deinit(selftest *self)
@@ -78,6 +81,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_gpio(self);
     printf("[BIST] gpio  : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_adc(self);
+    printf("[BIST] adc   : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     printf("SELF-TEST: %s\r\n", pass ? "PASS" : "FAIL");
@@ -114,4 +121,24 @@ static int selftest_vgpio(selftest *self)
     if (before != after)
         gpio_pin_toggle(self->led);   /* restore original level */
     return before != after;
+}
+
+static int selftest_vadc(selftest *self)
+{
+    adc_stm32 *adc = self->adc;
+    if (!adc) return 0;
+
+    /* Read the internal VREFINT (channel 17, ~1.21 V). This exercises the
+       ADC clock, sequence programming, EOC polling and data read path with
+       no external wiring. At VDDA~3.3V a 12-bit reading lands near 1500;
+       accept a wide sane band in case VDDA differs. */
+    uint32_t saved = adc->channel;
+    adc_stm32_set_channel(adc, 17U);          /* VREFINT */
+    uint32_t vref = adc_stm32_read(adc);
+    adc_stm32_set_channel(adc, saved);        /* restore external channel */
+
+    int vref_ok = (vref >= 800U && vref <= 2200U);
+    printf("       VREFINT raw=%lu (expect ~1500) %s\r\n",
+           (unsigned long)vref, vref_ok ? "" : "[OUT OF RANGE]");
+    return vref_ok;
 }

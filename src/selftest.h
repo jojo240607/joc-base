@@ -5,6 +5,7 @@
 #include "clock.h"
 #include "uart_stm32.h"
 #include "gpio_pin.h"
+#include "adc_stm32.h"
 
 typedef struct _selftest selftest;
 
@@ -19,6 +20,7 @@ struct selftestVtable {
     int (*test_clock)(selftest *self);  /* returns 1 if pass */
     int (*test_uart)(selftest *self);
     int (*test_gpio)(selftest *self);
+    int (*test_adc)(selftest *self);
 };
 
 struct _selftest {
@@ -27,9 +29,10 @@ struct _selftest {
     clock *clk;
     uart_stm32 *uart;
     gpio_pin *led;
+    adc_stm32 *adc;
 };
 
-selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led);
+selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led, adc_stm32 *adc);
 void selftest_destroy(selftest *self);
 void selftest_init(selftest *self);
 void selftest_deinit(selftest *self);
