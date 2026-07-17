@@ -35,6 +35,7 @@ void uart_stm32_set_baudrate(uart_stm32 *self, uint32_t baud);
 /* console helpers used by syscalls _write */
 void uart_stm32_set_console(uart_stm32 *self);
 void uart_stm32_console_putc(char c);
+char uart_stm32_getc(uart_stm32 *self);   /* blocking receive */
 
 extern const struct uart_stm32Fun uart_stm32_fun;
 

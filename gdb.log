@@ -1,0 +1,4 @@
+Remote communication error.  Target disconnected: (undocumented errno 10061).
+"monitor" command not supported by this target.
+You can't do that when your target is `exec'
+"monitor" command not supported by this target.

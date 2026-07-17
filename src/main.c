@@ -4,15 +4,23 @@
  *  - Serial : USART1 (PA9=TX, PA10=RX) @ 115200 8N1  (uart_stm32 class)
  *             -> external USB-TTL -> PC COM8
  *  - LED    : green LD4 on PD12                       (gpio_pin class)
+ *  - BIST   : on-board self-test                       (selftest class)
  *
  * All peripherals are modelled as OOC objects following the moban/ template
  * (vtable + fun + create/destroy/init/deinit).
+ *
+ * After BIST the firmware enters a line-based command loop so a PC companion
+ * test (tools/companion_test.py) can verify the TX/RX loopback:
+ *   PING         -> PONG
+ *   ECHO <text>  -> <text>
  */
 #include <stdio.h>
+#include <string.h>
 #include "clock.h"
 #include "serial.h"
 #include "uart_stm32.h"
 #include "gpio_pin.h"
+#include "selftest.h"
 
 int main(void)
 {
@@ -30,14 +38,40 @@ int main(void)
     printf("System clock: %lu Hz, USART1 @ 115200 8N1\r\n",
            (unsigned long)clock_get_sysclk_hz(clk));
 
-    uint32_t tick = 0;
+    /* 4. on-board self-test (BIST) at boot */
+    selftest *st = selftest_create(clk, uart, led);
+    selftest_run(st);
+
+    printf("READY. Commands: PING / ECHO <text> / BIST\r\n");
+
+    /* 5. command loop (PC companion test exercises this) */
+    char line[64];
+    uint32_t idx = 0;
     while (1)
     {
-        gpio_pin_toggle(led);
-        printf("tick %lu\r\n", (unsigned long)tick++);
+        char c = uart_stm32_getc(uart);
+        uart_stm32_console_putc(c);          /* local echo for terminal use */
 
-        /* rough busy-loop delay (~500 ms) */
-        for (volatile uint32_t i = 0;
-             i < (clock_get_sysclk_hz(clk) / 4000U) * 500U; i++) { }
+        if (c == '\r' || c == '\n')
+        {
+            if (idx > 0)
+            {
+                line[idx] = '\0';
+                idx = 0;
+                gpio_pin_toggle(led);        /* visible activity per command */
+                if (strcmp(line, "PING") == 0)
+                    printf("PONG\r\n");
+                else if (strncmp(line, "ECHO ", 5) == 0)
+                    printf("%s\r\n", line + 5);
+                else if (strcmp(line, "BIST") == 0)
+                    selftest_run(st);        /* re-run self-test on demand */
+                else
+                    printf("ERR unknown\r\n");
+            }
+        }
+        else if (idx < (sizeof(line) - 1))
+        {
+            line[idx++] = c;
+        }
     }
 }

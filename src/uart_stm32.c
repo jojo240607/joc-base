@@ -11,6 +11,7 @@ static void uart_stm32_hw_init(uart_stm32 *self);
 static void uart_stm32_hw_deinit(uart_stm32 *self);
 static void uart_stm32_vputc(serial *self, char c);
 static void uart_stm32_vputs(serial *self, const char *s);
+static char uart_stm32_vgetc(serial *self);
 
 const struct uart_stm32Fun uart_stm32_fun = {
     .destroy = uart_stm32_destroy,
@@ -53,6 +54,7 @@ void uart_stm32_init(uart_stm32 *self)
     /* override base virtual methods with the USART implementation */
     self->parent.vtable->putc = uart_stm32_vputc;
     self->parent.vtable->puts = uart_stm32_vputs;
+    self->parent.vtable->getc = uart_stm32_vgetc;
 
     uart_stm32_hw_init(self);
 }
@@ -94,6 +96,18 @@ static void uart_stm32_vputs(serial *self, const char *s)
     if (!s) return;
     while (*s)
         uart_stm32_vputc(self, *s++);
+}
+
+static char uart_stm32_vgetc(serial *self)
+{
+    uart_stm32 *u = (uart_stm32 *)self;
+    while ((u->instance->SR & USART_SR_RXNE) == 0) { }
+    return (char)(u->instance->DR & 0xFFU);
+}
+
+char uart_stm32_getc(uart_stm32 *self)
+{
+    return self ? uart_stm32_vgetc((serial *)self) : 0;
 }
 
 static void uart_stm32_hw_init(uart_stm32 *self)

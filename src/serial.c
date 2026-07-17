@@ -54,3 +54,10 @@ void serial_puts(serial *self, const char *s)
     if (self && self->vtable && self->vtable->puts)
         self->vtable->puts(self, s);
 }
+
+char serial_getc(serial *self)
+{
+    if (self && self->vtable && self->vtable->getc)
+        return self->vtable->getc(self);
+    return 0;
+}

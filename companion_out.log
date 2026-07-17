@@ -1,0 +1,17 @@
+[companion] opening COM8 @ 115200 ...
+  board> BIST
+  board> --- On-board self-test (BIST) ---
+  board> [BIST] clock : PASS
+  board> [BIST] uart  : PASS
+  board> [BIST] gpio  : PASS
+  board> SELF-TEST: PASS
+  board> PING
+  board> PONG
+  board> ECHO hello-companion
+  board> hello-companion
+
+[companion] RESULTS:
+  bist  : PASS
+  ping  : PASS
+  echo  : PASS
+[companion] OVERALL: PASS

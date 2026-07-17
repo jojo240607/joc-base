@@ -92,13 +92,17 @@ tools\debug.bat
 ```
 Hello from STM32F407 Discovery (OOC)!
 System clock: 168000000 Hz, USART1 @ 115200 8N1
-tick 0
-tick 1
-tick 2
-...
+
+--- On-board self-test (BIST) ---
+[BIST] clock : PASS
+[BIST] uart  : PASS
+[BIST] gpio  : PASS
+SELF-TEST: PASS
+READY. Commands: PING / ECHO <text>
 ```
 
-同时板载绿色 LED（LD4，PD12）每 0.5 秒翻转一次。
+随后固件进入命令行循环，可手动输入 `PING`（回 `PONG`）、`ECHO <文本>`（原样回显）、
+`BIST`（重跑自测并打印 `SELF-TEST:`），每收到一条命令绿色 LED（LD4，PD12）翻转一次。
 
 > 若 COM8 不是你的端口，以 Windows 设备管理器里显示的为准。
 
@@ -124,13 +128,42 @@ tick 2
 `clock`、`gpio_pin` 为独立叶子类。
 - **调试连不上**：确认 ST-Link 已插入、板子供电正常；GDB Server 默认端口 61234。
 
+## 板载自测（BIST）与 PC 陪测
+
+固件上电后先跑 **板载自测**（`selftest` 类，遵循 moban 模板），逐项检查：
+
+- `clock`：PLL 已锁定且被选为系统时钟，`sysclk == 168 MHz`；
+- `uart`：USART1 已使能 TX+RX 且 `BRR` 波特率正确（不实际发数，避免污染串口）；
+- `gpio`：翻转 PD12 后读回电平确实变化，再翻回原值。
+
+三项全过打印 `SELF-TEST: PASS`，否则 `FAIL`。随后进入命令行循环，供 **PC 陪测脚本**
+验证 USART 的 TX+RX 回环：
+
+```bat
+pip install pyserial
+python tools\companion_test.py COM8 115200
+```
+
+**一键验证**（编译 → 烧录 → 陪测）：
+
+```bat
+tools\test.bat [PORT] [BAUD]      # 默认 COM8 115200
+```
+
+`test.bat` 会先 `cmake --build build`，再 `call tools\flash.bat`（OpenOCD connect-under-reset），
+最后跑陪测脚本；任一步失败即中止并打印对应错误。看到 `=== ALL GREEN ===` 即全过。
+
+脚本会：连上即发 `BIST` → 读 `SELF-TEST:` 行 → 发 `PING` 期望 `PONG`
+→ 发 `ECHO hello-companion` 期望回显，最后打印 `OVERALL: PASS/FAIL` 并以退出码 0/1 表示结果。
+（板端对命令做了本地回显，脚本会自动忽略回显行，只匹配板子的应答。
+之所以"连上即发 BIST"而不是等开机横幅，是因为板子在烧录后立刻启动、开机输出早已发完，
+PC 端串口缓冲不会保留连上之前的字节。）
+
 ## 烧录（ST-Link）
 
-`tools\flash.bat` 会先尝试 STM32CubeProgrammer（connect-under-reset, 1 MHz），
-失败则自动回退到 OpenOCD（`board/stm32f4discovery.cfg`）。
+`tools\flash.bat` 用 **OpenOCD `program`** 命令（`interface/stlink.cfg` + `target/stm32f4x.cfg`，
+`reset_config srst_only connect_assert_srst` 即 connect-under-reset），失败则回退 STM32CubeProgrammer。
 
-> 已实测：OpenOCD 能读到 `SWD DPIDR 0x2ba01477`（SWD 物理链路正常），
-> 但报 `Examination failed` / `reset will not halt`。这说明 **SWCLK/SWDIO/GND
-> 接线正确，但 NRST（复位线）没接到 ST-Link**——独立 ST-LINK 调试器尤其容易只接了
-> 三线而漏掉复位。把 ST-LINK 的 **NRST 接到 MCU 的复位脚（NRST）** 后重新烧录即可。
-> 若仍不行，给板子断电再上电（冷复位）后再试。
+> 已实测（NRST 已接）：`Examination succeed` → `Programming Finished` → `Verified OK`
+> → `Resetting Target`，一次成功。`connect_assert_srst` 依赖 ST-Link 的 **NRST 接到 MCU 复位脚**；
+> 若没接 NRST，去掉该选项、改用手动按板载 RESET 键后再烧录也可。

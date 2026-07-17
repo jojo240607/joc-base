@@ -86,6 +86,12 @@ void gpio_pin_toggle(gpio_pin *self)
     if (self) self->port->ODR ^= (1U << self->pin);
 }
 
+uint8_t gpio_pin_read(gpio_pin *self)
+{
+    if (!self) return 0U;
+    return (self->port->IDR & (1U << self->pin)) ? 1U : 0U;
+}
+
 static void gpio_pin_vwrite(gpio_pin *self, uint8_t state)
 {
     if (state) gpio_pin_set(self);

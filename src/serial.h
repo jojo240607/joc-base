@@ -14,6 +14,7 @@ struct serialFun {
 struct serialVtable {
     void (*putc)(serial *self, char c);
     void (*puts)(serial *self, const char *s);
+    char (*getc)(serial *self);   /* blocking receive (overridden by uart) */
 };
 
 struct _serial {
@@ -26,6 +27,7 @@ void serial_deinit(serial *self);
 void serial_destroy(serial *self);
 void serial_putc(serial *self, char c);
 void serial_puts(serial *self, const char *s);
+char serial_getc(serial *self);
 
 extern const struct serialFun serial_fun;
 

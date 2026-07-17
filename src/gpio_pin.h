@@ -35,6 +35,7 @@ void gpio_pin_deinit(gpio_pin *self);
 void gpio_pin_set(gpio_pin *self);
 void gpio_pin_reset(gpio_pin *self);
 void gpio_pin_toggle(gpio_pin *self);
+uint8_t gpio_pin_read(gpio_pin *self);   /* read current pin level */
 
 extern const struct gpio_pinFun gpio_pin_fun;
 

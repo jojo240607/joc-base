@@ -1,0 +1,27 @@
+=== [1/3] Build ===
+ninja: no work to do.
+=== [2/3] Flash (OpenOCD connect-under-reset) ===
+[1/2] Flashing via OpenOCD program (interface/stlink.cfg + target/stm32f4x.cfg)...
+  connect-under-reset (srst_only) so it works even if the core is asleep.
+  --- attempt 1/18 ---
+ERROR: Input redirection is not supported, exiting the process immediately.
+[OK] Flashed build\stm32f407_minimal.bin via OpenOCD
+=== [3/3] Companion self-test (COM8 @ 115200) ===
+[companion] opening COM8 @ 115200 ...
+  board> BIST
+  board> --- On-board self-test (BIST) ---
+  board> [BIST] clock : PASS
+  board> [BIST] uart  : PASS
+  board> [BIST] gpio  : PASS
+  board> SELF-TEST: PASS
+  board> PING
+  board> PONG
+  board> ECHO hello-companion
+  board> hello-companion
+
+[companion] RESULTS:
+  bist  : PASS
+  ping  : PASS
+  echo  : PASS
+[companion] OVERALL: PASS
+=== ALL GREEN: build + flash + self-test PASS ===
