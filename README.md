@@ -72,13 +72,19 @@
   外设指针、通道号等）私有定义在 `*_hal.c` 内，驱动只拿到 `typedef struct xxx
   adc_hal_handle_t;` 这种前向声明，永远解引用不到内部成员。
 - **板级层 `board/`**：硬件分配**以数据描述**（`g_adc0`/`g_uart0`/`g_led`/... 这组
-  `const` 资源结构，相当于一份内联的"设备树"），`board_init()` 遍历这张表、为每个
-  节点构造对应的 HAL 句柄 + 驱动，并以名字注册进设备管理器。**它是唯一知道
+  `const` 资源结构，相当于一份内联的"设备树"），`board_init()` 遍历这张表、通过
+  **按类索引的探测表 `g_probes[driver_type_t]`** 为每个节点构造对应的 HAL 句柄 +
+  驱动，并以名字注册进设备管理器。`board_init()` 里**没有 `switch(type)`**——新增一类
+  驱动只需在探测表里加一项，不动初始化循环。**它是唯一知道
   `ADC1`/`USART1`/`GPIOD` 以及出厂校准字的地方**——`main.c` 和 `drv/` 都不知道。
 - **设备管理层 `devmgr/`**：一个**通用**的 `name -> device *` 注册表
   （`device_manager_register` / `device_manager_get`），不 `#include` 任何驱动或 HAL
   头，只搬运 `device *`。它是主流 RTOS 里 `device_get_binding()` / `rt_device_find()`
   的等价物——应用按名字取设备，完全不接触外设基址或 HAL 句柄。
+- **`device` 基类带 `type` + `name`**：每个驱动在 `create()` 时填好自身的
+  `device.type`（`DEVICE_TYPE_ADC` 等类标识）和 `device.name`（逻辑名）。这样管理层/
+  应用拿到一个 `device *` 就能**按类或按名管理**，而无需知道具体驱动类型——
+  对应主流平台里驱动的 `compatible`/类 id 与设备名。
 - **应用层 `main.c`**：只做 `board_init()` + `device_manager_get("uart0")`，再经
   `device *` 的 vtable 派发驱动设备；**不 `#include` 任何芯片头，也不出现任何
   `xxx_hal_create`**。换板子时 `main.c` 一行都不用动。

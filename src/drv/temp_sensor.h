@@ -41,7 +41,8 @@ struct _temp_sensor {
 /* The board reads the chip-specific factory calib words (e.g. via temp_hal)
  * and passes them in, so this driver stays free of any HAL / register access. */
 temp_sensor *temp_sensor_create(device *adc, uint32_t vdda_mv,
-                                 uint16_t cal1, uint16_t cal2);
+                                 uint16_t cal1, uint16_t cal2,
+                                 const char *name);
 void temp_sensor_destroy(temp_sensor *self);
 void temp_sensor_init(temp_sensor *self);
 void temp_sensor_deinit(temp_sensor *self);

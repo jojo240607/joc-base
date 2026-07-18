@@ -25,7 +25,7 @@ const struct adcFun adc_fun = {
     .set_channel = adc_set_channel,
 };
 
-adc *adc_create(adc_hal_handle_t *hal, uint32_t channel)
+adc *adc_create(adc_hal_handle_t *hal, uint32_t channel, const char *name)
 {
     adc *self = (adc *)malloc(sizeof(adc));
     if (!self) return NULL;
@@ -33,6 +33,8 @@ adc *adc_create(adc_hal_handle_t *hal, uint32_t channel)
     self->hal     = hal;
     self->channel = channel;
     self->vdda_mv = 3300UL;
+    self->parent.type = DEVICE_TYPE_ADC;     /* driver sets its own class */
+    self->parent.name = name;                /* driver sets its own name */
     adc_init(self);
     return self;
 }

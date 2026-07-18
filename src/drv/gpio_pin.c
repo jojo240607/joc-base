@@ -25,12 +25,14 @@ const struct gpio_pinFun gpio_pin_fun = {
     .read    = gpio_pin_read,
 };
 
-gpio_pin *gpio_pin_create(gpio_hal_handle_t *hal)
+gpio_pin *gpio_pin_create(gpio_hal_handle_t *hal, const char *name)
 {
     gpio_pin *self = (gpio_pin *)malloc(sizeof(gpio_pin));
     if (!self) return NULL;
     memset(self, 0, sizeof(gpio_pin));
     self->hal = hal;
+    self->parent.type = DEVICE_TYPE_GPIO;    /* driver sets its own class */
+    self->parent.name = name;                /* driver sets its own name */
     gpio_pin_init(self);
     return self;
 }

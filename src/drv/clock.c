@@ -20,11 +20,13 @@ const struct clockFun clock_fun = {
     .get_sysclk_hz = clock_get_sysclk_hz,
 };
 
-clock *clock_create(void)
+clock *clock_create(const char *name)
 {
     clock *self = (clock *)malloc(sizeof(clock));
     if (!self) return NULL;
     memset(self, 0, sizeof(clock));
+    self->parent.type = DEVICE_TYPE_CLOCK;   /* driver sets its own class */
+    self->parent.name = name;                /* driver sets its own name */
     clock_init(self);
     return self;
 }

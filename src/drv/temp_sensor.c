@@ -30,7 +30,8 @@ const struct temp_sensorFun temp_sensor_fun = {
 };
 
 temp_sensor *temp_sensor_create(device *adc, uint32_t vdda_mv,
-                                 uint16_t cal1, uint16_t cal2)
+                                 uint16_t cal1, uint16_t cal2,
+                                 const char *name)
 {
     temp_sensor *self = (temp_sensor *)malloc(sizeof(temp_sensor));
     if (!self) return NULL;
@@ -39,6 +40,8 @@ temp_sensor *temp_sensor_create(device *adc, uint32_t vdda_mv,
     self->vdda_mv = vdda_mv;
     self->ts_cal1 = cal1;
     self->ts_cal2 = cal2;
+    self->parent.type = DEVICE_TYPE_TEMP_SENSOR;  /* driver sets its own class */
+    self->parent.name = name;                     /* driver sets its own name */
     temp_sensor_init(self);
     return self;
 }

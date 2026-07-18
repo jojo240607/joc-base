@@ -28,7 +28,7 @@ struct _clock {
     uint32_t sysclk_hz;
 };
 
-clock *clock_create(void);
+clock *clock_create(const char *name);
 void clock_destroy(clock *self);
 void clock_init(clock *self);
 void clock_deinit(clock *self);

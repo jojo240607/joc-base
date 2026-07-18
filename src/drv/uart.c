@@ -23,12 +23,14 @@ const struct uartFun uart_fun = {
     .getc         = uart_getc,
 };
 
-uart *uart_create(uart_hal_handle_t *hal)
+uart *uart_create(uart_hal_handle_t *hal, const char *name)
 {
     uart *self = (uart *)malloc(sizeof(uart));
     if (!self) return NULL;
     memset(self, 0, sizeof(uart));
     self->hal = hal;
+    self->parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
+    self->parent.name = name;                /* driver sets its own name */
     uart_init(self);
     return self;
 }

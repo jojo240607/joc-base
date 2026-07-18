@@ -32,7 +32,7 @@ struct _uart {
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
 };
 
-uart *uart_create(uart_hal_handle_t *hal);
+uart *uart_create(uart_hal_handle_t *hal, const char *name);
 void uart_destroy(uart *self);
 void uart_init(uart *self);
 void uart_deinit(uart *self);

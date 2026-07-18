@@ -33,7 +33,7 @@ struct _gpio_pin {
     gpio_hal_handle_t *hal;       /* opaque — driver never dereferences it */
 };
 
-gpio_pin *gpio_pin_create(gpio_hal_handle_t *hal);
+gpio_pin *gpio_pin_create(gpio_hal_handle_t *hal, const char *name);
 void gpio_pin_destroy(gpio_pin *self);
 void gpio_pin_init(gpio_pin *self);
 void gpio_pin_deinit(gpio_pin *self);

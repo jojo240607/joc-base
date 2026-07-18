@@ -41,7 +41,7 @@ struct _adc {
 
 /* The board creates the HAL handle (adc_hal_create) and passes it in; the
  * driver therefore needs zero knowledge of which chip the handle wraps. */
-adc *adc_create(adc_hal_handle_t *hal, uint32_t channel);
+adc *adc_create(adc_hal_handle_t *hal, uint32_t channel, const char *name);
 void adc_destroy(adc *self);
 void adc_init(adc *self);
 void adc_deinit(adc *self);
