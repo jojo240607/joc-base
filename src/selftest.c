@@ -4,6 +4,13 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* IOCTL command constants for the unified device interface (just ints) */
+#include "drv/clock.h"
+#include "drv/uart.h"
+#include "drv/gpio_pin.h"
+#include "drv/adc.h"
+#include "drv/temp_sensor.h"
+
 #define UART_PCLK2_HZ 84000000UL
 #define UART_BAUD     115200UL
 
@@ -13,6 +20,15 @@ static int selftest_vgpio(selftest *self);
 static int selftest_vadc(selftest *self);
 static int selftest_vtemp(selftest *self);
 
+/* one shared vtable for the whole self-test class */
+static const struct selftestVtable selftest_vtable = {
+    .test_clock = selftest_vclock,
+    .test_uart  = selftest_vuart,
+    .test_gpio  = selftest_vgpio,
+    .test_adc   = selftest_vadc,
+    .test_temp  = selftest_vtemp,
+};
+
 const struct selftestFun selftest_fun = {
     .destroy = selftest_destroy,
     .init = selftest_init,
@@ -20,17 +36,17 @@ const struct selftestFun selftest_fun = {
     .run = selftest_run,
 };
 
-selftest *selftest_create(clock *clk, uart *uart, gpio_pin *led,
-                           adc *adc, temp_sensor *temp)
+selftest *selftest_create(device *clk, device *uart, device *led,
+                           device *adc, device *temp)
 {
     selftest *self = (selftest *)malloc(sizeof(selftest));
     if (!self) return NULL;
     memset(self, 0, sizeof(selftest));
-    self->clk  = (device *)clk;
-    self->uart = (device *)uart;
-    self->led  = (device *)led;
-    self->adc  = (device *)adc;
-    self->temp = (device *)temp;
+    self->clk  = clk;
+    self->uart = uart;
+    self->led  = led;
+    self->adc  = adc;
+    self->temp = temp;
     selftest_init(self);
     return self;
 }
@@ -45,25 +61,14 @@ void selftest_destroy(selftest *self)
 void selftest_init(selftest *self)
 {
     if (!self) return;
-    if (!self->vtable) {
-        self->vtable = (struct selftestVtable *)malloc(sizeof(struct selftestVtable));
-        if (self->vtable) memset(self->vtable, 0, sizeof(struct selftestVtable));
-    }
+    self->vtable = &selftest_vtable;   /* per-class shared vtable */
     self->fun = &selftest_fun;
-    self->vtable->test_clock = selftest_vclock;
-    self->vtable->test_uart  = selftest_vuart;
-    self->vtable->test_gpio  = selftest_vgpio;
-    self->vtable->test_adc   = selftest_vadc;
-    self->vtable->test_temp  = selftest_vtemp;
 }
 
 void selftest_deinit(selftest *self)
 {
     if (!self) return;
-    if (self->vtable) {
-        free(self->vtable);
-        self->vtable = NULL;
-    }
+    /* no vtable to free (it is per-class static const) */
 }
 
 int selftest_run(selftest *self)

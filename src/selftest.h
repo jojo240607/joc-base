@@ -3,11 +3,6 @@
 
 #include <stdint.h>
 #include "iface/device.h"
-#include "drv/clock.h"
-#include "drv/uart.h"
-#include "drv/gpio_pin.h"
-#include "drv/adc.h"
-#include "drv/temp_sensor.h"
 
 typedef struct _selftest selftest;
 
@@ -27,7 +22,7 @@ struct selftestVtable {
 };
 
 struct _selftest {
-    struct selftestVtable *vtable;
+    const struct selftestVtable *vtable;
     const struct selftestFun *fun;
     /* The self-test drives every peripheral through the SAME unified
      * `device *` interface — exactly like the application layer. */
@@ -38,8 +33,10 @@ struct _selftest {
     device *temp;
 };
 
-selftest *selftest_create(clock *clk, uart *uart, gpio_pin *led,
-                          adc *adc, temp_sensor *temp);
+/* Takes ONLY unified `device *` handles (resolved by name from the device
+ * manager) — no concrete driver types, so the self-test stays decoupled. */
+selftest *selftest_create(device *clk, device *uart, device *led,
+                          device *adc, device *temp);
 void selftest_destroy(selftest *self);
 void selftest_init(selftest *self);
 void selftest_deinit(selftest *self);

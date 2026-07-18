@@ -14,16 +14,17 @@
  *     management fields (`type`, `name`) — all platform-neutral, so it holds
  *     zero chip knowledge and can be ported untouched.
  *   - The vtable is a POINTER: `struct deviceVtable *vtable;` (see Ibase.h).
- *   - Default virtual implementations live in device.c as `static` functions
- *     and are wired up by device_init(); they are NEVER defined in this header.
+ *     Each concrete driver defines ONE `static const` vtable for its whole
+ *     CLASS and points `device.vtable` at it in its own init() — so there is
+ *     NO per-instance heap allocation (a C++ vtable is also shared per class).
+ *     The virtual bodies are `static` in each drv/ source file, never in this header.
  *
- * A concrete driver (e.g. drv/adc_stm32) "inherits" this interface by
- * embedding `device parent;` as the FIRST member and overriding the vtable
- * entries in its own init():
+ * A concrete driver (e.g. drv/adc) "inherits" this interface by embedding
+ * `device parent;` as the FIRST member and assigning a per-class `static const`
+ * vtable in its own init():
  *
- *     self->parent.vtable->open  = adc_dev_open;   // override the virtual
- *     self->parent.vtable->read  = adc_dev_read;
- *     ...
+ *     self->parent.vtable = &adc_dev_vtable;   // one shared vtable per class
+ *     // adc_dev_vtable = { .open = adc_dev_open, .read = adc_dev_read, ... }
  *
  * Because `device parent` is the first member, a `device *` and a driver
  * pointer alias the same address, so the upper layer holds a `device *` and
@@ -49,7 +50,7 @@ typedef enum {
     DEVICE_TYPE_UART,         /* 2 */
     DEVICE_TYPE_GPIO,         /* 3 */
     DEVICE_TYPE_TEMP_SENSOR,  /* 4 */
-    DEVICE_TYPE_COUNT         /* number of classes (also table size) */
+    DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 
 /* Common device-control commands shared by all drivers (driver-specific ones
@@ -65,7 +66,7 @@ struct deviceVtable {
 };
 
 struct _device {
-    struct deviceVtable *vtable;     /* virtual-function table (pointer, per Ibase) */
+    const struct deviceVtable *vtable;  /* shared per-class vtable (pointer, per Ibase) */
     driver_type_t type;              /* device class — set by the driver at init */
     const char *name;                /* logical name — set by the driver at init */
 };
@@ -75,15 +76,9 @@ static inline driver_type_t device_get_type(const device *self)
     { return self ? self->type : DEVICE_TYPE_COUNT; }
 static inline const char *device_get_name(const device *self)
     { return self ? self->name : NULL; }
-static inline void device_set_type(device *self, driver_type_t t)
-    { if (self) self->type = t; }
-static inline void device_set_name(device *self, const char *n)
-    { if (self) self->name = n; }
 
-/* interface lifecycle: allocate / free the vtable and install the default
- * (no-op / unsupported) virtual implementations. A driver calls this from its
- * own init() BEFORE overriding the entries it actually implements. */
-void device_init(device *self);
-void device_deinit(device *self);
+/* The vtable is installed by each driver in its own init() — it points at that
+ * driver's per-class `static const` vtable, so the base provides no vtable
+ * allocation / lifecycle. See the drv/ sources for the concrete wiring. */
 
 #endif /* DEVICE_H */

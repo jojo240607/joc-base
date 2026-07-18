@@ -14,8 +14,7 @@ add_executable(${PROJECT_NAME}.elf
     src/main.c
     src/syscalls.c
     src/system_stm32f4xx.c
-    # interface layer (single unified driver interface — platform-independent)
-    src/iface/device.c
+    # interface layer (single unified driver interface — header-only, platform-independent)
     # driver layer (implements interfaces, delegates to HAL — platform-independent)
     src/drv/adc.c
     src/drv/gpio_pin.c

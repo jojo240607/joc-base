@@ -31,6 +31,15 @@ const struct temp_sensorFun temp_sensor_fun = {
     .read_celsius_x10 = temp_sensor_read_celsius_x10,
 };
 
+/* one shared vtable for the whole temp-sensor class — assigned by init() */
+static const struct deviceVtable temp_dev_vtable = {
+    .open  = temp_dev_open,
+    .close = temp_dev_close,
+    .read  = temp_dev_read,
+    .write = temp_dev_write,
+    .ioctl = temp_dev_ioctl,
+};
+
 /* Uniform create signature for the board layer: takes ONLY the driver's own
  * config pointer and returns a device *. The board lists this fn directly as a
  * node — no per-driver build wrapper. The attached ADC is resolved by name
@@ -41,6 +50,7 @@ device *temp_sensor_create(const void *config)
 {
     const temp_config_t *c = (const temp_config_t *)config;
     device *adc = device_manager_get(c->adc_name);
+    if (!adc) return NULL;                 /* #2: ADC dependency not registered */
     temp_sensor *self = (temp_sensor *)malloc(sizeof(temp_sensor));
     if (!self) return NULL;
     memset(self, 0, sizeof(temp_sensor));
@@ -65,19 +75,15 @@ void temp_sensor_destroy(temp_sensor *self)
 void temp_sensor_init(temp_sensor *self)
 {
     if (!self) return;
-    device_init(&self->parent);
+    self->parent.vtable = &temp_dev_vtable;   /* per-class shared vtable */
     self->fun = &temp_sensor_fun;
-    self->parent.vtable->open  = temp_dev_open;
-    self->parent.vtable->close = temp_dev_close;
-    self->parent.vtable->read  = temp_dev_read;
-    self->parent.vtable->write = temp_dev_write;
-    self->parent.vtable->ioctl = temp_dev_ioctl;
+    /* no hardware to bring up; open()/close() are no-ops */
 }
 
 void temp_sensor_deinit(temp_sensor *self)
 {
     if (!self) return;
-    device_deinit(&self->parent);
+    /* no base vtable to free (it is per-class static const) */
 }
 
 static float temp_sensor_read_celsius(temp_sensor *self)

@@ -108,11 +108,12 @@ d->vtable->ioctl(d, ADC_IOCTL_SET_CHANNEL, &ch);  /* 设备相关控制 */
 d->vtable->close(d);                /* 关闭 */
 ```
 
-> 注意：接口 `device` 只提供 `device_init`/`device_deinit`（分配/释放 vtable 并装入
-> 默认实现），**不提供** `device_open` 这类自由函数包装；虚函数一律通过
-> `obj->vtable->method(obj)` 派发。各驱动的"公开方法"（如 `adc->fun->set_channel(adc, ch)`、
-> `uart->fun->getc(uart)`）也只通过各自的 `fun` 表访问，具体实现是 `.c` 里的 `static`，
-> 头文件不暴露。
+> 注意：接口 `device` 是 **header-only** 的——它只定义 `device` 结构与 `deviceVtable`
+> 类型，**不提供** `device_init`/`device_deinit` 这类分配函数。每个驱动在自己的 `.c` 里定义
+> **一份 `static const` 的 vtable**（每类共享，不每实例 `malloc`），并在 `init()` 里把
+> `device.vtable` 指向它；虚函数一律通过 `obj->vtable->method(obj)` 派发。各驱动的"公开方法"
+> （如 `adc->fun->set_channel(adc, ch)`、`uart->fun->getc(uart)`）也只通过各自的 `fun` 表访问，
+> 具体实现是 `.c` 里的 `static`，头文件不暴露。
 
 换平台时**只需适配 `hal/<新平台>/` 并新增一份 `board/<新板>.c`（板级资源数据 + 构造）**，
 **驱动层 `drv/`、设备管理层 `devmgr/`、应用层 `main.c`、接口层 `device` 全部一行都不用动**。

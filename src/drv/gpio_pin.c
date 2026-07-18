@@ -25,6 +25,15 @@ const struct gpio_pinFun gpio_pin_fun = {
     .read    = gpio_pin_read,
 };
 
+/* one shared vtable for the whole GPIO-pin class — assigned by gpio_pin_init() */
+static const struct deviceVtable gpio_dev_vtable = {
+    .open  = gpio_dev_open,
+    .close = gpio_dev_close,
+    .read  = gpio_dev_read,
+    .write = gpio_dev_write,
+    .ioctl = gpio_dev_ioctl,
+};
+
 /* Uniform create signature for the board layer: takes ONLY the driver's own
  * config pointer and returns a device *. The board lists this fn directly as a
  * node — no per-driver build wrapper. */
@@ -35,6 +44,7 @@ device *gpio_pin_create(const void *config)
     if (!self) return NULL;
     memset(self, 0, sizeof(gpio_pin));
     self->hal = gpio_hal_create(c->periph, c->pin, c->mode);
+    if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->parent.type = DEVICE_TYPE_GPIO;    /* driver sets its own class */
     self->parent.name = c->name;             /* driver sets its own name */
     gpio_pin_init(self);
@@ -45,26 +55,22 @@ void gpio_pin_destroy(gpio_pin *self)
 {
     if (!self) return;
     gpio_pin_deinit(self);
+    gpio_hal_destroy(self->hal);   /* mirror create: free the HAL handle */
     free(self);
 }
 
 void gpio_pin_init(gpio_pin *self)
 {
     if (!self) return;
-    device_init(&self->parent);
+    self->parent.vtable = &gpio_dev_vtable;   /* per-class shared vtable */
     self->fun = &gpio_pin_fun;
-    self->parent.vtable->open  = gpio_dev_open;
-    self->parent.vtable->close = gpio_dev_close;
-    self->parent.vtable->read  = gpio_dev_read;
-    self->parent.vtable->write = gpio_dev_write;
-    self->parent.vtable->ioctl = gpio_dev_ioctl;
-    gpio_hal_config(self->hal);
+    /* hardware bring-up is deferred to open() (see gpio_dev_open) */
 }
 
 void gpio_pin_deinit(gpio_pin *self)
 {
     if (!self) return;
-    device_deinit(&self->parent);
+    /* no base vtable to free (it is per-class static const) */
 }
 
 static void gpio_pin_set(gpio_pin *self)   { if (self) gpio_hal_set(self->hal); }

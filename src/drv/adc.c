@@ -25,6 +25,15 @@ const struct adcFun adc_fun = {
     .set_channel = adc_set_channel,
 };
 
+/* one shared vtable for the whole ADC class — assigned by adc_init() */
+static const struct deviceVtable adc_dev_vtable = {
+    .open  = adc_dev_open,
+    .close = adc_dev_close,
+    .read  = adc_dev_read,
+    .write = adc_dev_write,
+    .ioctl = adc_dev_ioctl,
+};
+
 /* Uniform create signature for the board layer: takes ONLY the driver's own
  * config pointer and returns a device *. The board lists this fn directly as a
  * node — no per-driver build wrapper. */
@@ -35,6 +44,7 @@ device *adc_create(const void *config)
     if (!self) return NULL;
     memset(self, 0, sizeof(adc));
     self->hal     = adc_hal_create(c->periph, c->channel);
+    if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->channel = c->channel;
     self->vdda_mv = c->vdda_mv;
     self->parent.type = DEVICE_TYPE_ADC;     /* driver sets its own class */
@@ -47,27 +57,22 @@ void adc_destroy(adc *self)
 {
     if (!self) return;
     adc_deinit(self);
+    adc_hal_destroy(self->hal);   /* mirror create: free the HAL handle */
     free(self);
 }
 
 void adc_init(adc *self)
 {
     if (!self) return;
-    device_init(&self->parent);          /* allocate the unified vtable */
+    self->parent.vtable = &adc_dev_vtable;   /* per-class shared vtable */
     self->fun = &adc_fun;
-    /* implement the unified device interface with the ADC behaviour */
-    self->parent.vtable->open  = adc_dev_open;
-    self->parent.vtable->close = adc_dev_close;
-    self->parent.vtable->read  = adc_dev_read;
-    self->parent.vtable->write = adc_dev_write;
-    self->parent.vtable->ioctl = adc_dev_ioctl;
-    adc_hw_init(self);
+    /* hardware bring-up is deferred to open() (see adc_dev_open) */
 }
 
 void adc_deinit(adc *self)
 {
     if (!self) return;
-    device_deinit(&self->parent);        /* free the unified vtable */
+    /* no base vtable to free (it is per-class static const) */
 }
 
 static uint32_t adc_read(adc *self)

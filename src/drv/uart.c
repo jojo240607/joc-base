@@ -23,6 +23,15 @@ const struct uartFun uart_fun = {
     .getc         = uart_getc,
 };
 
+/* one shared vtable for the whole UART class — assigned by uart_init() */
+static const struct deviceVtable uart_dev_vtable = {
+    .open  = uart_dev_open,
+    .close = uart_dev_close,
+    .read  = uart_dev_read,
+    .write = uart_dev_write,
+    .ioctl = uart_dev_ioctl,
+};
+
 /* Uniform create signature for the board layer: takes ONLY the driver's own
  * config pointer and returns a device *. The board lists this fn directly as a
  * node — no per-driver build wrapper. */
@@ -33,6 +42,7 @@ device *uart_create(const void *config)
     if (!self) return NULL;
     memset(self, 0, sizeof(uart));
     self->hal = uart_hal_create(c->periph, c->baud);
+    if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
     self->parent.name = c->name;             /* driver sets its own name */
     uart_init(self);
@@ -44,26 +54,22 @@ void uart_destroy(uart *self)
 {
     if (!self) return;
     uart_deinit(self);
+    uart_hal_destroy(self->hal);   /* mirror create: free the HAL handle */
     free(self);
 }
 
 void uart_init(uart *self)
 {
     if (!self) return;
-    device_init(&self->parent);
+    self->parent.vtable = &uart_dev_vtable;   /* per-class shared vtable */
     self->fun = &uart_fun;
-    self->parent.vtable->open  = uart_dev_open;
-    self->parent.vtable->close = uart_dev_close;
-    self->parent.vtable->read  = uart_dev_read;
-    self->parent.vtable->write = uart_dev_write;
-    self->parent.vtable->ioctl = uart_dev_ioctl;
-    self->parent.vtable->open((device *)self);   /* bring up USART now */
+    /* hardware bring-up is deferred to open() (see uart_dev_open) */
 }
 
 void uart_deinit(uart *self)
 {
     if (!self) return;
-    device_deinit(&self->parent);
+    /* no base vtable to free (it is per-class static const) */
 }
 
 static void uart_set_baudrate(uart *self, uint32_t baud)

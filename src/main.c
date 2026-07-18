@@ -65,13 +65,13 @@ int main(void)
     device *d_adc  = device_manager_get("adc0");
     device *d_temp = device_manager_get("temp0");
 
-    /* every driver is brought up through the SAME virtual call */
+    /* every driver is brought up through the SAME virtual call.
+     * create() only builds the object; hardware is started here in open(). */
+    d_clk->vtable->open(d_clk);      /* configure the PLL */
     d_uart->vtable->open(d_uart);
     d_led->vtable->open(d_led);
     d_adc->vtable->open(d_adc);
     d_temp->vtable->open(d_temp);
-    /* (clock is already configured in create(); re-running PLL config at
-       runtime is skipped on purpose) */
 
     uint32_t hz = 0;
     d_clk->vtable->ioctl(d_clk, CLK_IOCTL_GET_SYSCLK_HZ, &hz);
@@ -80,11 +80,8 @@ int main(void)
            (unsigned long)hz);
 
     /* 4. on-board self-test (BIST) at boot.
-     * selftest_create still takes concrete pointers for typed convenience
-     * methods; we recover them from the registry by name. */
-    uart *u = (uart *)d_uart;   /* for typed getc() / console echo */
-    selftest *st = selftest_create((clock *)d_clk, u, (gpio_pin *)d_led,
-                                   (adc *)d_adc, (temp_sensor *)d_temp);
+     * selftest_create takes the unified device* handles from the registry. */
+    selftest *st = selftest_create(d_clk, d_uart, d_led, d_adc, d_temp);
     selftest_run(st);
 
     printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP\r\n");
@@ -94,7 +91,9 @@ int main(void)
     uint32_t idx = 0;
     while (1)
     {
-        char c = u->fun->getc(u);        /* typed method via fun table */
+        char c = 0;
+        if (d_uart->vtable->read(d_uart, &c, 1) != 1)
+            continue;                    /* no char available (HW read blocks) */
         uart_console_putc(c);                  /* local echo for terminal use */
 
         if (c == '\r' || c == '\n')

@@ -13,25 +13,27 @@
  * (hal/<platform>/clock_hal). Switching chips = rewrite the HAL only.
  * Implements the unified `device` interface.
  */
-typedef struct _clock clock;
+/* NOTE: the type is named `sys_clock` (not `clock`) on purpose — `clock()` is a
+ * reserved identifier in <time.h>, and newlib's stdio chain can pull it in. */
+typedef struct _sys_clock sys_clock;
 
 struct clockFun {
-    void (*destroy)(clock *self);
-    void (*init)(clock *self);
-    void (*deinit)(clock *self);
-    uint32_t (*get_sysclk_hz)(clock *self);
+    void (*destroy)(sys_clock *self);
+    void (*init)(sys_clock *self);
+    void (*deinit)(sys_clock *self);
+    uint32_t (*get_sysclk_hz)(sys_clock *self);
 };
 
-struct _clock {
+struct _sys_clock {
     device parent;                /* unified interface — MUST be first member */
     const struct clockFun *fun;
     uint32_t sysclk_hz;
 };
 
 device *clock_create(const void *config);
-void clock_destroy(clock *self);
-void clock_init(clock *self);
-void clock_deinit(clock *self);
+void clock_destroy(sys_clock *self);
+void clock_init(sys_clock *self);
+void clock_deinit(sys_clock *self);
 
 /* Driver-specific board config — defined HERE (driver layer), filled by the
  * board. The board layer instantiates this as DATA; clock_create() reads it. */
