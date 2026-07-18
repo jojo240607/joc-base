@@ -25,21 +25,21 @@
 #include "drv/temp_sensor.h"
 #include "drv/pinmux.h"
 
-#include "adc_hal.h"
-#include "gpio_hal.h"
-#include "uart_hal.h"
 #include "temp_hal.h"
 
 /* ---- board devices as DATA (each driver's own config, filled by the board) */
 static const pinmux_config_t g_pinmux = { "pinmux" };
-static const adc_config_t  g_adc0  = { "adc0",  (void *)ADC1, 0, 3300 };
-static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1 };
-static const gpio_config_t g_led   = { "led",   (void *)GPIOD, 12, 1 };
+static const adc_config_t  g_adc0  = { "adc0",  (void *)ADC1, 0, 3300, "ADC1_IN0" };
+static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1, "USART1_TX", "USART1_RX" };
+static const gpio_config_t g_led   = { "led",   (void *)GPIOD, 12, 1, PINMUX_PORT_D, "GPIOD_12" };
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
- * pinmux is listed FIRST so it is registered before any driver claims pins. */
+ * pinmux is listed FIRST so it is registered before any driver claims pins.
+ * Each driver now claims and configures its own pins through the pinmux at
+ * open() time, using the signal names supplied above — so a pin conflict is
+ * rejected before any GPIO register is touched, instead of being logged here. */
 static const board_node_t g_nodes[] = {
     { pinmux_create,      &g_pinmux },
     { clock_create,       &g_clk },
@@ -60,17 +60,5 @@ void board_init(void)
     for (uint32_t i = 0; i < sizeof(g_nodes) / sizeof(g_nodes[0]); i++) {
         device *dev = board_build(&g_nodes[i]);
         if (dev) device_manager_register(device_get_name(dev), dev);
-    }
-
-    /* Record the silicon pin assignment in the pinmux so that any future
-     * device that tries to reuse one of these pins is rejected at boot instead
-     * of silently interfering electrically. The board is the only place that
-     * knows these assignments, so it owns the claims. */
-    pinmux *pm = (pinmux *)device_manager_get("pinmux");
-    if (pm) {
-        pm->fun->request(pm, PINMUX_PORT_A, 9, 7, "uart0");   /* USART1_TX */
-        pm->fun->request(pm, PINMUX_PORT_A,10, 7, "uart0");   /* USART1_RX */
-        pm->fun->request(pm, PINMUX_PORT_D,12, 0, "led");     /* green LED (GPIO) */
-        pm->fun->request(pm, PINMUX_PORT_A, 0, 0, "adc0");    /* ADC1_IN0 */
     }
 }

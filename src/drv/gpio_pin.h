@@ -3,6 +3,7 @@
 
 #include "iface/device.h"
 #include "gpio_hal.h"         /* opaque handle ONLY — no STM32 types reach the driver */
+#include "pinmux_hal.h"       /* pinmux_port_t (port index for the pinmux) */
 #include <stdint.h>
 
 /* device-level control commands for the GPIO driver */
@@ -31,6 +32,8 @@ struct _gpio_pin {
     device parent;                /* unified interface — MUST be first member */
     const struct gpio_pinFun *fun;
     gpio_hal_handle_t *hal;       /* opaque — driver never dereferences it */
+    uint32_t mode;                /* cached direction (0=in,1=out,2=alt) */
+    const char *signal;           /* pinmux signal name (e.g. "GPIOD_12") */
 };
 
 device *gpio_pin_create(const void *config);
@@ -42,9 +45,13 @@ void gpio_pin_deinit(gpio_pin *self);
  * board. The board layer instantiates this as DATA; gpio_pin_create() reads it. */
 typedef struct {
     const char *name;       /* logical device name */
-    void *periph;           /* GPIOD (board layer only) */
+    void *periph;           /* GPIOD (board layer only, kept for the HAL handle) */
     uint32_t pin;           /* pin number */
     uint32_t mode;          /* 0 = in, 1 = out, 2 = alt */
+    /* pinmux integration: the port index + signal name used to claim the pin
+     * through the conflict arbitrator at open() time. */
+    pinmux_port_t pinmux_port;  /* e.g. PINMUX_PORT_D */
+    const char *signal;         /* e.g. "GPIOD_12" */
 } gpio_config_t;
 
 extern const struct gpio_pinFun gpio_pin_fun;

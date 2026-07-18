@@ -30,6 +30,8 @@ struct _uart {
     device parent;                /* unified interface — MUST be first member */
     const struct uartFun *fun;
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
+    const char *tx_signal;        /* pinmux signal name for TX (e.g. "USART1_TX") */
+    const char *rx_signal;        /* pinmux signal name for RX (e.g. "USART1_RX") */
 };
 
 device *uart_create(const void *config);
@@ -44,6 +46,11 @@ typedef struct {
     void *periph;           /* USART1 (board layer only) */
     uint32_t baud;          /* baud rate */
     uint8_t is_console;     /* 1 => install as the printf console */
+    /* signal names resolved through the pinmux AF database at open() time.
+     * The board supplies these instead of hard-coding pins, so a pin conflict
+     * is rejected before any GPIO register is touched. */
+    const char *tx_signal;  /* e.g. "USART1_TX" */
+    const char *rx_signal;  /* e.g. "USART1_RX" */
 } uart_config_t;
 
 /* console helpers (module-level singleton used by syscalls _write) */

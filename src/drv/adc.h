@@ -37,6 +37,7 @@ struct _adc {
     adc_hal_handle_t *hal;        /* opaque — driver never dereferences it */
     uint32_t channel;            /* logical channel (0..N), kept as driver state */
     uint32_t vdda_mv;            /* supply voltage in mV (default 3300) */
+    const char *signal;          /* pinmux signal name for the default channel */
 };
 
 /* The board fills adc_config_t (defined below) as DATA and passes it in; the
@@ -55,6 +56,9 @@ typedef struct {
     void *periph;           /* ADC1 (board layer only) */
     uint32_t channel;       /* default / logical channel */
     uint32_t vdda_mv;       /* supply voltage in mV */
+    /* signal name resolved through the pinmux AF database at open() time, so a
+     * pin conflict is rejected before the analog GPIO register is touched. */
+    const char *signal;     /* e.g. "ADC1_IN0" */
 } adc_config_t;
 
 extern const struct adcFun adc_fun;

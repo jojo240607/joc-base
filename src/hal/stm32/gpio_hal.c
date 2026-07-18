@@ -26,23 +26,12 @@ void gpio_hal_destroy(gpio_hal_handle_t *h)
 
 void gpio_hal_config(gpio_hal_handle_t *h)
 {
-    if (!h || !h->port) return;
-    GPIO_TypeDef *port = h->port;
-    uint32_t pin = h->pin;
-
-    if (port == GPIOA)      RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
-    else if (port == GPIOB) RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
-    else if (port == GPIOC) RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;
-    else if (port == GPIOD) RCC->AHB1ENR |= RCC_AHB1ENR_GPIODEN;
-    else if (port == GPIOE) RCC->AHB1ENR |= RCC_AHB1ENR_GPIOEEN;
-    else if (port == GPIOH) RCC->AHB1ENR |= RCC_AHB1ENR_GPIOHEN;
-
-    port->MODER = (port->MODER & ~(3U << (pin * 2))) | (h->mode << (pin * 2));
-    if (h->mode == 1U) {                 /* output: push-pull, high speed, no pull */
-        port->OTYPER &= ~(1U << pin);
-        port->OSPEEDR |= (3U << (pin * 2));
-        port->PUPDR   &= ~(3U << (pin * 2));
-    }
+    /* The pin is claimed AND configured by the driver through the pinmux
+     * (drv/pinmux.c -> hal/stm32/pinmux_hal.c) at open() time, so the GPIO
+     * registers must NOT be written here — doing so would bypass the conflict
+     * arbitrator. This function is kept only as a documentation/no-op anchor;
+     * the actual MODER/OTYPER/... programming lives in pinmux_hal_config(). */
+    (void)h;
 }
 
 void gpio_hal_set(gpio_hal_handle_t *h)   { if (h && h->port) h->port->BSRR = (1U << h->pin); }

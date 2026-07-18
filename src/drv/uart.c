@@ -1,6 +1,9 @@
 #include "uart.h"
+#include "devmgr/device_manager.h"   /* resolve the pinmux arbiter by name */
+#include "drv/pinmux.h"               /* request + program pins through pinmux */
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>                     /* printf for conflict diagnostics */
 
 static uart *g_console = NULL;
 
@@ -45,6 +48,8 @@ device *uart_create(const void *config)
     if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
     self->parent.name = c->name;             /* driver sets its own name */
+    self->tx_signal = c->tx_signal;          /* cache for pinmux claim at open() */
+    self->rx_signal = c->rx_signal;
     uart_init(self);
     if (c->is_console) uart_set_console(self);
     return (device *)self;
@@ -98,7 +103,38 @@ static char uart_getc(uart *self)
 
 static int uart_dev_open(device *self)
 {
-    uart_hal_init(((uart *)self)->hal);
+    uart *u = (uart *)self;
+
+    /* Claim + program the TX/RX pins through the pinmux BEFORE touching any
+     * GPIO register. If the pins are already owned by another device the
+     * request fails and we refuse to configure them — that is the whole point
+     * of the conflict arbitrator. */
+    pinmux *pm = (pinmux *)device_manager_get("pinmux");
+    if (pm) {
+        pinmux_pin_cfg_t cfg = {
+            .af = 7, .mode = 2, .otype = 0, .speed = 3, .pupd = 0
+        };
+        if (u->tx_signal) {
+            if (pm->fun->request_signal(pm, u->tx_signal, u->parent.name) != 0) {
+                printf("[uart] %s: pin %s CONFLICT — refused\r\n", u->parent.name, u->tx_signal);
+                return -2;                       /* conflict: do NOT configure */
+            }
+            pinmux_port_t p; uint8_t n, a;
+            if (pinmux_hal_resolve(u->tx_signal, &p, &n, &a) == 1)
+                pm->fun->config(pm, p, n, &cfg);
+        }
+        if (u->rx_signal) {
+            if (pm->fun->request_signal(pm, u->rx_signal, u->parent.name) != 0) {
+                printf("[uart] %s: pin %s CONFLICT — refused\r\n", u->parent.name, u->rx_signal);
+                return -2;
+            }
+            pinmux_port_t p; uint8_t n, a;
+            if (pinmux_hal_resolve(u->rx_signal, &p, &n, &a) == 1)
+                pm->fun->config(pm, p, n, &cfg);
+        }
+    }
+
+    uart_hal_init(u->hal);
     return 0;
 }
 

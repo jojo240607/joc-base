@@ -27,18 +27,11 @@ void uart_hal_init(uart_hal_handle_t *h)
     if (!h) return;
     USART_TypeDef *usart = h->usart;
 
-    /* Enable GPIOA (AHB1) and USART1 (APB2) clocks */
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    /* The TX/RX pins are claimed AND configured by the driver through the
+     * pinmux (drv/pinmux.c -> hal/stm32/pinmux_hal.c) at open() time, so we
+     * must NOT touch GPIO registers here — doing so would bypass the conflict
+     * arbitrator. Only the USART peripheral itself is set up below. */
     RCC->APB2ENR |= RCC_APB2ENR_USART1EN;
-
-    /* PA9 = TX, PA10 = RX, Alternate Function 7 (USART1) */
-    GPIOA->MODER   = (GPIOA->MODER   & ~((3U << (9 * 2)) | (3U << (10 * 2))))
-                   |  ((2U << (9 * 2)) | (2U << (10 * 2)));
-    GPIOA->OTYPER &= ~((1U << 9) | (1U << 10));                          /* push-pull */
-    GPIOA->OSPEEDR |= ((3U << (9 * 2)) | (3U << (10 * 2)));              /* high speed */
-    GPIOA->PUPDR  &= ~((3U << (9 * 2)) | (3U << (10 * 2)));              /* no pull */
-    GPIOA->AFR[1] = (GPIOA->AFR[1] & ~((0xFU << ((9 - 8) * 4)) | (0xFU << ((10 - 8) * 4))))
-                  |  ((7U << ((9 - 8) * 4)) | (7U << ((10 - 8) * 4)));   /* AF7 */
 
     usart->BRR = (uint32_t)(UART_HAL_PCLK2_HZ / h->baudrate);
     usart->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
