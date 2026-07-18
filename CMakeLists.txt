@@ -14,12 +14,20 @@ add_executable(${PROJECT_NAME}.elf
     src/main.c
     src/syscalls.c
     src/system_stm32f4xx.c
-    src/clock.c
-    src/serial.c
-    src/uart_stm32.c
-    src/gpio_pin.c
-    src/adc_stm32.c
-    src/temp_sensor_stm32.c
+    # interface layer (single unified driver interface — platform-independent)
+    src/iface/device.c
+    # driver layer (implements interfaces, delegates to HAL — platform-independent)
+    src/drv/adc.c
+    src/drv/gpio_pin.c
+    src/drv/clock.c
+    src/drv/temp_sensor.c
+    src/drv/uart.c
+    # hardware abstraction layer (chip-specific register ops)
+    src/hal/stm32/adc_hal.c
+    src/hal/stm32/gpio_hal.c
+    src/hal/stm32/clock_hal.c
+    src/hal/stm32/uart_hal.c
+    src/hal/stm32/temp_hal.c
     src/selftest.c
     startup/startup_stm32f407xx.s
 )
@@ -28,6 +36,10 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src
     src/device
     src/cmsis
+    src/iface
+    src/drv
+    src/hal
+    src/hal/stm32
 )
 
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE

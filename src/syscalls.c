@@ -6,8 +6,8 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-/* Provided by uart_stm32.c (console instance) */
-extern void uart_stm32_console_putc(char c);
+/* Provided by uart.c (console instance) */
+extern void uart_console_putc(char c);
 
 int _write(int file, char *ptr, int len)
 {
@@ -15,8 +15,8 @@ int _write(int file, char *ptr, int len)
     for (int i = 0; i < len; i++)
     {
         if (ptr[i] == '\n')
-            uart_stm32_console_putc('\r');   /* add CR for terminal friendliness */
-        uart_stm32_console_putc(ptr[i]);
+            uart_console_putc('\r');   /* add CR for terminal friendliness */
+        uart_console_putc(ptr[i]);
     }
     return len;
 }

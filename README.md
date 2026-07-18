@@ -19,15 +19,24 @@
 ├── CMakeLists.txt
 ├── cmake/toolchain.cmake        # arm-none-eabi 工具链
 ├── src/
-│   ├── main.c                   # 用 OOC 类组装：clock + uart_stm32 + gpio_pin
-│   ├── clock.c/.h               # OOC 系统时钟类（HSE->PLL 168MHz）
-│   ├── serial.c/.h              # OOC 抽象串口基类（putc/puts 虚函数）
-│   ├── uart_stm32.c/.h          # OOC 具体串口类，继承 serial，USART1 PA9/PA10
-│   ├── gpio_pin.c/.h            # OOC GPIO 引脚类（LED 等）
-│   ├── adc_stm32.c/.h           # OOC ADC 类（ADC1/2/3，单次转换 + mV 换算）
-│   ├── temp_sensor_stm32.c/.h   # OOC 片内温度传感器类（ADC1_IN16 + 出厂校准换算℃）
+│   ├── main.c                   # 【板级层】用 OOC 类组装：clock + uart + gpio_pin
+│   ├── selftest.c/.h            # 板载自测类（集成测试）
 │   ├── syscalls.c               # newlib 桩，printf 重定向到串口控制台
 │   ├── system_stm32f4xx.c       # 官方 CMSIS 系统文件（只配 FPU/VTOR）
+│   ├── iface/                   # 【统一驱动接口层】唯一的 device 接口（纯接口，仅 vtable）
+│   │   └── device.h/.c          #   统一设备接口：open/close/read/write/ioctl（虚函数）
+│   ├── drv/                     # 【驱动层】平台无关！实现 device 接口，持有 HAL 不透明句柄
+│   │   ├── adc.c/.h             #   通用 ADC，实现 device（read/ioctl: SET_CHANNEL/READ_MV）
+│   │   ├── gpio_pin.c/.h        #   通用 GPIO 引脚，实现 device（write/read/ioctl: TOGGLE）
+│   │   ├── clock.c/.h           #   通用系统时钟，实现 device（ioctl: GET_SYSCLK_HZ）
+│   │   ├── temp_sensor.c/.h     #   通用片内温度传感器，实现 device（依赖 ADC 的 device 接口）
+│   │   └── uart.c/.h            #   通用 USART，实现 device（write/read/ioctl: BAUD/BRR/CR1）
+│   ├── hal/stm32/               # 【HAL 层】芯片级寄存器操作（唯一碰硬件之处）
+│   │   ├── adc_hal.c/.h         #   ADC 寄存器：时钟/采样/序列/单次转换
+│   │   ├── gpio_hal.c/.h        #   GPIO 寄存器：配置/置位/复位/翻转/读
+│   │   ├── clock_hal.c/.h       #   RCC/FLASH 寄存器：HSE->PLL->168MHz
+│   │   ├── uart_hal.c/.h        #   USART 寄存器：波特率/收发
+│   │   └── temp_hal.c/.h        #   出厂温度校准字读取（系统存储区）
 │   ├── device/                  # 官方 STM32F4 设备头（仅 F407）
 │   └── cmsis/                   # 官方 CMSIS-Core 头
 ├── moban/                       # OOC 代码模板（base/son/ison 等）
@@ -40,6 +49,52 @@
 │   └── gdbinit.txt
 └── .vscode/                     # VS Code 构建/调试配置
 ```
+
+### 分层理念与统一驱动接口
+
+- **统一接口层 `iface/device`**：只定义**一个**纯接口 `device`（参照 `moban/` 的
+  `Ibase` 模板——只有虚函数表 vtable，没有 `fun`、没有状态、不 `#include` 任何芯片头）。
+  它规定所有驱动必须实现的虚函数：`open / close / read / write / ioctl`。
+- **驱动层 `drv/`**：每个外设驱动（adc/gpio/clock/temp/uart）都把
+  `device parent;` 作为**结构体首成员**来"继承"该接口，并在 `init()` 里把
+  `parent.vtable->read`（等）接到自己的实现上。上层因此只需持有 `device *`。
+  **关键点：驱动层完全平台无关**——它只持有 HAL 提供的**不透明句柄**
+  （`adc_hal_handle_t *` / `gpio_hal_handle_t *` / `uart_hal_handle_t *`），
+  结构体里**不出现** `ADC_TypeDef` / `GPIO_TypeDef` / `USART_TypeDef`，
+  编译单元里也**不 `#include` 任何芯片头**。所有寄存器知识都封在 HAL 里。
+- **HAL 层 `hal/stm32/`**：唯一直接操作寄存器/系统存储区的地方，也是唯一知道
+  `ADC_TypeDef` 等芯片类型的地方。HAL 以**不透明句柄**对外：句柄结构体（含真实的
+  外设指针、通道号等）私有定义在 `*_hal.c` 内，驱动只拿到 `typedef struct xxx
+  adc_hal_handle_t;` 这种前向声明，永远解引用不到内部成员。
+
+**统一调用形式**：上层应用（`main.c`/`selftest.c`）对**任何**外设都通过同一组虚函数派发访问，
+与具体芯片、具体驱动完全解耦。这就是 C 里的 Java 式多态：调用经对象的 vtable 派发
+（对应 Java 的 `d.open()`）：
+
+```c
+device *d = (device *)adc;          /* 任意驱动都可转成 device * */
+d->vtable->open(d);                 /* 初始化（虚函数，经 vtable 派发） */
+d->vtable->read(d, &raw, sizeof(raw));  /* 读数据 */
+d->vtable->write(d, buf, len);      /* 写数据 */
+d->vtable->ioctl(d, ADC_IOCTL_SET_CHANNEL, &ch);  /* 设备相关控制 */
+d->vtable->close(d);                /* 关闭 */
+```
+
+> 注意：接口 `device` 只提供 `device_init`/`device_deinit`（分配/释放 vtable 并装入
+> 默认实现），**不提供** `device_open` 这类自由函数包装；虚函数一律通过
+> `obj->vtable->method(obj)` 派发。各驱动的"公开方法"（如 `adc->fun->set_channel(adc, ch)`、
+> `uart->fun->getc(uart)`）也只通过各自的 `fun` 表访问，具体实现是 `.c` 里的 `static`，
+> 头文件不暴露。
+
+换平台时**只需适配 `hal/<新平台>/` 并改 `main.c`（板级层）**，**驱动层 `drv/` 一行都不用动**，
+**接口层 `device` 与上层代码也完全不动**。因为驱动只依赖 HAL 的不透明句柄，新 HAL 只要提供
+相同签名的 `*_hal_create` / `*_hal_*` 函数，驱动源码即可原样复用。
+
+> 示例：`temp_sensor` 只持有 **`device *`**（ADC 的统一接口）而非具体的
+> `adc`，读温度时通过 `adc->vtable->ioctl(adc, ...)` / `adc->vtable->read(adc, ...)`
+> 临时切到 CH16、读值、再切回，因此只要新平台提供一个实现了 `device` 的 ADC 驱动，
+> 温度传感器即可直接复用。温度传感器的芯片专属出厂校准字由**板级层**（`main.c` 通过
+> `temp_hal_ts_cal1/2` 读取）在构造时传入，所以 `temp_sensor` 驱动本身不碰任何寄存器。
 
 ## 硬件连接
 
@@ -125,16 +180,33 @@ READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP
 
 外设驱动全部按 `moban/` 的面向对象 C 模板编写：
 
-- 每个类包含：`*Fun`（静态方法表：create/destroy/init/deinit/...）与
-  `*Vtable`（虚函数表：可被派生类重写）。
-- 继承：派生类在结构体中嵌入父类作为首成员，vtable 的首成员是父类的 vtable
-  （如 `uart_stm32Vtable.parent` 是 `serialVtable`），并用
-  `union { parent; vtable*; }` 保证布局兼容。
-- 调用方式：静态方法 `self->fun->method(self)`，虚方法 `self->vtable->method(self)`。
+- 每个类包含：`*Fun`（公开方法表：create/destroy/init/deinit/...，以及
+  `set_channel`/`getc` 等类型化方法）与 `deviceVtable`（统一虚函数表：
+  open/close/read/write/ioctl，可被驱动重写）。
+- 统一接口继承：每个驱动在结构体中把 `device parent;` 作为**首成员**来"继承"
+  统一接口 `device`（接口只持有 `struct deviceVtable *vtable;` 这个虚函数表指针，
+  没有任何 `fun`、没有状态，不碰芯片头），并在 `init()` 里把
+  `parent.vtable->read`（等）接到自己的 `static` 实现；
+  因为 `device` 是首成员，`(device*)driver` 与 `(driver*)device` 可安全互转。
+- 调用方式（参照 `moban/Ibase` 与 Java 的多态思路）：
+  - 公开方法：`self->fun->method(self)` —— 具体实现是 `.c` 里的 `static`，头文件不暴露；
+  - 虚方法：`self->vtable->method(self)`（基类持有者）或
+    `son->parent.vtable->method((device*)son)`（子类内部调自己重写的虚函数），
+    全部经对象的 vtable 派发，没有任何自由函数包装。
 
-当前类关系：`uart_stm32` ─继承─> `serial`（抽象串口基类）；
-`clock`、`gpio_pin`、`adc_stm32`、`temp_sensor_stm32` 为独立叶子类
-（`temp_sensor_stm32` 内部复用 `adc_stm32` 对象，读温度时临时切到 CH16）。
+当前类关系（均遵循"统一接口层 → 驱动层 → HAL 层"三层）：
+
+- **统一接口 `device`**（在 `iface/device.h`，参照 `moban/` 的 `Ibase` 纯接口模板）：
+  定义虚函数 `open/close/read/write/ioctl`，是所有驱动的基类/接口类；
+- **五个驱动全部"继承"并实现 `device`**（把 `device parent;` 作为首成员，
+  在 `init()` 里填充 `parent.vtable`）：
+  `adc`、`gpio_pin`、`clock`、`temp_sensor`、`uart`（均为平台无关名，
+  结构体里只持有 HAL 不透明句柄，不出现任何芯片类型）；
+- `temp_sensor` 内部只持有 **`device *`**（ADC 的统一接口，而非具体的
+  `adc`），读温度时通过 `adc->vtable->ioctl(adc, ...)` / `adc->vtable->read(adc, ...)`
+  临时切到 CH16、读值、再切回，因此与 ADC 具体实现解耦；
+- 各驱动把寄存器操作全部委托给 `hal/stm32/` 下对应的 `*_hal`，且只通过
+  **不透明句柄**访问——驱动源码里看不到 `ADC_TypeDef` / `GPIO_TypeDef` / `USART_TypeDef`。
 - **调试连不上**：确认 ST-Link 已插入、板子供电正常；GDB Server 默认端口 61234。
 
 ## 板载自测（BIST）与 PC 陪测
@@ -147,7 +219,7 @@ READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP
 - `adc`：切换 ADC 到片内 **VREFINT（CH17，约 1.21 V）** 读一次，
   12 位原始值应在合理区间（实测约 1517，对应 VDDA≈3.3 V），借此验证
   ADC 时钟 / 序列 / EOC / 数据读取整条通路；读完后切回外部通道（PA0）。
-- `temp`：用 `temp_sensor_stm32` 读片内温度传感器（ADC1_IN16），按出厂校准
+- `temp`：用 `temp_sensor` 读片内温度传感器（ADC1_IN16），按出厂校准
   `TS_CAL1`(30 ℃)/`TS_CAL2`(110 ℃) 线性插值换算摄氏温度，结果应在合理区间
   （实测约 47 ℃，即 168 MHz 全速运行的裸die自升温），证明温度传感器驱动正确。
 

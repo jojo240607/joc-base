@@ -2,11 +2,12 @@
 #define SELFTEST_H
 
 #include <stdint.h>
-#include "clock.h"
-#include "uart_stm32.h"
-#include "gpio_pin.h"
-#include "adc_stm32.h"
-#include "temp_sensor_stm32.h"
+#include "iface/device.h"
+#include "drv/clock.h"
+#include "drv/uart.h"
+#include "drv/gpio_pin.h"
+#include "drv/adc.h"
+#include "drv/temp_sensor.h"
 
 typedef struct _selftest selftest;
 
@@ -28,15 +29,17 @@ struct selftestVtable {
 struct _selftest {
     struct selftestVtable *vtable;
     const struct selftestFun *fun;
-    clock *clk;
-    uart_stm32 *uart;
-    gpio_pin *led;
-    adc_stm32 *adc;
-    temp_sensor_stm32 *temp;
+    /* The self-test drives every peripheral through the SAME unified
+     * `device *` interface — exactly like the application layer. */
+    device *clk;
+    device *uart;
+    device *led;
+    device *adc;
+    device *temp;
 };
 
-selftest *selftest_create(clock *clk, uart_stm32 *uart, gpio_pin *led,
-                          adc_stm32 *adc, temp_sensor_stm32 *temp);
+selftest *selftest_create(clock *clk, uart *uart, gpio_pin *led,
+                          adc *adc, temp_sensor *temp);
 void selftest_destroy(selftest *self);
 void selftest_init(selftest *self);
 void selftest_deinit(selftest *self);
