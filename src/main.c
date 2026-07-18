@@ -80,6 +80,13 @@ int main(void)
     printf("System clock: %lu Hz, USART1 @ 115200 8N1\r\n",
            (unsigned long)hz);
 
+    /* Confirmation marker: proves the name-based pinmux changes (board supplies
+     * signal NAMES like "USART1_TX_PA9", drivers resolve via pinmux_hal_resolve)
+     * are compiled in AND flashed. __DATE__/__TIME__ make every build unique so
+     * we can tell a fresh image from a stale one on the board. */
+    printf("BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\r\n",
+           __DATE__, __TIME__);
+
     /* 4. on-board self-test (BIST) at boot.
      * selftest_create takes the unified device* handles from the registry. */
     selftest *st = selftest_create(d_clk, d_uart, d_led, d_adc, d_temp);
@@ -122,6 +129,10 @@ int main(void)
                 }
                 else if (strcmp(line, "BIST") == 0)
                 {
+                    /* re-emit the build marker on demand so a PC companion that
+                     * connects AFTER boot can still confirm which image is flashed */
+                    printf("BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\r\n",
+                           __DATE__, __TIME__);
                     selftest_run(st);        /* re-run self-test on demand */
                 }
                 else if (strncmp(line, "ADC", 3) == 0)
