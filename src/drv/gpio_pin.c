@@ -49,7 +49,8 @@ device *gpio_pin_create(const void *config)
     self->hal = gpio_hal_create(c->periph, c->pin, c->mode);
     if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->mode = c->mode;                    /* cache for pinmux config at open() */
-    self->signal = c->signal;                /* cache signal name for open() */
+    self->pinmux_port = c->pinmux_port;      /* cache port/pin for pinmux claim */
+    self->pin = c->pin;
     self->parent.type = DEVICE_TYPE_GPIO;    /* driver sets its own class */
     self->parent.name = c->name;             /* driver sets its own name */
     gpio_pin_init(self);
@@ -90,20 +91,20 @@ static int gpio_dev_open(device *self)
     gpio_pin *g = (gpio_pin *)self;
 
     /* Claim + program the pin through the pinmux BEFORE configuring anything.
-     * A conflict (pin already owned elsewhere) makes request_signal fail and we
-     * refuse to touch the hardware. */
+     * A plain GPIO pin is identified only by (port, pin) with af = 0 — no
+     * signal name, fully generic. A conflict (pin already owned elsewhere)
+     * makes request fail and we refuse to touch the hardware. */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
-    if (pm && g->signal) {
-        if (pm->fun->request_signal(pm, g->signal, g->parent.name) != 0) {
-            printf("[gpio] %s: pin %s CONFLICT — refused\r\n", g->parent.name, g->signal);
+    if (pm) {
+        if (pm->fun->request(pm, g->pinmux_port, (uint8_t)g->pin, 0, g->parent.name) != 0) {
+            printf("[gpio] %s: pin P%c%d CONFLICT — refused\r\n",
+                   g->parent.name, 'A' + g->pinmux_port, (int)g->pin);
             return -2;                       /* conflict: do NOT configure */
         }
         pinmux_pin_cfg_t cfg = {
             .af = 0, .mode = (uint8_t)g->mode, .otype = 0, .speed = 3, .pupd = 0
         };
-        pinmux_port_t p; uint8_t n, a;
-        if (pinmux_hal_resolve(g->signal, &p, &n, &a) == 1)
-            pm->fun->config(pm, p, n, &cfg);
+        pm->fun->config(pm, g->pinmux_port, (uint8_t)g->pin, &cfg);
         return 0;                            /* pinmux owns the GPIO registers now */
     }
 

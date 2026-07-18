@@ -384,9 +384,6 @@ static const af_entry_t g_af[] = {
     {PINMUX_PORT_C,12,13, "DCMI_D6"},
     {PINMUX_PORT_D, 2,13, "DCMI_D7"},
 
-    /* ---------------- plain GPIO outputs (af = 0, mode = output) ---------------- */
-    {PINMUX_PORT_D,12, 0, "GPIOD_12"},
-
     /* ---------------- system / debug (AF0) ---------------- */
     {PINMUX_PORT_A,13, 0, "SYS_JTMS_SWDIO"},
     {PINMUX_PORT_A,14, 0, "SYS_JTCK_SWCLK"},

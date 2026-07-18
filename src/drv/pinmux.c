@@ -278,15 +278,24 @@ int pinmux_run_selftest(pinmux *self)
     pass &= (r == 0);
     pinmux_release(self, PINMUX_PORT_B, 6);   /* leave it free for the board */
 
-    /* 5) resolve a signal name -> (port, pin, af) and claim it */
-    r = pinmux_request_signal(self, "USART1_TX", "uart0");
-    printf("[pinmux] resolve USART1_TX   : %s\r\n", r == 0 ? "OK (PA9/AF7)" : "FAIL");
+    /* 5) claim the board's REAL USART1 pins explicitly (port, pin, af) — this is
+     *    how the uart driver claims them, so there is no name ambiguity. */
+    r = pinmux_request(self, PINMUX_PORT_A, 9, 7, "uart0");   /* PA9  = USART1_TX */
+    printf("[pinmux] claim PA9/AF7       : %s\r\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
-    /* a different pin under the same owner is fine */
-    r = pinmux_request_signal(self, "USART1_RX", "uart0");
+    r = pinmux_request(self, PINMUX_PORT_A, 10, 7, "uart0");  /* PA10 = USART1_RX */
     pass &= (r == 0);
 
-    /* 6) an unknown signal name must be rejected (-3) */
+    /* 5b) the SAME peripheral's ALTERNATE pin (PB6 = USART1_TX on a different
+     *     pad) is independently claimable. This proves the old "first name
+     *     match wins" loss is gone: the board picks the exact pin, so BOTH
+     *     physical locations are reachable. */
+    r = pinmux_request(self, PINMUX_PORT_B, 6, 7, "uart0");   /* PB6 = USART1_TX alt */
+    printf("[pinmux] alt pin PB6 reachable: %s\r\n", r == 0 ? "OK" : "FAIL");
+    pass &= (r == 0);
+    pinmux_release(self, PINMUX_PORT_B, 6);                   /* free it again */
+
+    /* 6) an unknown signal name must still be rejected (-3) via request_signal */
     r = pinmux_request_signal(self, "NOPE_NOPE", "x");
     printf("[pinmux] unknown signal      : %s\r\n", r == -3 ? "REJECTED" : "MISSED");
     pass &= (r == -3);

@@ -3,6 +3,7 @@
 
 #include "iface/device.h"
 #include "adc_hal.h"          /* opaque handle ONLY — no STM32 types reach the driver */
+#include "pinmux_hal.h"       /* pinmux_pin_t (explicit pin tuple for the board) */
 #include <stdint.h>
 
 /* device-level control commands for the ADC driver (passed to device_ioctl) */
@@ -37,7 +38,7 @@ struct _adc {
     adc_hal_handle_t *hal;        /* opaque — driver never dereferences it */
     uint32_t channel;            /* logical channel (0..N), kept as driver state */
     uint32_t vdda_mv;            /* supply voltage in mV (default 3300) */
-    const char *signal;          /* pinmux signal name for the default channel */
+    pinmux_pin_t ain;            /* cached analog input pin (port, pin, af=0) */
 };
 
 /* The board fills adc_config_t (defined below) as DATA and passes it in; the
@@ -56,9 +57,10 @@ typedef struct {
     void *periph;           /* ADC1 (board layer only) */
     uint32_t channel;       /* default / logical channel */
     uint32_t vdda_mv;       /* supply voltage in mV */
-    /* signal name resolved through the pinmux AF database at open() time, so a
+    /* Exact analog input pin to claim, supplied by the board. Using the
+     * concrete (port, pin) (af = 0 for analog) avoids any name lookup and a
      * pin conflict is rejected before the analog GPIO register is touched. */
-    const char *signal;     /* e.g. "ADC1_IN0" */
+    pinmux_pin_t ain;       /* e.g. {PINMUX_PORT_A, 0, 0} for ADC1_IN0 */
 } adc_config_t;
 
 extern const struct adcFun adc_fun;

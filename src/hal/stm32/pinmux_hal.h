@@ -42,6 +42,17 @@ typedef struct {
     uint8_t pupd;   /* 0 = none, 1 = pull-up, 2 = pull-down */
 } pinmux_pin_cfg_t;
 
+/* A concrete, unambiguous pin reference: the exact (port, pin, af) triple.
+ * Drivers claim pins with THIS (via pinmux_request), not by signal name, so a
+ * peripheral that can appear on several pins (e.g. USART1_TX on PA9 OR PB6) is
+ * always resolved to the specific pin the board chose — no "first match wins"
+ * ambiguity. A plain GPIO pin simply uses af = 0. */
+typedef struct {
+    pinmux_port_t port;   /* e.g. PINMUX_PORT_A */
+    uint8_t pin;          /* 0..15 */
+    uint8_t af;           /* 0 = GPIO/analog, 1..15 = alternate function */
+} pinmux_pin_t;
+
 /* Resolve a logical signal name (e.g. "USART1_TX", "SPI2_SCK") to its
  * (port, pin, af). Returns 1 if found, 0 otherwise. The names are defined by
  * the AF database in pinmux_af_stm32f4.c. */

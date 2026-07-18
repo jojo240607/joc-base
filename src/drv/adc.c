@@ -51,7 +51,7 @@ device *adc_create(const void *config)
     if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->channel = c->channel;
     self->vdda_mv = c->vdda_mv;
-    self->signal  = c->signal;      /* cached for pinmux claim at open() */
+    self->ain     = c->ain;         /* cached for pinmux claim at open() */
     self->parent.type = DEVICE_TYPE_ADC;     /* driver sets its own class */
     self->parent.name = c->name;             /* driver sets its own name */
     adc_init(self);
@@ -159,23 +159,22 @@ static void adc_hw_init(adc *self)
     adc_hal_common_config(self->hal);
 
     /* Claim + program the analog input pin through the pinmux BEFORE touching
-     * the GPIO registers. A conflict (pin already owned elsewhere) makes
-     * request_signal fail and we refuse to configure it. Internal channels
+     * the GPIO registers. A conflict (pin already owned elsewhere) makes the
+     * request fail and we refuse to configure it. Internal channels
      * (16/17/18) need no GPIO pin, so skip them. */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
-    if (pm && self->signal && self->channel < 16U) {
-        if (pm->fun->request_signal(pm, self->signal, self->parent.name) != 0) {
-            printf("[adc] %s: pin %s CONFLICT — refused\r\n", self->parent.name, self->signal);
+    if (pm && self->channel < 16U) {
+        if (pm->fun->request(pm, self->ain.port, self->ain.pin, 0, self->parent.name) != 0) {
+            printf("[adc] %s: pin P%c%d CONFLICT — refused\r\n",
+                   self->parent.name, 'A' + self->ain.port, self->ain.pin);
             return;                          /* conflict: do NOT configure */
         }
         pinmux_pin_cfg_t cfg = {
             .af = 0, .mode = 3, .otype = 0, .speed = 0, .pupd = 0
         };
-        pinmux_port_t p; uint8_t n, a;
-        if (pinmux_hal_resolve(self->signal, &p, &n, &a) == 1)
-            pm->fun->config(pm, p, n, &cfg);
+        pm->fun->config(pm, self->ain.port, self->ain.pin, &cfg);
     } else {
-        adc_hal_config_gpio(self->hal);      /* fallback when no pinmux */
+        adc_hal_config_gpio(self->hal);      /* fallback when no pinmux / internal ch */
     }
 
     adc_hal_config_channel(self->hal);

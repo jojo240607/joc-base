@@ -29,9 +29,12 @@
 
 /* ---- board devices as DATA (each driver's own config, filled by the board) */
 static const pinmux_config_t g_pinmux = { "pinmux" };
-static const adc_config_t  g_adc0  = { "adc0",  (void *)ADC1, 0, 3300, "ADC1_IN0" };
-static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1, "USART1_TX", "USART1_RX" };
-static const gpio_config_t g_led   = { "led",   (void *)GPIOD, 12, 1, PINMUX_PORT_D, "GPIOD_12" };
+static const adc_config_t  g_adc0  = { "adc0",  (void *)ADC1, 0, 3300,
+                                       { PINMUX_PORT_A, 0, 0 } };   /* ADC1_IN0 */
+static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1,
+                                       { PINMUX_PORT_A, 9, 7 },     /* TX = PA9, AF7 */
+                                       { PINMUX_PORT_A, 10, 7 } };  /* RX = PA10, AF7 */
+static const gpio_config_t g_led   = { "led",   (void *)GPIOD, 12, 1, PINMUX_PORT_D };
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 
