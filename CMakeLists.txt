@@ -21,6 +21,7 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/clock.c
     src/drv/temp_sensor.c
     src/drv/uart.c
+    src/drv/pinmux.c
     # device manager (generic name -> device* registry — platform-independent)
     src/devmgr/device_manager.c
     # board layer (per-board: the only place that knows the real peripherals)
@@ -31,6 +32,8 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/clock_hal.c
     src/hal/stm32/uart_hal.c
     src/hal/stm32/temp_hal.c
+    src/hal/stm32/pinmux_hal.c
+    src/hal/stm32/pinmux_af_stm32f4.c
     src/selftest.c
     startup/startup_stm32f407xx.s
 )

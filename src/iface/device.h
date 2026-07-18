@@ -50,6 +50,7 @@ typedef enum {
     DEVICE_TYPE_UART,         /* 2 */
     DEVICE_TYPE_GPIO,         /* 3 */
     DEVICE_TYPE_TEMP_SENSOR,  /* 4 */
+    DEVICE_TYPE_PINMUX,       /* 5 — pin multiplexer / conflict arbitrator */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 

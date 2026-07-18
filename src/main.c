@@ -47,6 +47,7 @@
 #include "drv/gpio_pin.h"
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
+#include "drv/pinmux.h"
 #include "selftest.h"
 
 int main(void)
@@ -83,6 +84,11 @@ int main(void)
      * selftest_create takes the unified device* handles from the registry. */
     selftest *st = selftest_create(d_clk, d_uart, d_led, d_adc, d_temp);
     selftest_run(st);
+
+    /* pinmux conflict-detection self-test (exercises the new driver) */
+    device *d_pinmux = device_manager_get("pinmux");
+    int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
+    printf("[BIST] pinmux: %s\r\n", pmok ? "PASS" : "FAIL");
 
     printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP\r\n");
 
