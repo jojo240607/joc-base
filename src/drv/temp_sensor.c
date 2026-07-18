@@ -1,4 +1,6 @@
 #include "temp_sensor.h"
+#include "devmgr/device_manager.h"   /* resolve the dependency ADC by name */
+#include "temp_hal.h"                 /* factory calibration words */
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,21 +31,27 @@ const struct temp_sensorFun temp_sensor_fun = {
     .read_celsius_x10 = temp_sensor_read_celsius_x10,
 };
 
-temp_sensor *temp_sensor_create(device *adc, uint32_t vdda_mv,
-                                 uint16_t cal1, uint16_t cal2,
-                                 const char *name)
+/* Uniform create signature for the board layer: takes ONLY the driver's own
+ * config pointer and returns a device *. The board lists this fn directly as a
+ * node — no per-driver build wrapper. The attached ADC is resolved by name
+ * through the device manager; the factory calibration words are read here
+ * (they live in chip system memory, so they cannot be a compile-time constant
+ * in the config). */
+device *temp_sensor_create(const void *config)
 {
+    const temp_config_t *c = (const temp_config_t *)config;
+    device *adc = device_manager_get(c->adc_name);
     temp_sensor *self = (temp_sensor *)malloc(sizeof(temp_sensor));
     if (!self) return NULL;
     memset(self, 0, sizeof(temp_sensor));
     self->adc     = adc;
-    self->vdda_mv = vdda_mv;
-    self->ts_cal1 = cal1;
-    self->ts_cal2 = cal2;
+    self->vdda_mv = c->vdda_mv;
+    self->ts_cal1 = temp_hal_ts_cal1();
+    self->ts_cal2 = temp_hal_ts_cal2();
     self->parent.type = DEVICE_TYPE_TEMP_SENSOR;  /* driver sets its own class */
-    self->parent.name = name;                     /* driver sets its own name */
+    self->parent.name = c->name;                   /* driver sets its own name */
     temp_sensor_init(self);
-    return self;
+    return (device *)self;
 }
 
 void temp_sensor_destroy(temp_sensor *self)

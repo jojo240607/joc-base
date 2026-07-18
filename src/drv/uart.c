@@ -23,16 +23,21 @@ const struct uartFun uart_fun = {
     .getc         = uart_getc,
 };
 
-uart *uart_create(uart_hal_handle_t *hal, const char *name)
+/* Uniform create signature for the board layer: takes ONLY the driver's own
+ * config pointer and returns a device *. The board lists this fn directly as a
+ * node — no per-driver build wrapper. */
+device *uart_create(const void *config)
 {
+    const uart_config_t *c = (const uart_config_t *)config;
     uart *self = (uart *)malloc(sizeof(uart));
     if (!self) return NULL;
     memset(self, 0, sizeof(uart));
-    self->hal = hal;
+    self->hal = uart_hal_create(c->periph, c->baud);
     self->parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
-    self->parent.name = name;                /* driver sets its own name */
+    self->parent.name = c->name;             /* driver sets its own name */
     uart_init(self);
-    return self;
+    if (c->is_console) uart_set_console(self);
+    return (device *)self;
 }
 
 void uart_destroy(uart *self)

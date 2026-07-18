@@ -25,16 +25,20 @@ const struct gpio_pinFun gpio_pin_fun = {
     .read    = gpio_pin_read,
 };
 
-gpio_pin *gpio_pin_create(gpio_hal_handle_t *hal, const char *name)
+/* Uniform create signature for the board layer: takes ONLY the driver's own
+ * config pointer and returns a device *. The board lists this fn directly as a
+ * node — no per-driver build wrapper. */
+device *gpio_pin_create(const void *config)
 {
+    const gpio_config_t *c = (const gpio_config_t *)config;
     gpio_pin *self = (gpio_pin *)malloc(sizeof(gpio_pin));
     if (!self) return NULL;
     memset(self, 0, sizeof(gpio_pin));
-    self->hal = hal;
+    self->hal = gpio_hal_create(c->periph, c->pin, c->mode);
     self->parent.type = DEVICE_TYPE_GPIO;    /* driver sets its own class */
-    self->parent.name = name;                /* driver sets its own name */
+    self->parent.name = c->name;             /* driver sets its own name */
     gpio_pin_init(self);
-    return self;
+    return (device *)self;
 }
 
 void gpio_pin_destroy(gpio_pin *self)

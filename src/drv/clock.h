@@ -28,10 +28,16 @@ struct _clock {
     uint32_t sysclk_hz;
 };
 
-clock *clock_create(const char *name);
+device *clock_create(const void *config);
 void clock_destroy(clock *self);
 void clock_init(clock *self);
 void clock_deinit(clock *self);
+
+/* Driver-specific board config — defined HERE (driver layer), filled by the
+ * board. The board layer instantiates this as DATA; clock_create() reads it. */
+typedef struct {
+    const char *name;       /* logical device name */
+} clock_config_t;
 
 extern const struct clockFun clock_fun;
 

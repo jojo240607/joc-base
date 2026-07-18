@@ -39,12 +39,23 @@ struct _adc {
     uint32_t vdda_mv;            /* supply voltage in mV (default 3300) */
 };
 
-/* The board creates the HAL handle (adc_hal_create) and passes it in; the
- * driver therefore needs zero knowledge of which chip the handle wraps. */
-adc *adc_create(adc_hal_handle_t *hal, uint32_t channel, const char *name);
+/* The board fills adc_config_t (defined below) as DATA and passes it in; the
+ * driver therefore needs zero knowledge of which chip the handle wraps. The
+ * create fn has the UNIFORM signature  device *(*)(const void *config)  so the
+ * board can list it directly as a node — no per-driver build wrapper needed. */
+device *adc_create(const void *config);
 void adc_destroy(adc *self);
 void adc_init(adc *self);
 void adc_deinit(adc *self);
+
+/* Driver-specific board config — defined HERE (driver layer), filled by the
+ * board. The board layer instantiates this as DATA; adc_create() reads it. */
+typedef struct {
+    const char *name;       /* logical device name */
+    void *periph;           /* ADC1 (board layer only) */
+    uint32_t channel;       /* default / logical channel */
+    uint32_t vdda_mv;       /* supply voltage in mV */
+} adc_config_t;
 
 extern const struct adcFun adc_fun;
 

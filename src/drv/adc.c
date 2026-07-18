@@ -25,18 +25,22 @@ const struct adcFun adc_fun = {
     .set_channel = adc_set_channel,
 };
 
-adc *adc_create(adc_hal_handle_t *hal, uint32_t channel, const char *name)
+/* Uniform create signature for the board layer: takes ONLY the driver's own
+ * config pointer and returns a device *. The board lists this fn directly as a
+ * node — no per-driver build wrapper. */
+device *adc_create(const void *config)
 {
+    const adc_config_t *c = (const adc_config_t *)config;
     adc *self = (adc *)malloc(sizeof(adc));
     if (!self) return NULL;
     memset(self, 0, sizeof(adc));
-    self->hal     = hal;
-    self->channel = channel;
-    self->vdda_mv = 3300UL;
+    self->hal     = adc_hal_create(c->periph, c->channel);
+    self->channel = c->channel;
+    self->vdda_mv = c->vdda_mv;
     self->parent.type = DEVICE_TYPE_ADC;     /* driver sets its own class */
-    self->parent.name = name;                /* driver sets its own name */
+    self->parent.name = c->name;             /* driver sets its own name */
     adc_init(self);
-    return self;
+    return (device *)self;
 }
 
 void adc_destroy(adc *self)

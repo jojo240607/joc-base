@@ -32,10 +32,19 @@ struct _uart {
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
 };
 
-uart *uart_create(uart_hal_handle_t *hal, const char *name);
+device *uart_create(const void *config);
 void uart_destroy(uart *self);
 void uart_init(uart *self);
 void uart_deinit(uart *self);
+
+/* Driver-specific board config — defined HERE (driver layer), filled by the
+ * board. The board layer instantiates this as DATA; uart_create() reads it. */
+typedef struct {
+    const char *name;       /* logical device name */
+    void *periph;           /* USART1 (board layer only) */
+    uint32_t baud;          /* baud rate */
+    uint8_t is_console;     /* 1 => install as the printf console */
+} uart_config_t;
 
 /* console helpers (module-level singleton used by syscalls _write) */
 void uart_set_console(uart *self);

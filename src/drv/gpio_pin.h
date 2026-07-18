@@ -33,10 +33,19 @@ struct _gpio_pin {
     gpio_hal_handle_t *hal;       /* opaque — driver never dereferences it */
 };
 
-gpio_pin *gpio_pin_create(gpio_hal_handle_t *hal, const char *name);
+device *gpio_pin_create(const void *config);
 void gpio_pin_destroy(gpio_pin *self);
 void gpio_pin_init(gpio_pin *self);
 void gpio_pin_deinit(gpio_pin *self);
+
+/* Driver-specific board config — defined HERE (driver layer), filled by the
+ * board. The board layer instantiates this as DATA; gpio_pin_create() reads it. */
+typedef struct {
+    const char *name;       /* logical device name */
+    void *periph;           /* GPIOD (board layer only) */
+    uint32_t pin;           /* pin number */
+    uint32_t mode;          /* 0 = in, 1 = out, 2 = alt */
+} gpio_config_t;
 
 extern const struct gpio_pinFun gpio_pin_fun;
 

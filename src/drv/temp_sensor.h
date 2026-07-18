@@ -38,14 +38,24 @@ struct _temp_sensor {
     uint16_t ts_cal2;             /* factory calib raw @110C */
 };
 
-/* The board reads the chip-specific factory calib words (e.g. via temp_hal)
- * and passes them in, so this driver stays free of any HAL / register access. */
-temp_sensor *temp_sensor_create(device *adc, uint32_t vdda_mv,
-                                 uint16_t cal1, uint16_t cal2,
-                                 const char *name);
+/* The board fills temp_config_t (defined below) as DATA; temp_sensor_create()
+ * resolves the attached ADC by name through the device manager and reads the
+ * factory calib words itself (they live in chip system memory, so they cannot
+ * be a compile-time constant in the config). So this driver stays free of any
+ * HAL / register access. */
+device *temp_sensor_create(const void *config);
 void temp_sensor_destroy(temp_sensor *self);
 void temp_sensor_init(temp_sensor *self);
 void temp_sensor_deinit(temp_sensor *self);
+
+/* Driver-specific board config — defined HERE (driver layer), filled by the
+ * board. The board layer instantiates this as DATA; temp_sensor_create() reads
+ * it. The attached ADC is given by NAME and resolved via the device manager. */
+typedef struct {
+    const char *name;       /* logical device name */
+    const char *adc_name;   /* attached ADC device (resolved by name) */
+    uint32_t vdda_mv;       /* supply voltage in mV */
+} temp_config_t;
 
 extern const struct temp_sensorFun temp_sensor_fun;
 

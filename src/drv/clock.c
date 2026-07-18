@@ -20,15 +20,19 @@ const struct clockFun clock_fun = {
     .get_sysclk_hz = clock_get_sysclk_hz,
 };
 
-clock *clock_create(const char *name)
+/* Uniform create signature for the board layer: takes ONLY the driver's own
+ * config pointer and returns a device *. The board lists this fn directly as a
+ * node — no per-driver build wrapper. */
+device *clock_create(const void *config)
 {
+    const clock_config_t *c = (const clock_config_t *)config;
     clock *self = (clock *)malloc(sizeof(clock));
     if (!self) return NULL;
     memset(self, 0, sizeof(clock));
     self->parent.type = DEVICE_TYPE_CLOCK;   /* driver sets its own class */
-    self->parent.name = name;                /* driver sets its own name */
+    self->parent.name = c->name;             /* driver sets its own name */
     clock_init(self);
-    return self;
+    return (device *)self;
 }
 
 void clock_destroy(clock *self)
