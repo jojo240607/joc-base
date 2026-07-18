@@ -18,22 +18,16 @@
  *      dev->vtable->ioctl(dev, cmd, arg);
  *      dev->vtable->close(dev);
  *
- * Typed convenience methods (when you hold the concrete pointer) go through the
- * `fun` table and are NEVER called as bare functions:
- *
- *      uart->fun->getc(uart);
- *      adc->fun->set_channel(adc, ch);
- *
- * DRIVER / HAL SPLIT (the point of this refactor):
- *   - The driver layer (drv/) is 100% platform-independent. It only ever holds
- *     an OPAQUE HAL handle (adc_hal_handle_t *, gpio_hal_handle_t *, ...) and
- *     never sees ADC_TypeDef / GPIO_TypeDef / USART_TypeDef.
- *   - This file is the BOARD layer: it is the ONLY place that knows the chip
- *     (stm32f4xx.h) and the real peripherals (ADC1, USART1, GPIOD). It builds
- *     the HAL handles via the per-platform hal _hal_create() helpers and hands
- *     them to the drivers. To move to another MCU you rewrite hal/<new-platform>/
- *     and this
- *     board file; the drv/ sources stay untouched.
+ * LAYERING (fully decoupled):
+ *   - drv/        : platform-independent drivers, hold only OPAQUE HAL handles.
+ *   - hal/stm32/  : the ONLY place that touches chip registers (ADC_TypeDef ...).
+ *   - board/      : the ONLY place that knows the real peripherals (ADC1,
+ *                   USART1, GPIOD) — expressed as const DATA + a construction
+ *                   loop. Equivalent to a device tree + board init.
+ *   - devmgr/     : generic name -> device* registry (device_get_binding style).
+ *   - main.c      : APPLICATION layer. It knows device NAMES only
+ *                   (device_manager_get("uart0")); it never sees a peripheral
+ *                   base address or a HAL handle, and includes no chip header.
  *
  * See moban/ for the OOC template (vtable + fun + create/destroy/init/deinit).
  *
@@ -45,56 +39,31 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include "stm32f4xx.h"           /* BOARD layer only: real peripherals (ADC1, USART1, GPIOD) */
+#include "iface/device.h"
+#include "devmgr/device_manager.h"
+#include "board.h"
 #include "drv/clock.h"
 #include "drv/uart.h"
 #include "drv/gpio_pin.h"
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
-#include "iface/device.h"
 #include "selftest.h"
-/* HAL handles (opaque to the driver; created here in the board layer) */
-#include "adc_hal.h"
-#include "gpio_hal.h"
-#include "uart_hal.h"
-#include "temp_hal.h"            /* factory calib words — chip-specific, board reads them */
 
 int main(void)
 {
-    /* --- BOARD layer: build HAL handles for the real silicon -------------- */
-    adc_hal_handle_t  *h_adc  = adc_hal_create((void *)ADC1, 0);   /* PA0 = CH0 */
-    gpio_hal_handle_t *h_led  = gpio_hal_create((void *)GPIOD, 12, 1); /* PD12 out */
-    uart_hal_handle_t *h_uart = uart_hal_create((void *)USART1, 115200UL);
+    /* BOARD layer builds HAL handles + drivers from its descriptor and
+     * registers them by name. This file learns nothing about the silicon. */
+    board_init();
 
-    /* 1. system clock -> 168 MHz (HSE -> PLL) */
-    clock *clk = clock_create();
-
-    /* 2. USART1 console on PA9/PA10 @ 115200 */
-    uart *uart = uart_create(h_uart);
-    uart_set_console(uart);
-
-    /* 3. green LED (LD4) on PD12 as an output pin object */
-    gpio_pin *led = gpio_pin_create(h_led);
-
-    /* 3b. ADC1 on PA0 (channel 0); PA0 is the on-board blue button (pulled high) */
-    adc *adc = adc_create(h_adc, 0);
-    /* 3c. on-chip temperature sensor (ADC1_IN16), reuses the same ADC object
-           through the unified `device *` interface — fully decoupled. The chip
-           specific factory calib words are read by the board and passed in, so
-           the temp_sensor driver stays free of any HAL / register access. */
-    temp_sensor *temp = temp_sensor_create((device *)adc, 3300UL,
-                                           temp_hal_ts_cal1(), temp_hal_ts_cal2());
-
-    /* --- unified device handles -------------------------------------------
-     * The upper layer holds a `device *` for EVERY driver and drives them all
-     * through the identical virtual-dispatch API. This is the whole point of
-     * the unified interface: the application code does not care which chip or
-     * which concrete driver is behind the handle. */
-    device *d_clk  = (device *)clk;
-    device *d_uart = (device *)uart;
-    device *d_led  = (device *)led;
-    device *d_adc  = (device *)adc;
-    device *d_temp = (device *)temp;
+    /* --- unified device handles (by NAME, not by peripheral) -------------
+     * The application holds a `device *` for every driver and drives them all
+     * through the identical virtual-dispatch API. It does not care which chip
+     * or which concrete driver is behind each name. */
+    device *d_clk  = device_manager_get("clk");
+    device *d_uart = device_manager_get("uart0");
+    device *d_led  = device_manager_get("led");
+    device *d_adc  = device_manager_get("adc0");
+    device *d_temp = device_manager_get("temp0");
 
     /* every driver is brought up through the SAME virtual call */
     d_uart->vtable->open(d_uart);
@@ -110,8 +79,12 @@ int main(void)
     printf("System clock: %lu Hz, USART1 @ 115200 8N1\r\n",
            (unsigned long)hz);
 
-    /* 4. on-board self-test (BIST) at boot */
-    selftest *st = selftest_create(clk, uart, led, adc, temp);
+    /* 4. on-board self-test (BIST) at boot.
+     * selftest_create still takes concrete pointers for typed convenience
+     * methods; we recover them from the registry by name. */
+    uart *u = (uart *)d_uart;   /* for typed getc() / console echo */
+    selftest *st = selftest_create((clock *)d_clk, u, (gpio_pin *)d_led,
+                                   (adc *)d_adc, (temp_sensor *)d_temp);
     selftest_run(st);
 
     printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP\r\n");
@@ -121,7 +94,7 @@ int main(void)
     uint32_t idx = 0;
     while (1)
     {
-        char c = uart->fun->getc(uart);        /* typed method via fun table */
+        char c = u->fun->getc(u);        /* typed method via fun table */
         uart_console_putc(c);                  /* local echo for terminal use */
 
         if (c == '\r' || c == '\n')

@@ -22,6 +22,10 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/clock.c
     src/drv/temp_sensor.c
     src/drv/uart.c
+    # device manager (generic name -> device* registry — platform-independent)
+    src/devmgr/device_manager.c
+    # board layer (per-board: the only place that knows the real peripherals)
+    src/board/stm32f4_discovery.c
     # hardware abstraction layer (chip-specific register ops)
     src/hal/stm32/adc_hal.c
     src/hal/stm32/gpio_hal.c
@@ -38,6 +42,8 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/cmsis
     src/iface
     src/drv
+    src/devmgr
+    src/board
     src/hal
     src/hal/stm32
 )

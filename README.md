@@ -19,13 +19,18 @@
 ├── CMakeLists.txt
 ├── cmake/toolchain.cmake        # arm-none-eabi 工具链
 ├── src/
-│   ├── main.c                   # 【板级层】用 OOC 类组装：clock + uart + gpio_pin
+│   ├── main.c                   # 【应用层】只按名取设备：device_manager_get("uart0")
 │   ├── selftest.c/.h            # 板载自测类（集成测试）
 │   ├── syscalls.c               # newlib 桩，printf 重定向到串口控制台
 │   ├── system_stm32f4xx.c       # 官方 CMSIS 系统文件（只配 FPU/VTOR）
 │   ├── iface/                   # 【统一驱动接口层】唯一的 device 接口（纯接口，仅 vtable）
 │   │   └── device.h/.c          #   统一设备接口：open/close/read/write/ioctl（虚函数）
 │   ├── drv/                     # 【驱动层】平台无关！实现 device 接口，持有 HAL 不透明句柄
+│   ├── devmgr/                  # 【设备管理层】通用 name->device* 注册表（device_get_binding 风格）
+│   │   └── device_manager.h/.c  #   只存/取 device *，不含任何驱动或 HAL 头
+│   ├── board/                   # 【板级层】硬件分配以"数据"描述（设备树等价物）
+│   │   ├── board.h              #   资源描述 schema（adc/uart/gpio/clock/temp 的资源结构）
+│   │   └── stm32f4_discovery.c  #   唯一知道 ADC1/USART1/GPIOD：资源表 + 构造并注册设备
 │   │   ├── adc.c/.h             #   通用 ADC，实现 device（read/ioctl: SET_CHANNEL/READ_MV）
 │   │   ├── gpio_pin.c/.h        #   通用 GPIO 引脚，实现 device（write/read/ioctl: TOGGLE）
 │   │   ├── clock.c/.h           #   通用系统时钟，实现 device（ioctl: GET_SYSCLK_HZ）
@@ -66,6 +71,17 @@
   `ADC_TypeDef` 等芯片类型的地方。HAL 以**不透明句柄**对外：句柄结构体（含真实的
   外设指针、通道号等）私有定义在 `*_hal.c` 内，驱动只拿到 `typedef struct xxx
   adc_hal_handle_t;` 这种前向声明，永远解引用不到内部成员。
+- **板级层 `board/`**：硬件分配**以数据描述**（`g_adc0`/`g_uart0`/`g_led`/... 这组
+  `const` 资源结构，相当于一份内联的"设备树"），`board_init()` 遍历这张表、为每个
+  节点构造对应的 HAL 句柄 + 驱动，并以名字注册进设备管理器。**它是唯一知道
+  `ADC1`/`USART1`/`GPIOD` 以及出厂校准字的地方**——`main.c` 和 `drv/` 都不知道。
+- **设备管理层 `devmgr/`**：一个**通用**的 `name -> device *` 注册表
+  （`device_manager_register` / `device_manager_get`），不 `#include` 任何驱动或 HAL
+  头，只搬运 `device *`。它是主流 RTOS 里 `device_get_binding()` / `rt_device_find()`
+  的等价物——应用按名字取设备，完全不接触外设基址或 HAL 句柄。
+- **应用层 `main.c`**：只做 `board_init()` + `device_manager_get("uart0")`，再经
+  `device *` 的 vtable 派发驱动设备；**不 `#include` 任何芯片头，也不出现任何
+  `xxx_hal_create`**。换板子时 `main.c` 一行都不用动。
 
 **统一调用形式**：上层应用（`main.c`/`selftest.c`）对**任何**外设都通过同一组虚函数派发访问，
 与具体芯片、具体驱动完全解耦。这就是 C 里的 Java 式多态：调用经对象的 vtable 派发
@@ -86,15 +102,21 @@ d->vtable->close(d);                /* 关闭 */
 > `uart->fun->getc(uart)`）也只通过各自的 `fun` 表访问，具体实现是 `.c` 里的 `static`，
 > 头文件不暴露。
 
-换平台时**只需适配 `hal/<新平台>/` 并改 `main.c`（板级层）**，**驱动层 `drv/` 一行都不用动**，
-**接口层 `device` 与上层代码也完全不动**。因为驱动只依赖 HAL 的不透明句柄，新 HAL 只要提供
-相同签名的 `*_hal_create` / `*_hal_*` 函数，驱动源码即可原样复用。
+换平台时**只需适配 `hal/<新平台>/` 并新增一份 `board/<新板>.c`（板级资源数据 + 构造）**，
+**驱动层 `drv/`、设备管理层 `devmgr/`、应用层 `main.c`、接口层 `device` 全部一行都不用动**。
+因为驱动只依赖 HAL 的不透明句柄，新 HAL 只要提供相同签名的 `*_hal_create` / `*_hal_*` 函数，
+驱动源码即可原样复用；而 `main.c` 只按名字取设备，连板级差异都不感知。
+
+> 这套分层对应主流嵌入式平台的两大解耦机制：
+> - **设备树（Device Tree）** → 本工程的 `board/<板>.c` 资源表（硬件分配数据化）；
+> - **设备/驱动管理** → 本工程的 `devmgr/` 注册表（按名取设备 `device_manager_get`）。
+> 两者互补：设备树提供"资源在哪（数据）"，管理器提供"应用怎么拿到（按名）"。
 
 > 示例：`temp_sensor` 只持有 **`device *`**（ADC 的统一接口）而非具体的
 > `adc`，读温度时通过 `adc->vtable->ioctl(adc, ...)` / `adc->vtable->read(adc, ...)`
 > 临时切到 CH16、读值、再切回，因此只要新平台提供一个实现了 `device` 的 ADC 驱动，
-> 温度传感器即可直接复用。温度传感器的芯片专属出厂校准字由**板级层**（`main.c` 通过
-> `temp_hal_ts_cal1/2` 读取）在构造时传入，所以 `temp_sensor` 驱动本身不碰任何寄存器。
+> 温度传感器即可直接复用。温度传感器的芯片专属出厂校准字由**板级层**（`board/stm32f4_discovery.c`
+> 通过 `temp_hal_ts_cal1/2` 读取）在构造时传入，所以 `temp_sensor` 驱动本身不碰任何寄存器。
 
 ## 硬件连接
 
