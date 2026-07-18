@@ -172,6 +172,12 @@ static void pinmux_dump(pinmux *self)
             if (!s->claimed) continue;
             const char *sig = pinmux_hal_signal_at((pinmux_port_t)p,
                                                    (uint8_t)n, s->af);
+            char gpio_buf[12];
+            if (!sig && s->af == 0) {       /* plain GPIO: no DB row, derive name */
+                snprintf(gpio_buf, sizeof(gpio_buf), "GPIO%c%d",
+                         letters[p], n);
+                sig = gpio_buf;
+            }
             if (sig)
                 printf("  P%c%d af%d owner=%s [%s]\r\n",
                        letters[p], n, s->af,
@@ -278,20 +284,21 @@ int pinmux_run_selftest(pinmux *self)
     pass &= (r == 0);
     pinmux_release(self, PINMUX_PORT_B, 6);   /* leave it free for the board */
 
-    /* 5) claim the board's REAL USART1 pins explicitly (port, pin, af) — this is
-     *    how the uart driver claims them, so there is no name ambiguity. */
-    r = pinmux_request(self, PINMUX_PORT_A, 9, 7, "uart0");   /* PA9  = USART1_TX */
-    printf("[pinmux] claim PA9/AF7       : %s\r\n", r == 0 ? "OK" : "FAIL");
+    /* 5) claim the board's REAL USART1 pins by SIGNAL NAME — this is how the
+     *    uart driver claims them now. The unique names ("USART1_TX_PA9" vs
+     *    "USART1_TX_PB6") resolve to exactly one pad, so there is no ambiguity. */
+    r = pinmux_request_signal(self, "USART1_TX_PA9", "uart0");   /* PA9  = USART1_TX */
+    printf("[pinmux] claim USART1_TX_PA9  : %s\r\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
-    r = pinmux_request(self, PINMUX_PORT_A, 10, 7, "uart0");  /* PA10 = USART1_RX */
+    r = pinmux_request_signal(self, "USART1_RX_PA10", "uart0");  /* PA10 = USART1_RX */
     pass &= (r == 0);
 
     /* 5b) the SAME peripheral's ALTERNATE pin (PB6 = USART1_TX on a different
-     *     pad) is independently claimable. This proves the old "first name
-     *     match wins" loss is gone: the board picks the exact pin, so BOTH
-     *     physical locations are reachable. */
-    r = pinmux_request(self, PINMUX_PORT_B, 6, 7, "uart0");   /* PB6 = USART1_TX alt */
-    printf("[pinmux] alt pin PB6 reachable: %s\r\n", r == 0 ? "OK" : "FAIL");
+     *     pad) is independently claimable under its OWN unique name. This proves
+     *     the duplicate-name problem is gone: both physical locations are
+     *     reachable by distinct names. */
+    r = pinmux_request_signal(self, "USART1_TX_PB6", "uart0");   /* PB6 = USART1_TX alt */
+    printf("[pinmux] alt name USART1_TX_PB6: %s\r\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
     pinmux_release(self, PINMUX_PORT_B, 6);                   /* free it again */
 

@@ -46,11 +46,24 @@ device *gpio_pin_create(const void *config)
     gpio_pin *self = (gpio_pin *)malloc(sizeof(gpio_pin));
     if (!self) return NULL;
     memset(self, 0, sizeof(gpio_pin));
-    self->hal = gpio_hal_create(c->periph, c->pin, c->mode);
+
+    /* Resolve the board's signal name (e.g. "GPIOD_12") to the exact
+     * (port, pin, af) up front so we can build the opaque HAL handle AND claim
+     * the pin through the pinmux later. A plain GPIO pin uses af = 0. */
+    pinmux_port_t port; uint8_t pin, af;
+    if (!pinmux_hal_resolve(c->signal, &port, &pin, &af)) {
+        printf("[gpio] %s: unknown signal \"%s\"\r\n", c->name, c->signal);
+        free(self);
+        return NULL;
+    }
+    void *base = pinmux_hal_port_base(port);
+    self->hal = gpio_hal_create(base, pin, c->mode);
     if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->mode = c->mode;                    /* cache for pinmux config at open() */
-    self->pinmux_port = c->pinmux_port;      /* cache port/pin for pinmux claim */
-    self->pin = c->pin;
+    self->signal = c->signal;                /* cache name for diagnostics */
+    self->port = port;                       /* cache resolved pad for claim */
+    self->pin = pin;
+    self->af = af;
     self->parent.type = DEVICE_TYPE_GPIO;    /* driver sets its own class */
     self->parent.name = c->name;             /* driver sets its own name */
     gpio_pin_init(self);
@@ -91,20 +104,20 @@ static int gpio_dev_open(device *self)
     gpio_pin *g = (gpio_pin *)self;
 
     /* Claim + program the pin through the pinmux BEFORE configuring anything.
-     * A plain GPIO pin is identified only by (port, pin) with af = 0 — no
-     * signal name, fully generic. A conflict (pin already owned elsewhere)
-     * makes request fail and we refuse to touch the hardware. */
+     * The pad (port, pin, af) was resolved from the board's signal name at
+     * create() time, so there is no ambiguity. A conflict (pin already owned
+     * elsewhere) makes request fail and we refuse to touch the hardware. */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
-        if (pm->fun->request(pm, g->pinmux_port, (uint8_t)g->pin, 0, g->parent.name) != 0) {
+        if (pm->fun->request(pm, g->port, g->pin, g->af, g->parent.name) != 0) {
             printf("[gpio] %s: pin P%c%d CONFLICT — refused\r\n",
-                   g->parent.name, 'A' + g->pinmux_port, (int)g->pin);
+                   g->parent.name, 'A' + g->port, (int)g->pin);
             return -2;                       /* conflict: do NOT configure */
         }
         pinmux_pin_cfg_t cfg = {
-            .af = 0, .mode = (uint8_t)g->mode, .otype = 0, .speed = 3, .pupd = 0
+            .af = g->af, .mode = (uint8_t)g->mode, .otype = 0, .speed = 3, .pupd = 0
         };
-        pm->fun->config(pm, g->pinmux_port, (uint8_t)g->pin, &cfg);
+        pm->fun->config(pm, g->port, g->pin, &cfg);
         return 0;                            /* pinmux owns the GPIO registers now */
     }
 

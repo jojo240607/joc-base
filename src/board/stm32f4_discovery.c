@@ -30,19 +30,21 @@
 /* ---- board devices as DATA (each driver's own config, filled by the board) */
 static const pinmux_config_t g_pinmux = { "pinmux" };
 static const adc_config_t  g_adc0  = { "adc0",  (void *)ADC1, 0, 3300,
-                                       { PINMUX_PORT_A, 0, 0 } };   /* ADC1_IN0 */
+                                       "ADC1_IN0" };          /* PA0, af=0 */
 static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1,
-                                       { PINMUX_PORT_A, 9, 7 },     /* TX = PA9, AF7 */
-                                       { PINMUX_PORT_A, 10, 7 } };  /* RX = PA10, AF7 */
-static const gpio_config_t g_led   = { "led",   (void *)GPIOD, 12, 1, PINMUX_PORT_D };
+                                       "USART1_TX_PA9",        /* TX = PA9, AF7 */
+                                       "USART1_RX_PA10" };     /* RX = PA10, AF7 */
+static const gpio_config_t g_led   = { "led",   "GPIOD_12", 1 }; /* D12, output */
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
- * Each driver now claims and configures its own pins through the pinmux at
- * open() time, using the signal names supplied above — so a pin conflict is
- * rejected before any GPIO register is touched, instead of being logged here. */
+ * Each driver claims and configures its own pins through the pinmux at open()
+ * time, using the SIGNAL NAMES supplied above. The pinmux resolves each name
+ * to its exact (port, pin, af) — so a pin conflict is rejected before any GPIO
+ * register is touched, instead of being logged here. The board never lists a
+ * raw (port, pin, af) triple: the AF database is the single source of truth. */
 static const board_node_t g_nodes[] = {
     { pinmux_create,      &g_pinmux },
     { clock_create,       &g_clk },

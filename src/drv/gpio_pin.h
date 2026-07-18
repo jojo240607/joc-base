@@ -33,8 +33,10 @@ struct _gpio_pin {
     const struct gpio_pinFun *fun;
     gpio_hal_handle_t *hal;       /* opaque — driver never dereferences it */
     uint32_t mode;                /* cached direction (0=in,1=out,2=alt) */
-    pinmux_port_t pinmux_port;    /* cached port index for pinmux claim */
-    uint32_t pin;                 /* cached pin number for pinmux claim */
+    const char *signal;           /* cached signal name (e.g. "GPIOD_12") */
+    pinmux_port_t port;           /* resolved port for pinmux claim + HAL */
+    uint8_t pin;                  /* resolved pin for pinmux claim + HAL */
+    uint8_t af;                   /* resolved af (0 for plain GPIO) */
 };
 
 device *gpio_pin_create(const void *config);
@@ -46,14 +48,9 @@ void gpio_pin_deinit(gpio_pin *self);
  * board. The board layer instantiates this as DATA; gpio_pin_create() reads it. */
 typedef struct {
     const char *name;       /* logical device name */
-    void *periph;           /* GPIOD (board layer only, kept for the HAL handle) */
-    uint32_t pin;           /* pin number */
+    const char *signal;     /* pin signal name, e.g. "GPIOD_12" (resolved to
+                               the exact port/pin by the pinmux at create/open) */
     uint32_t mode;          /* 0 = in, 1 = out, 2 = alt */
-    /* pinmux integration: the port index used to claim THIS pin through the
-     * conflict arbitrator at open() time. A plain GPIO pin is identified only
-     * by (port, pin) — there is no "signal name" for it, so we claim it
-     * directly with af = 0 (generic, no AF-database entry needed). */
-    pinmux_port_t pinmux_port;  /* e.g. PINMUX_PORT_D */
 } gpio_config_t;
 
 extern const struct gpio_pinFun gpio_pin_fun;

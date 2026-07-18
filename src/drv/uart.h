@@ -3,7 +3,6 @@
 
 #include "iface/device.h"
 #include "uart_hal.h"         /* opaque handle ONLY — no STM32 types reach the driver */
-#include "pinmux_hal.h"       /* pinmux_pin_t (explicit pin tuple for the board) */
 #include <stdint.h>
 
 /* device-level control commands for the UART driver */
@@ -31,8 +30,8 @@ struct _uart {
     device parent;                /* unified interface — MUST be first member */
     const struct uartFun *fun;
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
-    pinmux_pin_t tx;              /* cached TX pin (port, pin, af) */
-    pinmux_pin_t rx;              /* cached RX pin (port, pin, af) */
+    const char *tx_signal;        /* cached TX signal name (resolved at open) */
+    const char *rx_signal;        /* cached RX signal name (resolved at open) */
 };
 
 device *uart_create(const void *config);
@@ -47,12 +46,12 @@ typedef struct {
     void *periph;           /* USART1 (board layer only) */
     uint32_t baud;          /* baud rate */
     uint8_t is_console;     /* 1 => install as the printf console */
-    /* Exact pins to claim, supplied by the board. Using the concrete
-     * (port, pin, af) triple (not a signal name) means a peripheral that can
-     * sit on several pins (USART1_TX on PA9 OR PB6) is always resolved to the
-     * specific pin the board chose — no ambiguity. af = 7 for USART1. */
-    pinmux_pin_t tx;        /* e.g. {PINMUX_PORT_A, 9, 7} */
-    pinmux_pin_t rx;        /* e.g. {PINMUX_PORT_A, 10, 7} */
+    /* Signal names to claim, supplied by the board. The pinmux resolves each
+     * name (e.g. "USART1_TX_PA9") to its exact (port, pin, af) — so a peripheral
+     * that can sit on several pads is chosen unambiguously by name, with no
+     * duplicate-name ambiguity in the AF database (suffixes guarantee uniqueness). */
+    const char *tx_signal;  /* e.g. "USART1_TX_PA9" */
+    const char *rx_signal;  /* e.g. "USART1_RX_PA10" */
 } uart_config_t;
 
 /* console helpers (module-level singleton used by syscalls _write) */

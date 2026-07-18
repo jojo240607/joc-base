@@ -3,7 +3,7 @@
 
 #include "iface/device.h"
 #include "adc_hal.h"          /* opaque handle ONLY — no STM32 types reach the driver */
-#include "pinmux_hal.h"       /* pinmux_pin_t (explicit pin tuple for the board) */
+#include "pinmux_hal.h"       /* pinmux_port_t (resolved port for the pinmux claim) */
 #include <stdint.h>
 
 /* device-level control commands for the ADC driver (passed to device_ioctl) */
@@ -38,7 +38,10 @@ struct _adc {
     adc_hal_handle_t *hal;        /* opaque — driver never dereferences it */
     uint32_t channel;            /* logical channel (0..N), kept as driver state */
     uint32_t vdda_mv;            /* supply voltage in mV (default 3300) */
-    pinmux_pin_t ain;            /* cached analog input pin (port, pin, af=0) */
+    const char *ain_signal;      /* cached analog-input signal name (e.g. "ADC1_IN0") */
+    pinmux_port_t port;          /* resolved port for pinmux claim */
+    uint8_t pin;                 /* resolved pin for pinmux claim */
+    uint8_t af;                  /* resolved af (0 for analog) */
 };
 
 /* The board fills adc_config_t (defined below) as DATA and passes it in; the
@@ -57,10 +60,11 @@ typedef struct {
     void *periph;           /* ADC1 (board layer only) */
     uint32_t channel;       /* default / logical channel */
     uint32_t vdda_mv;       /* supply voltage in mV */
-    /* Exact analog input pin to claim, supplied by the board. Using the
-     * concrete (port, pin) (af = 0 for analog) avoids any name lookup and a
-     * pin conflict is rejected before the analog GPIO register is touched. */
-    pinmux_pin_t ain;       /* e.g. {PINMUX_PORT_A, 0, 0} for ADC1_IN0 */
+    /* Analog-input signal name to claim, supplied by the board. The pinmux
+     * resolves it (e.g. "ADC1_IN0" -> PA0, af=0) to the exact pad, so a pin
+     * conflict is rejected before the analog GPIO register is touched. Leave
+     * NULL for internal channels (16/17/18) that need no GPIO pin. */
+    const char *ain_signal; /* e.g. "ADC1_IN0" */
 } adc_config_t;
 
 extern const struct adcFun adc_fun;

@@ -48,8 +48,8 @@ device *uart_create(const void *config)
     if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
     self->parent.name = c->name;             /* driver sets its own name */
-    self->tx = c->tx;                        /* cache pins for pinmux claim at open() */
-    self->rx = c->rx;
+    self->tx_signal = c->tx_signal;          /* cache names for pinmux claim at open() */
+    self->rx_signal = c->rx_signal;
     uart_init(self);
     if (c->is_console) uart_set_console(self);
     return (device *)self;
@@ -106,29 +106,45 @@ static int uart_dev_open(device *self)
     uart *u = (uart *)self;
 
     /* Claim + program the TX/RX pins through the pinmux BEFORE touching any
-     * GPIO register. The board supplied the exact (port, pin, af) for each
-     * signal, so there is NO name ambiguity (a name like "USART1_TX" can map
-     * to several pins). If a pin is already owned by another device the
-     * request fails and we refuse to configure it — that is the arbitrator. */
+     * GPIO register. The board supplied a SIGNAL NAME (e.g. "USART1_TX_PA9");
+     * pinmux_hal_resolve() turns it into the exact (port, pin, af). Because the
+     * AF database has NO duplicate names (suffixes guarantee uniqueness), the
+     * name maps to exactly one pad — no "first match wins" ambiguity. If a pin
+     * is already owned by another device the request fails and we refuse to
+     * configure it (and roll back any pin already claimed) — that is the
+     * arbitrator. */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
-        pinmux_pin_cfg_t cfg = {
-            .af = u->tx.af, .mode = 2, .otype = 0, .speed = 3, .pupd = 0
-        };
-        if (pm->fun->request(pm, u->tx.port, u->tx.pin, u->tx.af, u->parent.name) != 0) {
+        pinmux_port_t port; uint8_t pin, af;
+        pinmux_pin_cfg_t cfg = { .mode = 2, .otype = 0, .speed = 3, .pupd = 0 };
+
+        /* TX */
+        if (!pinmux_hal_resolve(u->tx_signal, &port, &pin, &af)) {
+            printf("[uart] %s: unknown TX signal \"%s\"\r\n", u->parent.name, u->tx_signal);
+            return -3;
+        }
+        if (pm->fun->request(pm, port, pin, af, u->parent.name) != 0) {
             printf("[uart] %s: TX pin P%c%d CONFLICT — refused\r\n",
-                   u->parent.name, 'A' + u->tx.port, u->tx.pin);
+                   u->parent.name, 'A' + port, pin);
             return -2;                       /* conflict: do NOT configure */
         }
-        pm->fun->config(pm, u->tx.port, u->tx.pin, &cfg);
+        cfg.af = af;
+        pm->fun->config(pm, port, pin, &cfg);
 
-        cfg.af = u->rx.af;
-        if (pm->fun->request(pm, u->rx.port, u->rx.pin, u->rx.af, u->parent.name) != 0) {
+        /* RX */
+        if (!pinmux_hal_resolve(u->rx_signal, &port, &pin, &af)) {
+            printf("[uart] %s: unknown RX signal \"%s\"\r\n", u->parent.name, u->rx_signal);
+            pm->fun->release_owner(pm, u->parent.name);   /* roll back TX */
+            return -3;
+        }
+        if (pm->fun->request(pm, port, pin, af, u->parent.name) != 0) {
             printf("[uart] %s: RX pin P%c%d CONFLICT — refused\r\n",
-                   u->parent.name, 'A' + u->rx.port, u->rx.pin);
+                   u->parent.name, 'A' + port, pin);
+            pm->fun->release_owner(pm, u->parent.name);   /* roll back TX */
             return -2;
         }
-        pm->fun->config(pm, u->rx.port, u->rx.pin, &cfg);
+        cfg.af = af;
+        pm->fun->config(pm, port, pin, &cfg);
     }
 
     uart_hal_init(u->hal);

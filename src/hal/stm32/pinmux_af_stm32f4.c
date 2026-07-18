@@ -1,5 +1,6 @@
 #include "pinmux_hal.h"
 #include <string.h>
+#include <stdlib.h>      /* atoi — for the generic "GPIOx_NN" name parser */
 
 /*
  * STM32F407xx ALTERNATE-FUNCTION MATRIX
@@ -17,8 +18,14 @@
  *   DCMI (camera)                    SYS / debug (JTAG-SWD, MCO)
  *
  * Naming: "<PERIPH>_<SIGNAL>" (e.g. "USART1_TX", "SPI2_SCK", "TIM1_CH1",
- * "ADC1_IN0", "ETH_RMII_TXD0"). When a signal exists on several pins each
- * appears as its own row; the pinmux simply picks whichever the board wants.
+ * "ADC1_IN0", "ETH_RMII_TXD0"). A signal that can appear on SEVERAL pins gets a
+ * "_P<port><pin>" suffix so every name is UNIQUE and the board can pick the
+ * exact pad unambiguously — e.g. "USART1_TX_PA9" (PA9) vs "USART1_TX_PB6" (PB6).
+ * The pinmux resolves the name the board supplies to its (port, pin, af).
+ *
+ * Plain GPIO pins are NOT listed here: they are named "GPIO<port><pin>"
+ * (e.g. "GPIOD_12") and resolved generically by pinmux_hal_resolve() without a
+ * database row, so any GPIO pad is reachable with no per-pin table entry.
  *
  * AF numbers for analog inputs (ADCx_INy, DAC_x) are 0 — the pinmux only uses
  * the (port, pin) for those, which is enough to block conflicting use.
@@ -34,40 +41,40 @@ typedef struct {
 
 static const af_entry_t g_af[] = {
     /* ---------------- USART / UART ---------------- */
-    {PINMUX_PORT_A, 9, 7, "USART1_TX"},
-    {PINMUX_PORT_A,10, 7, "USART1_RX"},
+    {PINMUX_PORT_A, 9, 7, "USART1_TX_PA9"},
+    {PINMUX_PORT_A, 10, 7, "USART1_RX_PA10"},
     {PINMUX_PORT_A, 8, 7, "USART1_CK"},
     {PINMUX_PORT_A,12, 7, "USART1_RTS"},
     {PINMUX_PORT_A,11, 7, "USART1_CTS"},
-    {PINMUX_PORT_B, 6, 7, "USART1_TX"},
-    {PINMUX_PORT_B, 7, 7, "USART1_RX"},
+    {PINMUX_PORT_B, 6, 7, "USART1_TX_PB6"},
+    {PINMUX_PORT_B, 7, 7, "USART1_RX_PB7"},
 
-    {PINMUX_PORT_A, 2, 7, "USART2_TX"},
-    {PINMUX_PORT_A, 3, 7, "USART2_RX"},
-    {PINMUX_PORT_A, 4, 7, "USART2_CK"},
-    {PINMUX_PORT_A, 1, 7, "USART2_RTS"},
-    {PINMUX_PORT_A, 0, 7, "USART2_CTS"},
-    {PINMUX_PORT_D, 5, 7, "USART2_TX"},
-    {PINMUX_PORT_D, 6, 7, "USART2_RX"},
-    {PINMUX_PORT_D, 7, 7, "USART2_CK"},
-    {PINMUX_PORT_D, 4, 7, "USART2_RTS"},
-    {PINMUX_PORT_D, 3, 7, "USART2_CTS"},
+    {PINMUX_PORT_A, 2, 7, "USART2_TX_PA2"},
+    {PINMUX_PORT_A, 3, 7, "USART2_RX_PA3"},
+    {PINMUX_PORT_A, 4, 7, "USART2_CK_PA4"},
+    {PINMUX_PORT_A, 1, 7, "USART2_RTS_PA1"},
+    {PINMUX_PORT_A, 0, 7, "USART2_CTS_PA0"},
+    {PINMUX_PORT_D, 5, 7, "USART2_TX_PD5"},
+    {PINMUX_PORT_D, 6, 7, "USART2_RX_PD6"},
+    {PINMUX_PORT_D, 7, 7, "USART2_CK_PD7"},
+    {PINMUX_PORT_D, 4, 7, "USART2_RTS_PD4"},
+    {PINMUX_PORT_D, 3, 7, "USART2_CTS_PD3"},
 
-    {PINMUX_PORT_B,10, 7, "USART3_TX"},
-    {PINMUX_PORT_B,11, 7, "USART3_RX"},
-    {PINMUX_PORT_B,12, 7, "USART3_CK"},
+    {PINMUX_PORT_B, 10, 7, "USART3_TX_PB10"},
+    {PINMUX_PORT_B, 11, 7, "USART3_RX_PB11"},
+    {PINMUX_PORT_B, 12, 7, "USART3_CK_PB12"},
     {PINMUX_PORT_B,14, 7, "USART3_RTS"},
     {PINMUX_PORT_B,13, 7, "USART3_CTS"},
-    {PINMUX_PORT_C,10, 7, "USART3_TX"},
-    {PINMUX_PORT_C,11, 7, "USART3_RX"},
-    {PINMUX_PORT_C,12, 7, "USART3_CK"},
-    {PINMUX_PORT_D, 8, 7, "USART3_TX"},
-    {PINMUX_PORT_D, 9, 7, "USART3_RX"},
+    {PINMUX_PORT_C, 10, 7, "USART3_TX_PC10"},
+    {PINMUX_PORT_C, 11, 7, "USART3_RX_PC11"},
+    {PINMUX_PORT_C, 12, 7, "USART3_CK_PC12"},
+    {PINMUX_PORT_D, 8, 7, "USART3_TX_PD8"},
+    {PINMUX_PORT_D, 9, 7, "USART3_RX_PD9"},
 
-    {PINMUX_PORT_A, 0, 8, "UART4_TX"},
-    {PINMUX_PORT_A, 1, 8, "UART4_RX"},
-    {PINMUX_PORT_C,10, 8, "UART4_TX"},
-    {PINMUX_PORT_C,11, 8, "UART4_RX"},
+    {PINMUX_PORT_A, 0, 8, "UART4_TX_PA0"},
+    {PINMUX_PORT_A, 1, 8, "UART4_RX_PA1"},
+    {PINMUX_PORT_C, 10, 8, "UART4_TX_PC10"},
+    {PINMUX_PORT_C, 11, 8, "UART4_RX_PC11"},
 
     {PINMUX_PORT_C,12, 8, "UART5_TX"},
     {PINMUX_PORT_D, 2, 8, "UART5_RX"},
@@ -79,32 +86,32 @@ static const af_entry_t g_af[] = {
     {PINMUX_PORT_G, 9, 8, "USART6_CTS"},
 
     /* ---------------- SPI / I2S ---------------- */
-    {PINMUX_PORT_A, 5, 5, "SPI1_SCK"},
-    {PINMUX_PORT_A, 6, 5, "SPI1_MISO"},
-    {PINMUX_PORT_A, 7, 5, "SPI1_MOSI"},
-    {PINMUX_PORT_A, 4, 5, "SPI1_NSS"},
-    {PINMUX_PORT_B, 3, 5, "SPI1_SCK"},
-    {PINMUX_PORT_B, 4, 5, "SPI1_MISO"},
-    {PINMUX_PORT_B, 5, 5, "SPI1_MOSI"},
-    {PINMUX_PORT_A,15, 5, "SPI1_NSS"},
+    {PINMUX_PORT_A, 5, 5, "SPI1_SCK_PA5"},
+    {PINMUX_PORT_A, 6, 5, "SPI1_MISO_PA6"},
+    {PINMUX_PORT_A, 7, 5, "SPI1_MOSI_PA7"},
+    {PINMUX_PORT_A, 4, 5, "SPI1_NSS_PA4"},
+    {PINMUX_PORT_B, 3, 5, "SPI1_SCK_PB3"},
+    {PINMUX_PORT_B, 4, 5, "SPI1_MISO_PB4"},
+    {PINMUX_PORT_B, 5, 5, "SPI1_MOSI_PB5"},
+    {PINMUX_PORT_A, 15, 5, "SPI1_NSS_PA15"},
 
-    {PINMUX_PORT_B,13, 5, "SPI2_SCK"},
-    {PINMUX_PORT_B,14, 5, "SPI2_MISO"},
-    {PINMUX_PORT_B,15, 5, "SPI2_MOSI"},
-    {PINMUX_PORT_B,12, 5, "SPI2_NSS"},
-    {PINMUX_PORT_I, 1, 5, "SPI2_SCK"},
-    {PINMUX_PORT_I, 2, 5, "SPI2_MISO"},
-    {PINMUX_PORT_I, 3, 5, "SPI2_MOSI"},
-    {PINMUX_PORT_I, 0, 5, "SPI2_NSS"},
+    {PINMUX_PORT_B, 13, 5, "SPI2_SCK_PB13"},
+    {PINMUX_PORT_B, 14, 5, "SPI2_MISO_PB14"},
+    {PINMUX_PORT_B, 15, 5, "SPI2_MOSI_PB15"},
+    {PINMUX_PORT_B, 12, 5, "SPI2_NSS_PB12"},
+    {PINMUX_PORT_I, 1, 5, "SPI2_SCK_PI1"},
+    {PINMUX_PORT_I, 2, 5, "SPI2_MISO_PI2"},
+    {PINMUX_PORT_I, 3, 5, "SPI2_MOSI_PI3"},
+    {PINMUX_PORT_I, 0, 5, "SPI2_NSS_PI0"},
     {PINMUX_PORT_C, 1, 5, "I2S2_EXTSD"},
 
-    {PINMUX_PORT_B, 3, 6, "SPI3_SCK"},
-    {PINMUX_PORT_B, 4, 6, "SPI3_MISO"},
-    {PINMUX_PORT_B, 5, 6, "SPI3_MOSI"},
+    {PINMUX_PORT_B, 3, 6, "SPI3_SCK_PB3"},
+    {PINMUX_PORT_B, 4, 6, "SPI3_MISO_PB4"},
+    {PINMUX_PORT_B, 5, 6, "SPI3_MOSI_PB5"},
     {PINMUX_PORT_A,15, 6, "SPI3_NSS"},
-    {PINMUX_PORT_C,10, 6, "SPI3_SCK"},
-    {PINMUX_PORT_C,11, 6, "SPI3_MISO"},
-    {PINMUX_PORT_C,12, 6, "SPI3_MOSI"},
+    {PINMUX_PORT_C, 10, 6, "SPI3_SCK_PC10"},
+    {PINMUX_PORT_C, 11, 6, "SPI3_MISO_PC11"},
+    {PINMUX_PORT_C, 12, 6, "SPI3_MOSI_PC12"},
 
     /* I2S1 shares SPI1 pins on AF5 */
     {PINMUX_PORT_A, 4, 5, "I2S1_WS"},
@@ -113,11 +120,11 @@ static const af_entry_t g_af[] = {
     {PINMUX_PORT_C, 4, 5, "I2S1_MCK"},
 
     /* ---------------- I2C ---------------- */
-    {PINMUX_PORT_B, 6, 4, "I2C1_SCL"},
-    {PINMUX_PORT_B, 7, 4, "I2C1_SDA"},
+    {PINMUX_PORT_B, 6, 4, "I2C1_SCL_PB6"},
+    {PINMUX_PORT_B, 7, 4, "I2C1_SDA_PB7"},
     {PINMUX_PORT_B, 5, 4, "I2C1_SMBA"},
-    {PINMUX_PORT_B, 8, 4, "I2C1_SCL"},
-    {PINMUX_PORT_B, 9, 4, "I2C1_SDA"},
+    {PINMUX_PORT_B, 8, 4, "I2C1_SCL_PB8"},
+    {PINMUX_PORT_B, 9, 4, "I2C1_SDA_PB9"},
 
     {PINMUX_PORT_B,10, 4, "I2C2_SCL"},
     {PINMUX_PORT_B,11, 4, "I2C2_SDA"},
@@ -128,117 +135,117 @@ static const af_entry_t g_af[] = {
     {PINMUX_PORT_A, 9, 4, "I2C3_SMBA"},
 
     /* ---------------- TIM1 (AF1) ---------------- */
-    {PINMUX_PORT_A, 8, 1, "TIM1_CH1"},
-    {PINMUX_PORT_A, 9, 1, "TIM1_CH2"},
-    {PINMUX_PORT_A,10, 1, "TIM1_CH3"},
-    {PINMUX_PORT_A,11, 1, "TIM1_CH4"},
-    {PINMUX_PORT_A, 7, 1, "TIM1_CH1N"},
-    {PINMUX_PORT_A, 6, 1, "TIM1_BKIN"},
-    {PINMUX_PORT_A,12, 1, "TIM1_ETR"},
-    {PINMUX_PORT_E, 9, 1, "TIM1_CH1"},
-    {PINMUX_PORT_E,11, 1, "TIM1_CH2"},
-    {PINMUX_PORT_E,13, 1, "TIM1_CH3"},
-    {PINMUX_PORT_E,14, 1, "TIM1_CH4"},
-    {PINMUX_PORT_E, 8, 1, "TIM1_CH1N"},
+    {PINMUX_PORT_A, 8, 1, "TIM1_CH1_PA8"},
+    {PINMUX_PORT_A, 9, 1, "TIM1_CH2_PA9"},
+    {PINMUX_PORT_A, 10, 1, "TIM1_CH3_PA10"},
+    {PINMUX_PORT_A, 11, 1, "TIM1_CH4_PA11"},
+    {PINMUX_PORT_A, 7, 1, "TIM1_CH1N_PA7"},
+    {PINMUX_PORT_A, 6, 1, "TIM1_BKIN_PA6"},
+    {PINMUX_PORT_A, 12, 1, "TIM1_ETR_PA12"},
+    {PINMUX_PORT_E, 9, 1, "TIM1_CH1_PE9"},
+    {PINMUX_PORT_E, 11, 1, "TIM1_CH2_PE11"},
+    {PINMUX_PORT_E, 13, 1, "TIM1_CH3_PE13"},
+    {PINMUX_PORT_E, 14, 1, "TIM1_CH4_PE14"},
+    {PINMUX_PORT_E, 8, 1, "TIM1_CH1N_PE8"},
     {PINMUX_PORT_E,10, 1, "TIM1_CH2N"},
     {PINMUX_PORT_E,12, 1, "TIM1_CH3N"},
-    {PINMUX_PORT_E,15, 1, "TIM1_BKIN"},
-    {PINMUX_PORT_E, 7, 1, "TIM1_ETR"},
+    {PINMUX_PORT_E, 15, 1, "TIM1_BKIN_PE15"},
+    {PINMUX_PORT_E, 7, 1, "TIM1_ETR_PE7"},
 
     /* ---------------- TIM2 (AF1) ---------------- */
-    {PINMUX_PORT_A, 0, 1, "TIM2_CH1"},
-    {PINMUX_PORT_A, 1, 1, "TIM2_CH2"},
-    {PINMUX_PORT_A, 2, 1, "TIM2_CH3"},
-    {PINMUX_PORT_A, 3, 1, "TIM2_CH4"},
-    {PINMUX_PORT_A,15, 1, "TIM2_CH1"},
-    {PINMUX_PORT_B, 3, 1, "TIM2_CH2"},
-    {PINMUX_PORT_B,10, 1, "TIM2_CH3"},
-    {PINMUX_PORT_B,11, 1, "TIM2_CH4"},
+    {PINMUX_PORT_A, 0, 1, "TIM2_CH1_PA0"},
+    {PINMUX_PORT_A, 1, 1, "TIM2_CH2_PA1"},
+    {PINMUX_PORT_A, 2, 1, "TIM2_CH3_PA2"},
+    {PINMUX_PORT_A, 3, 1, "TIM2_CH4_PA3"},
+    {PINMUX_PORT_A, 15, 1, "TIM2_CH1_PA15"},
+    {PINMUX_PORT_B, 3, 1, "TIM2_CH2_PB3"},
+    {PINMUX_PORT_B, 10, 1, "TIM2_CH3_PB10"},
+    {PINMUX_PORT_B, 11, 1, "TIM2_CH4_PB11"},
 
     /* ---------------- TIM3 (AF2) ---------------- */
-    {PINMUX_PORT_A, 6, 2, "TIM3_CH1"},
-    {PINMUX_PORT_A, 7, 2, "TIM3_CH2"},
-    {PINMUX_PORT_B, 0, 2, "TIM3_CH3"},
-    {PINMUX_PORT_B, 1, 2, "TIM3_CH4"},
-    {PINMUX_PORT_C, 6, 2, "TIM3_CH1"},
-    {PINMUX_PORT_C, 7, 2, "TIM3_CH2"},
-    {PINMUX_PORT_C, 8, 2, "TIM3_CH3"},
-    {PINMUX_PORT_C, 9, 2, "TIM3_CH4"},
-    {PINMUX_PORT_E, 2, 2, "TIM3_CH1"},
-    {PINMUX_PORT_E, 3, 2, "TIM3_CH2"},
-    {PINMUX_PORT_E, 4, 2, "TIM3_CH3"},
-    {PINMUX_PORT_E, 5, 2, "TIM3_CH4"},
+    {PINMUX_PORT_A, 6, 2, "TIM3_CH1_PA6"},
+    {PINMUX_PORT_A, 7, 2, "TIM3_CH2_PA7"},
+    {PINMUX_PORT_B, 0, 2, "TIM3_CH3_PB0"},
+    {PINMUX_PORT_B, 1, 2, "TIM3_CH4_PB1"},
+    {PINMUX_PORT_C, 6, 2, "TIM3_CH1_PC6"},
+    {PINMUX_PORT_C, 7, 2, "TIM3_CH2_PC7"},
+    {PINMUX_PORT_C, 8, 2, "TIM3_CH3_PC8"},
+    {PINMUX_PORT_C, 9, 2, "TIM3_CH4_PC9"},
+    {PINMUX_PORT_E, 2, 2, "TIM3_CH1_PE2"},
+    {PINMUX_PORT_E, 3, 2, "TIM3_CH2_PE3"},
+    {PINMUX_PORT_E, 4, 2, "TIM3_CH3_PE4"},
+    {PINMUX_PORT_E, 5, 2, "TIM3_CH4_PE5"},
 
     /* ---------------- TIM4 (AF2) ---------------- */
-    {PINMUX_PORT_B, 6, 2, "TIM4_CH1"},
-    {PINMUX_PORT_B, 7, 2, "TIM4_CH2"},
-    {PINMUX_PORT_B, 8, 2, "TIM4_CH3"},
-    {PINMUX_PORT_B, 9, 2, "TIM4_CH4"},
-    {PINMUX_PORT_D,12, 2, "TIM4_CH1"},
-    {PINMUX_PORT_D,13, 2, "TIM4_CH2"},
-    {PINMUX_PORT_D,14, 2, "TIM4_CH3"},
-    {PINMUX_PORT_D,15, 2, "TIM4_CH4"},
-    {PINMUX_PORT_E, 0, 2, "TIM4_CH1"},
-    {PINMUX_PORT_E, 1, 2, "TIM4_CH2"},
+    {PINMUX_PORT_B, 6, 2, "TIM4_CH1_PB6"},
+    {PINMUX_PORT_B, 7, 2, "TIM4_CH2_PB7"},
+    {PINMUX_PORT_B, 8, 2, "TIM4_CH3_PB8"},
+    {PINMUX_PORT_B, 9, 2, "TIM4_CH4_PB9"},
+    {PINMUX_PORT_D, 12, 2, "TIM4_CH1_PD12"},
+    {PINMUX_PORT_D, 13, 2, "TIM4_CH2_PD13"},
+    {PINMUX_PORT_D, 14, 2, "TIM4_CH3_PD14"},
+    {PINMUX_PORT_D, 15, 2, "TIM4_CH4_PD15"},
+    {PINMUX_PORT_E, 0, 2, "TIM4_CH1_PE0"},
+    {PINMUX_PORT_E, 1, 2, "TIM4_CH2_PE1"},
 
     /* ---------------- TIM5 (AF2) ---------------- */
-    {PINMUX_PORT_A, 0, 2, "TIM5_CH1"},
-    {PINMUX_PORT_A, 1, 2, "TIM5_CH2"},
-    {PINMUX_PORT_A, 2, 2, "TIM5_CH3"},
-    {PINMUX_PORT_A, 3, 2, "TIM5_CH4"},
-    {PINMUX_PORT_H,10, 2, "TIM5_CH1"},
-    {PINMUX_PORT_H,11, 2, "TIM5_CH2"},
-    {PINMUX_PORT_H,12, 2, "TIM5_CH3"},
-    {PINMUX_PORT_I, 0, 2, "TIM5_CH4"},
+    {PINMUX_PORT_A, 0, 2, "TIM5_CH1_PA0"},
+    {PINMUX_PORT_A, 1, 2, "TIM5_CH2_PA1"},
+    {PINMUX_PORT_A, 2, 2, "TIM5_CH3_PA2"},
+    {PINMUX_PORT_A, 3, 2, "TIM5_CH4_PA3"},
+    {PINMUX_PORT_H, 10, 2, "TIM5_CH1_PH10"},
+    {PINMUX_PORT_H, 11, 2, "TIM5_CH2_PH11"},
+    {PINMUX_PORT_H, 12, 2, "TIM5_CH3_PH12"},
+    {PINMUX_PORT_I, 0, 2, "TIM5_CH4_PI0"},
 
     /* ---------------- TIM8 (AF3) ---------------- */
-    {PINMUX_PORT_C, 6, 3, "TIM8_CH1"},
-    {PINMUX_PORT_C, 7, 3, "TIM8_CH2"},
-    {PINMUX_PORT_C, 8, 3, "TIM8_CH3"},
-    {PINMUX_PORT_C, 9, 3, "TIM8_CH4"},
+    {PINMUX_PORT_C, 6, 3, "TIM8_CH1_PC6"},
+    {PINMUX_PORT_C, 7, 3, "TIM8_CH2_PC7"},
+    {PINMUX_PORT_C, 8, 3, "TIM8_CH3_PC8"},
+    {PINMUX_PORT_C, 9, 3, "TIM8_CH4_PC9"},
     {PINMUX_PORT_A, 7, 3, "TIM8_CH1N"},
     {PINMUX_PORT_A, 6, 3, "TIM8_BKIN"},
     {PINMUX_PORT_A, 0, 3, "TIM8_ETR"},
-    {PINMUX_PORT_I, 5, 3, "TIM8_CH1"},
-    {PINMUX_PORT_I, 6, 3, "TIM8_CH2"},
-    {PINMUX_PORT_I, 7, 3, "TIM8_CH3"},
-    {PINMUX_PORT_I, 2, 3, "TIM8_CH4"},
+    {PINMUX_PORT_I, 5, 3, "TIM8_CH1_PI5"},
+    {PINMUX_PORT_I, 6, 3, "TIM8_CH2_PI6"},
+    {PINMUX_PORT_I, 7, 3, "TIM8_CH3_PI7"},
+    {PINMUX_PORT_I, 2, 3, "TIM8_CH4_PI2"},
 
     /* ---------------- TIM9 (AF3) ---------------- */
-    {PINMUX_PORT_A, 2, 3, "TIM9_CH1"},
-    {PINMUX_PORT_A, 3, 3, "TIM9_CH2"},
-    {PINMUX_PORT_E, 5, 3, "TIM9_CH1"},
-    {PINMUX_PORT_E, 6, 3, "TIM9_CH2"},
+    {PINMUX_PORT_A, 2, 3, "TIM9_CH1_PA2"},
+    {PINMUX_PORT_A, 3, 3, "TIM9_CH2_PA3"},
+    {PINMUX_PORT_E, 5, 3, "TIM9_CH1_PE5"},
+    {PINMUX_PORT_E, 6, 3, "TIM9_CH2_PE6"},
 
     /* ---------------- TIM10 (AF3) ---------------- */
-    {PINMUX_PORT_B, 8, 3, "TIM10_CH1"},
-    {PINMUX_PORT_F, 6, 3, "TIM10_CH1"},
+    {PINMUX_PORT_B, 8, 3, "TIM10_CH1_PB8"},
+    {PINMUX_PORT_F, 6, 3, "TIM10_CH1_PF6"},
 
     /* ---------------- TIM11 (AF3) ---------------- */
-    {PINMUX_PORT_B, 9, 3, "TIM11_CH1"},
-    {PINMUX_PORT_F, 7, 3, "TIM11_CH1"},
+    {PINMUX_PORT_B, 9, 3, "TIM11_CH1_PB9"},
+    {PINMUX_PORT_F, 7, 3, "TIM11_CH1_PF7"},
 
     /* ---------------- TIM12 (AF9) ---------------- */
-    {PINMUX_PORT_B,14, 9, "TIM12_CH1"},
-    {PINMUX_PORT_B,15, 9, "TIM12_CH2"},
-    {PINMUX_PORT_C, 4, 9, "TIM12_CH1"},
-    {PINMUX_PORT_C, 5, 9, "TIM12_CH2"},
+    {PINMUX_PORT_B, 14, 9, "TIM12_CH1_PB14"},
+    {PINMUX_PORT_B, 15, 9, "TIM12_CH2_PB15"},
+    {PINMUX_PORT_C, 4, 9, "TIM12_CH1_PC4"},
+    {PINMUX_PORT_C, 5, 9, "TIM12_CH2_PC5"},
 
     /* ---------------- TIM13 (AF9) ---------------- */
-    {PINMUX_PORT_A, 6, 9, "TIM13_CH1"},
-    {PINMUX_PORT_F, 8, 9, "TIM13_CH1"},
+    {PINMUX_PORT_A, 6, 9, "TIM13_CH1_PA6"},
+    {PINMUX_PORT_F, 8, 9, "TIM13_CH1_PF8"},
 
     /* ---------------- TIM14 (AF9) ---------------- */
-    {PINMUX_PORT_A, 7, 9, "TIM14_CH1"},
-    {PINMUX_PORT_F, 9, 9, "TIM14_CH1"},
+    {PINMUX_PORT_A, 7, 9, "TIM14_CH1_PA7"},
+    {PINMUX_PORT_F, 9, 9, "TIM14_CH1_PF9"},
 
     /* ---------------- CAN ---------------- */
-    {PINMUX_PORT_A,12, 9, "CAN1_TX"},
-    {PINMUX_PORT_A,11, 9, "CAN1_RX"},
-    {PINMUX_PORT_B, 9, 9, "CAN1_TX"},
-    {PINMUX_PORT_B, 8, 9, "CAN1_RX"},
-    {PINMUX_PORT_D, 1, 9, "CAN1_TX"},
-    {PINMUX_PORT_D, 0, 9, "CAN1_RX"},
+    {PINMUX_PORT_A, 12, 9, "CAN1_TX_PA12"},
+    {PINMUX_PORT_A, 11, 9, "CAN1_RX_PA11"},
+    {PINMUX_PORT_B, 9, 9, "CAN1_TX_PB9"},
+    {PINMUX_PORT_B, 8, 9, "CAN1_RX_PB8"},
+    {PINMUX_PORT_D, 1, 9, "CAN1_TX_PD1"},
+    {PINMUX_PORT_D, 0, 9, "CAN1_RX_PD0"},
 
     {PINMUX_PORT_B,13, 9, "CAN2_TX"},
     {PINMUX_PORT_B,12, 9, "CAN2_RX"},
@@ -403,6 +410,21 @@ int pinmux_hal_resolve(const char *signal,
             if (port) *port = g_af[i].port;
             if (pin)  *pin  = g_af[i].pin;
             if (af)   *af   = g_af[i].af;
+            return 1;
+        }
+    }
+
+    /* Generic GPIO pins: "GPIO<port><pin>" (e.g. "GPIOD_12") resolve without a
+     * database row, so any GPIO pad is reachable by name. af is 0 (GPIO). */
+    if (signal[0] == 'G' && signal[1] == 'P' && signal[2] == 'I' &&
+        signal[3] == 'O' && signal[4] >= 'A' && signal[4] <= 'I' &&
+        signal[5] == '_') {
+        pinmux_port_t p = (pinmux_port_t)(signal[4] - 'A');
+        int n = atoi(&signal[6]);
+        if (p < PINMUX_PORT_COUNT && n >= 0 && n < 16) {
+            if (port) *port = p;
+            if (pin)  *pin  = (uint8_t)n;
+            if (af)   *af   = 0;
             return 1;
         }
     }
