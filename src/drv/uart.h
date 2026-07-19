@@ -3,7 +3,11 @@
 
 #include "iface/device.h"
 #include "uart_hal.h"         /* opaque handle ONLY — no STM32 types reach the driver */
+#include "irq.h"              /* platform-independent interrupt API (irq_register/enable) */
 #include <stdint.h>
+
+/* Size of the RX ring buffer fed by the UART receive ISR. */
+#define UART_RX_BUF_SIZE 64
 
 /* device-level control commands for the UART driver */
 #define UART_IOCTL_SET_BAUDRATE 0x01   /* arg: const uint32_t* baud */
@@ -32,6 +36,11 @@ struct _uart {
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
     const char *tx_signal;        /* cached TX signal name (resolved at open) */
     const char *rx_signal;        /* cached RX signal name (resolved at open) */
+    /* RX ring buffer fed by the receive ISR (registered via the platform-
+     * independent irq framework). The ISR pushes bytes; read()/getc() drain. */
+    char rx_buf[UART_RX_BUF_SIZE];
+    volatile uint16_t rx_head;    /* advanced by the ISR (interrupt context) */
+    volatile uint16_t rx_tail;    /* advanced by read()/getc() (thread context) */
 };
 
 device *uart_create(const void *config);

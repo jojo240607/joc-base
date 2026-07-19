@@ -22,6 +22,8 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/temp_sensor.c
     src/drv/uart.c
     src/drv/pinmux.c
+    # interrupt framework (platform-independent API + callback registry)
+    src/irq/irq.c
     # device manager (generic name -> device* registry — platform-independent)
     src/devmgr/device_manager.c
     # board layer (per-board: the only place that knows the real peripherals)
@@ -34,6 +36,7 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/temp_hal.c
     src/hal/stm32/pinmux_hal.c
     src/hal/stm32/pinmux_af_stm32f4.c
+    src/hal/stm32/irq_hal.c
     src/selftest.c
     startup/startup_stm32f407xx.s
 )
@@ -48,6 +51,7 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/board
     src/hal
     src/hal/stm32
+    src/irq
 )
 
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE

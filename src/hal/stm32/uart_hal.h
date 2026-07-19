@@ -2,6 +2,7 @@
 #define UART_HAL_H
 
 #include <stdint.h>
+#include "irq.h"              /* irq_id_t — the HAL returns the platform irq id */
 
 /*
  * Hardware Abstraction Layer — USART (STM32 implementation).
@@ -23,6 +24,13 @@ void uart_hal_set_baudrate(uart_hal_handle_t *h, uint32_t baud);
 void uart_hal_putc(uart_hal_handle_t *h, char c);
 char uart_hal_getc(uart_hal_handle_t *h);
 uint32_t uart_hal_get_baudrate(uart_hal_handle_t *h); /* read back logical baud */
+
+/* --- interrupt support (used by the driver via the platform-independent
+ *     irq framework: it registers uart_hal_irq_id() with irq_register) --- */
+char uart_hal_read_dr(uart_hal_handle_t *h);     /* read DR (clears RXNE) */
+void uart_hal_enable_rx_irq(uart_hal_handle_t *h);  /* set USART_CR1_RXNEIE */
+void uart_hal_disable_rx_irq(uart_hal_handle_t *h); /* clear USART_CR1_RXNEIE */
+irq_id_t uart_hal_irq_id(uart_hal_handle_t *h);    /* chip IRQn for this USART */
 uint32_t uart_hal_get_brr(uart_hal_handle_t *h);   /* read back BRR for self-test */
 uint32_t uart_hal_get_cr1(uart_hal_handle_t *h);   /* read back CR1 for self-test */
 

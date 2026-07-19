@@ -64,6 +64,39 @@ char uart_hal_getc(uart_hal_handle_t *h)
     return (char)(h->usart->DR & 0xFFU);
 }
 
+/* Read the data register WITHOUT blocking. Used by the receive ISR: reading DR
+ * clears the RXNE flag, so the interrupt will not re-fire. */
+char uart_hal_read_dr(uart_hal_handle_t *h)
+{
+    if (!h) return 0;
+    return (char)(h->usart->DR & 0xFFU);
+}
+
+void uart_hal_enable_rx_irq(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR1 |= USART_CR1_RXNEIE;
+}
+
+void uart_hal_disable_rx_irq(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR1 &= ~USART_CR1_RXNEIE;
+}
+
+/* Return the chip interrupt id for this USART so the driver can register its
+ * ISR through the platform-independent irq framework without naming a
+ * Cortex-M / STM32 interrupt directly. */
+irq_id_t uart_hal_irq_id(uart_hal_handle_t *h)
+{
+    if (!h) return (irq_id_t)0;
+    if (h->usart == USART1) return (irq_id_t)USART1_IRQn;
+    if (h->usart == USART2) return (irq_id_t)USART2_IRQn;
+    if (h->usart == USART3) return (irq_id_t)USART3_IRQn;
+    if (h->usart == UART4)  return (irq_id_t)UART4_IRQn;
+    if (h->usart == UART5)  return (irq_id_t)UART5_IRQn;
+    if (h->usart == USART6) return (irq_id_t)USART6_IRQn;
+    return (irq_id_t)0;
+}
+
 uint32_t uart_hal_get_baudrate(uart_hal_handle_t *h)
 {
     return h ? h->baudrate : 0UL;

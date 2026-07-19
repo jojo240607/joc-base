@@ -18,6 +18,12 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg);
 static void uart_set_baudrate(uart *self, uint32_t baud);
 static char uart_getc(uart *self);
 
+/* RX ring-buffer + ISR helpers (defined below; declared here so uart_getc can
+ * call uart_rx_getc before its definition). */
+static void uart_rx_putc(uart *self, char c);
+static char uart_rx_getc(uart *self);
+static void uart_isr(void *ctx);
+
 const struct uartFun uart_fun = {
     .destroy      = uart_destroy,
     .init         = uart_init,
@@ -96,7 +102,37 @@ void uart_console_putc(char c)
 
 static char uart_getc(uart *self)
 {
-    return self ? uart_hal_getc(self->hal) : 0;
+    /* drain the RX ring buffer (filled by the receive ISR) */
+    return self ? uart_rx_getc(self) : 0;
+}
+
+/* --- RX ring buffer + interrupt ISR (platform-independent irq framework) --- */
+
+/* Push one received byte into the ring buffer (called from interrupt context). */
+static void uart_rx_putc(uart *self, char c)
+{
+    uint16_t next = (uint16_t)((self->rx_head + 1U) % UART_RX_BUF_SIZE);
+    if (next != self->rx_tail) {            /* drop on overflow */
+        self->rx_buf[self->rx_head] = c;
+        self->rx_head = next;
+    }
+}
+
+/* Pop one byte, blocking until the ISR delivers one (thread context). */
+static char uart_rx_getc(uart *self)
+{
+    while (self->rx_head == self->rx_tail) { /* wait for the ISR to fill */ }
+    char c = self->rx_buf[self->rx_tail];
+    self->rx_tail = (uint16_t)((self->rx_tail + 1U) % UART_RX_BUF_SIZE);
+    return c;
+}
+
+/* The receive ISR callback. Registered with the framework via irq_register()
+ * (see uart_dev_open); `ctx` is the uart instance. Reading DR clears RXNE. */
+static void uart_isr(void *ctx)
+{
+    uart *u = (uart *)ctx;
+    uart_rx_putc(u, uart_hal_read_dr(u->hal));
 }
 
 /* --- unified device-interface virtual implementations --- */
@@ -148,12 +184,28 @@ static int uart_dev_open(device *self)
     }
 
     uart_hal_init(u->hal);
+
+    /* Wire the RX interrupt through the PLATFORM-INDEPENDENT irq framework.
+     * The driver registers a callback + its own context; the HAL supplies the
+     * chip IRQ number (uart_hal_irq_id), so the driver never names a Cortex-M /
+     * STM32 interrupt directly. The ISR (uart_isr) reads DR and fills the ring
+     * buffer; read()/getc() then drain it. */
+    irq_id_t rx_irq = uart_hal_irq_id(u->hal);
+    irq_register(rx_irq, uart_isr, u);
+    irq_set_priority(rx_irq, 0);
+    uart_hal_enable_rx_irq(u->hal);
+    irq_enable(rx_irq);
     return 0;
 }
 
 static int uart_dev_close(device *self)
 {
-    uart_hal_deinit(((uart *)self)->hal);
+    uart *u = (uart *)self;
+    irq_id_t rx_irq = uart_hal_irq_id(u->hal);
+    irq_disable(rx_irq);                 /* stop the ISR first */
+    uart_hal_disable_rx_irq(u->hal);
+    irq_register(rx_irq, NULL, NULL);   /* uninstall the callback */
+    uart_hal_deinit(u->hal);
     return 0;
 }
 
@@ -161,7 +213,7 @@ static int uart_dev_read(device *self, void *buf, size_t len)
 {
     uart *u = (uart *)self;
     if (len < 1 || !buf) return -1;
-    *(char *)buf = uart_hal_getc(u->hal);
+    *(char *)buf = uart_rx_getc(u);      /* drain the ISR-fed ring buffer */
     return 1;
 }
 

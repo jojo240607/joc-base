@@ -148,6 +148,27 @@ def main():
             break
     results["temp"] = temp_ok
 
+    # 6) Interrupt framework: SysTick ISR increments a tick counter via the
+    #    platform-independent irq framework. A non-zero count proves the shared
+    #    ISR (IRQ_CommonHandler) dispatched a core exception and ran the callback.
+    ticks_ok = False
+    ser.reset_input_buffer()
+    ser.write(b"TICKS\n")
+    d = time.time() + TIMEOUT
+    while time.time() < d:
+        line = ser.readline().decode(errors="replace").strip()
+        if not line:
+            continue
+        print(f"  board> {line}")
+        if line == "TICKS":        # ignore the locally-echoed command
+            continue
+        if line.startswith("TICKS "):
+            m = re.search(r"TICKS\s+(\d+)", line)
+            if m and int(m.group(1)) > 0:
+                ticks_ok = True
+            break
+    results["ticks"] = ticks_ok
+
     ser.close()
 
     print("\n[companion] RESULTS:")

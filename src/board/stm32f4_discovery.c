@@ -17,6 +17,7 @@
 #include "devmgr/device_manager.h"
 
 #include "stm32f4xx.h"          /* real peripherals — board layer only */
+#include "irq.h"                /* platform-independent interrupt API */
 
 #include "drv/clock.h"
 #include "drv/uart.h"
@@ -26,6 +27,30 @@
 #include "drv/pinmux.h"
 
 #include "temp_hal.h"
+
+/* ---- board-level SysTick tick service (irq framework demo) ----------------
+ * The board knows the chip, so it configures SysTick and registers its ISR
+ * through the GENERIC irq API — proving a core exception can be dispatched by
+ * the same platform-independent framework that serves device IRQs. */
+static volatile uint32_t g_ticks;
+
+static void tick_isr(void *ctx)
+{
+    (void)ctx;
+    g_ticks++;
+    (void)SysTick->CTRL;        /* read to clear COUNTFLAG, re-arms the tick */
+}
+
+void board_tick_init(void)
+{
+    /* 1 kHz tick off HCLK (SysTick_Config sets CLKSOURCE = HCLK). */
+    SysTick_Config(SystemCoreClock / 1000U);
+    irq_register((irq_id_t)SysTick_IRQn, tick_isr, NULL);
+    irq_set_priority((irq_id_t)SysTick_IRQn, 0);
+    irq_enable((irq_id_t)SysTick_IRQn);
+}
+
+uint32_t board_ticks(void) { return g_ticks; }
 
 /* ---- board devices as DATA (each driver's own config, filled by the board) */
 static const pinmux_config_t g_pinmux = { "pinmux" };

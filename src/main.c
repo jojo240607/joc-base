@@ -56,6 +56,11 @@ int main(void)
      * registers them by name. This file learns nothing about the silicon. */
     board_init();
 
+    /* Start the board's 1 kHz SysTick tick service (registered through the
+     * platform-independent irq framework) — demonstrates a core exception
+     * dispatched by the same mechanism as device IRQs. */
+    board_tick_init();
+
     /* --- unified device handles (by NAME, not by peripheral) -------------
      * The application holds a `device *` for every driver and drives them all
      * through the identical virtual-dispatch API. It does not care which chip
@@ -97,7 +102,7 @@ int main(void)
     int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
     printf("[BIST] pinmux: %s\r\n", pmok ? "PASS" : "FAIL");
 
-    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP\r\n");
+    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS\r\n");
 
     /* 5. command loop (PC companion test exercises this) */
     char line[64];
@@ -182,6 +187,15 @@ int main(void)
                                      (unsigned)cal1,
                                      (unsigned)cal2,
                                      (long)ip, (long)fp);
+                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                }
+                else if (strcmp(line, "TICKS") == 0)
+                {
+                    /* prove the platform-independent irq framework is live:
+                     * the SysTick ISR increments g_ticks via irq_dispatch(). */
+                    char out[32];
+                    int n = snprintf(out, sizeof(out), "TICKS %lu\r\n",
+                                     (unsigned long)board_ticks());
                     d_uart->vtable->write(d_uart, out, (size_t)n);
                 }
                 else

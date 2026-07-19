@@ -33,4 +33,10 @@ typedef struct {
  * peripheral bases). */
 void board_init(void);
 
+/* Board-level SysTick tick service (demonstrates the platform-independent irq
+ * framework for a core exception). Starts a 1 kHz tick and registers its ISR
+ * through irq_register(); board_ticks() returns the elapsed tick count. */
+void board_tick_init(void);
+uint32_t board_ticks(void);
+
 #endif /* BOARD_H */
