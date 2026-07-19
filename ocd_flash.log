@@ -3,9 +3,9 @@ Licensed under GNU GPL v2
 For bug reports, read
 	http://openocd.org/doc/doxygen/bugs.html
 Warn : DEPRECATED: auto-selecting transport "swd (dapdirect)". Use 'transport select swd' to suppress this message.
-srst_only separate srst_nogate srst_open_drain connect_assert_srst
+srst_only separate srst_nogate srst_open_drain connect_deassert_srst
 Info : STLINK V2J37S7 (API v2) VID:PID 0483:3748
-Info : Target voltage: 3.009326
+Info : Target voltage: 3.008932
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 Info : clock speed 1800 kHz
@@ -18,11 +18,11 @@ Info : Listening on port 3333 for gdb connections
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 [stm32f4x.cpu] halted due to debug-request, current mode: Thread 
-xPSR: 0x01000000 pc: 0x08000ab8 msp: 0x20020000
+xPSR: 0x01000000 pc: 0x08002e48 msp: 0x20020000
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 [stm32f4x.cpu] halted due to debug-request, current mode: Thread 
-xPSR: 0x01000000 pc: 0x08000ab8 msp: 0x20020000
+xPSR: 0x01000000 pc: 0x08002e48 msp: 0x20020000
 Info : Unable to match requested speed 8000 kHz, using 4000 kHz
 Info : Unable to match requested speed 8000 kHz, using 4000 kHz
 ** Programming Started **

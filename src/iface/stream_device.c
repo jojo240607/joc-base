@@ -75,3 +75,21 @@ int stream_device_default_transfer_async(stream_device *self, io_xfer_t *xfer)
     if (!self->vtable->submit) return -1;
     return self->vtable->submit(self, xfer);     /* start; returns immediately */
 }
+
+/* --- embedded RX ring buffer helpers (see stream_device.h) --- */
+
+void stream_device_init_ringbuffer(stream_device *self, uint8_t *buf, size_t size)
+{
+    if (!self || size < 2) return;
+    /* Initialize the embedded ringbuffer object in place (no heap): point it at
+     * the caller's storage and run the shared class init(). */
+    self->rx_rb.buf = buf;
+    self->rx_rb.size = size;
+    self->rx_rb.owns_buf = 0;
+    ringbuffer_init(&self->rx_rb);
+}
+
+ringbuffer *stream_device_get_ringbuffer(stream_device *self)
+{
+    return self ? &self->rx_rb : NULL;
+}

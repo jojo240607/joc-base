@@ -38,11 +38,10 @@ struct _uart {
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
     const char *tx_signal;        /* cached TX signal name (resolved at open) */
     const char *rx_signal;        /* cached RX signal name (resolved at open) */
-    /* RX ring buffer fed by the receive ISR (registered via the platform-
-     * independent irq framework). The ISR pushes bytes; read()/getc() drain. */
+    /* RX storage handed to the embedded ring buffer (stream_device.rx_rb, the
+     * common/ringbuffer class). The receive ISR pushes bytes via that ring;
+     * read()/getc() drain it. head/tail now live inside the ring buffer. */
     char rx_buf[UART_RX_BUF_SIZE];
-    volatile uint16_t rx_head;    /* advanced by the ISR (interrupt context) */
-    volatile uint16_t rx_tail;    /* advanced by read()/getc() (thread context) */
     /* In-progress asynchronous READ (started via stream submit). The ISR drains
      * the ring into this xfer and calls io_xfer_complete() when it is full.
      * NULL when no async read is pending. (Synchronous read()/getc() and an

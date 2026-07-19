@@ -128,23 +128,22 @@ static char uart_getc(uart *self)
 
 /* --- RX ring buffer + interrupt ISR (platform-independent irq framework) --- */
 
-/* Push one received byte into the ring buffer (called from interrupt context). */
+/* Push one received byte into the embedded RX ring buffer (called from
+ * interrupt context). Drops on overflow (ring buffer is in no-overwrite mode). */
 static void uart_rx_putc(uart *self, char c)
 {
-    uint16_t next = (uint16_t)((self->rx_head + 1U) % UART_RX_BUF_SIZE);
-    if (next != self->rx_tail) {            /* drop on overflow */
-        self->rx_buf[self->rx_head] = c;
-        self->rx_head = next;
-    }
+    ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)self);
+    if (rb) rb->fun->put(rb, (uint8_t)c);
 }
 
 /* Pop one byte, blocking until the ISR delivers one (thread context). */
 static char uart_rx_getc(uart *self)
 {
-    while (self->rx_head == self->rx_tail) { /* wait for the ISR to fill */ }
-    char c = self->rx_buf[self->rx_tail];
-    self->rx_tail = (uint16_t)((self->rx_tail + 1U) % UART_RX_BUF_SIZE);
-    return c;
+    ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)self);
+    uint8_t c = 0;
+    while (!rb || rb->fun->is_empty(rb)) { }   /* wait for the ISR to fill */
+    rb->fun->get(rb, &c);
+    return (char)c;
 }
 
 /* The receive ISR callback. Registered with the framework via irq_register()
@@ -161,10 +160,10 @@ static void uart_isr(void *ctx)
         uart_rx_putc(u, uart_hal_read_dr(u->hal));
         if (u->async_rx) {
             io_xfer_t *x = u->async_rx;
-            while (x->done < x->len && u->rx_head != u->rx_tail) {
-                ((char *)x->buf)[x->done++] = u->rx_buf[u->rx_tail];
-                u->rx_tail = (uint16_t)((u->rx_tail + 1U) % UART_RX_BUF_SIZE);
-            }
+            ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)u);
+            uint8_t c;
+            while (x->done < x->len && rb && rb->fun->get(rb, &c) == 0)
+                ((char *)x->buf)[x->done++] = (char)c;
             if (x->done >= x->len) {        /* transfer complete */
                 u->async_rx = NULL;
                 io_xfer_complete(x, 0);      /* wake sync waiter + invoke callback */
@@ -269,6 +268,10 @@ static int uart_dev_open(device *self)
     }
 
     uart_hal_init(u->hal);
+
+    /* Attach our RX storage to the embedded ring buffer (common/ringbuffer) so
+     * the receive ISR can push bytes and read()/getc() can drain them. */
+    stream_device_init_ringbuffer((stream_device *)u, (uint8_t *)u->rx_buf, UART_RX_BUF_SIZE);
 
     /* Wire the RX interrupt through the PLATFORM-INDEPENDENT irq framework.
      * The driver registers a callback + its own context; the HAL supplies the
@@ -393,10 +396,10 @@ static int uart_stream_submit(stream_device *self, io_xfer_t *xfer)
     /* IRQ: hand off to the RX ISR. Drain any bytes already buffered, then let
      * uart_isr() finish the rest and call io_xfer_complete(). */
     u->async_rx = xfer;
-    while (xfer->done < xfer->len && u->rx_head != u->rx_tail) {
-        ((char *)xfer->buf)[xfer->done++] = u->rx_buf[u->rx_tail];
-        u->rx_tail = (uint16_t)((u->rx_tail + 1U) % UART_RX_BUF_SIZE);
-    }
+    ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)u);
+    uint8_t c;
+    while (xfer->done < xfer->len && rb && rb->fun->get(rb, &c) == 0)
+        ((char *)xfer->buf)[xfer->done++] = (char)c;
     if (xfer->done >= xfer->len) {          /* all available already */
         u->async_rx = NULL;
         io_xfer_complete(xfer, 0);

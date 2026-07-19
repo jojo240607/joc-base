@@ -2,6 +2,7 @@
 #define STREAM_DEVICE_H
 
 #include "iface/device.h"
+#include "common/ringbuffer.h"   /* every stream device gets a ready-to-use RX ring buffer */
 #include <stddef.h>
 
 /*
@@ -78,7 +79,22 @@ struct _stream_device {
     device parent;                         /* IS-A device */
     const struct stream_deviceVtable *vtable;
     stream_xfer_mode_t mode;               /* selected engine (POLL/IRQ/DMA) */
+    /* Embedded RX ring buffer. A stream driver attaches a storage buffer via
+     * stream_device_init_ringbuffer() and then pushes received bytes (typically
+     * from its RX ISR) and pops them in read() — no per-driver ring needed.
+     * Left zeroed (buf == NULL) until a driver attaches a buffer. */
+    ringbuffer rx_rb;
 };
+
+/* Attach a storage buffer to the embedded RX ring buffer so a driver can use
+ * it. `buf` is normally a static array supplied by the driver/board; the ring
+ * buffer does NOT free external storage. Call once at open() time. */
+void stream_device_init_ringbuffer(stream_device *self, uint8_t *buf, size_t size);
+
+/* Access the embedded RX ring buffer (e.g. to push from an ISR / pop in read).
+ * Returns NULL if `self` is NULL. The ring buffer is usable only after
+ * stream_device_init_ringbuffer() has attached a buffer. */
+ringbuffer *stream_device_get_ringbuffer(stream_device *self);
 
 /* upcast (subclass -> device, free pointer cast) */
 static inline device *stream_device_to_device(stream_device *s) { return &s->parent; }

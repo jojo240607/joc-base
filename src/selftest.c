@@ -12,6 +12,7 @@
 #include "drv/temp_sensor.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
+#include "common/ringbuffer.h"     /* ringbuffer_run_selftest (common utility class) */
 
 #define UART_PCLK2_HZ 84000000UL
 #define UART_BAUD     115200UL
@@ -112,6 +113,12 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_mode(self);
     printf("[BIST] mode  : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    /* ring buffer utility class (common/) — exercised standalone so the class
+     * itself is proven independent of any driver. */
+    r = ringbuffer_run_selftest();
+    printf("[BIST] ringbuf: %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     printf("SELF-TEST: %s\r\n", pass ? "PASS" : "FAIL");

@@ -1,0 +1,35 @@
+[1/1] Cleaning all built files...
+Cleaning... 28 files.
+[1/28] Building ASM object CMakeFiles/stm32f407_minimal.elf.dir/startup/startup_stm32f407xx.s.obj
+[2/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/iface/io_xfer.c.obj
+[3/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/iface/stream_device.c.obj
+[4/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/osal/osal_baremetal.c.obj
+[5/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/syscalls.c.obj
+[6/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/irq/irq.c.obj
+[7/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/devmgr/device_manager.c.obj
+[8/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/clock.c.obj
+[9/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/main.c.obj
+[10/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/system_stm32f4xx.c.obj
+[11/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/systick.c.obj
+[12/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/temp_sensor.c.obj
+[13/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/pinmux_af_stm32f4.c.obj
+[14/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/gpio_pin.c.obj
+[15/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/common/ringbuffer.c.obj
+[16/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/adc.c.obj
+[17/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/clock_hal.c.obj
+[18/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/uart.c.obj
+[19/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/temp_hal.c.obj
+[20/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/board/stm32f4_discovery.c.obj
+[21/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/gpio_hal.c.obj
+[22/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/pinmux.c.obj
+[23/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/irq_hal.c.obj
+[24/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/pinmux_hal.c.obj
+[25/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/adc_hal.c.obj
+[26/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/uart_hal.c.obj
+[27/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/selftest.c.obj
+[28/28] Linking C executable stm32f407_minimal.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:       28168 B         1 MB      2.69%
+             RAM:        2928 B       128 KB      2.23%
+   text	   data	    bss	    dec	    hex	filename
+  28052	    108	   2828	  30988	   790c	D:/project/mcu/oop/joc-base/build/stm32f407_minimal.elf
