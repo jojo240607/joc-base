@@ -5,6 +5,8 @@
 #include "iface/stream_device.h"  /* adc IS-A stream_device (sampling stream) */
 #include "adc_hal.h"          /* opaque handle ONLY — no STM32 types reach the driver */
 #include "pinmux_hal.h"       /* pinmux_port_t (resolved port for the pinmux claim) */
+#include "osal/osal.h"        /* osal_sem_t (EOC completion) */
+#include "irq.h"              /* irq_id_t (cached ADC IRQ id) */
 #include <stdint.h>
 
 /* device-level control commands for the ADC driver (passed to device_ioctl) */
@@ -43,6 +45,11 @@ struct _adc {
     pinmux_port_t port;          /* resolved port for pinmux claim */
     uint8_t pin;                 /* resolved pin for pinmux claim */
     uint8_t af;                  /* resolved af (0 for analog) */
+    /* IRQ-mode read state. In STREAM_MODE_IRQ the EOC ISR writes last_raw and
+     * gives eoc_sem; adc_stream_read() blocks on eoc_sem. Unused in POLL mode. */
+    volatile uint32_t last_raw;  /* last conversion result (written by EOC ISR) */
+    osal_sem_t eoc_sem;          /* signaled by the EOC ISR (IRQ-mode read) */
+    irq_id_t  eoc_irq;           /* cached ADC IRQ id (from adc_hal_irq_id) */
 };
 
 /* The board fills adc_config_t (defined below) as DATA and passes it in; the

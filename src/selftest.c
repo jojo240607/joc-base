@@ -22,6 +22,7 @@ static int selftest_vgpio(selftest *self);
 static int selftest_vadc(selftest *self);
 static int selftest_vtemp(selftest *self);
 static int selftest_vio(selftest *self);
+static int selftest_vmode(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -31,6 +32,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_adc   = selftest_vadc,
     .test_temp  = selftest_vtemp,
     .test_io    = selftest_vio,
+    .test_mode  = selftest_vmode,
 };
 
 const struct selftestFun selftest_fun = {
@@ -106,6 +108,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_io(self);
     printf("[BIST] io    : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_mode(self);
+    printf("[BIST] mode  : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     printf("SELF-TEST: %s\r\n", pass ? "PASS" : "FAIL");
@@ -220,4 +226,42 @@ static int selftest_vio(selftest *self)
     printf("       downcast ok, async reject(adc)=%s accept(uart)=%s\r\n",
            rejected ? "yes" : "NO", accepted ? "yes" : "NO");
     return rejected && accepted;
+}
+
+/* Verify the POLL/IRQ engine switching is real (not just a declared ioctl) and
+ * that the ADC interrupt path actually works end-to-end:
+ *   - switch ADC to STREAM_MODE_IRQ, do a blocking read (driven by the EOC ISR),
+ *     and confirm a sane 12-bit value comes back; restore POLL afterwards.
+ *   - switch UART POLL<->IRQ via STREAM_IOCTL_SET_MODE and confirm GET_MODE
+ *     round-trips. (No wire traffic: reads/writes here are to the device's own
+ *     registers / mode field, not the terminal.) */
+static int selftest_vmode(selftest *self)
+{
+    device *adc  = self->adc;
+    device *uart = self->uart;
+    int ok = 1;
+
+    /* ADC: interrupt-mode (EOC ISR) read must return a sane 12-bit value. */
+    stream_xfer_mode_t m = STREAM_MODE_IRQ;
+    adc->vtable->ioctl(adc, STREAM_IOCTL_SET_MODE, &m);
+    uint32_t adc_irq = 0;
+    int nr = adc->vtable->read(adc, &adc_irq, sizeof(adc_irq));
+    if (nr != (int)sizeof(adc_irq) || adc_irq > 4095U) ok = 0;
+    m = STREAM_MODE_POLL;                       /* restore polling default */
+    adc->vtable->ioctl(adc, STREAM_IOCTL_SET_MODE, &m);
+
+    /* UART: mode switching roundtrip (POLL <-> IRQ). */
+    m = STREAM_MODE_POLL;
+    uart->vtable->ioctl(uart, STREAM_IOCTL_SET_MODE, &m);
+    stream_xfer_mode_t got = STREAM_MODE_IRQ;
+    uart->vtable->ioctl(uart, STREAM_IOCTL_GET_MODE, &got);
+    if (got != STREAM_MODE_POLL) ok = 0;
+    m = STREAM_MODE_IRQ;
+    uart->vtable->ioctl(uart, STREAM_IOCTL_SET_MODE, &m);
+    uart->vtable->ioctl(uart, STREAM_IOCTL_GET_MODE, &got);
+    if (got != STREAM_MODE_IRQ) ok = 0;
+
+    printf("       adc irq read=%lu, uart mode switch %s\r\n",
+           (unsigned long)adc_irq, ok ? "ok" : "FAIL");
+    return ok;
 }

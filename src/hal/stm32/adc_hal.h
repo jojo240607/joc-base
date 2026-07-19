@@ -2,6 +2,7 @@
 #define ADC_HAL_H
 
 #include <stdint.h>
+#include "irq.h"              /* irq_id_t — the HAL returns the platform irq id */
 
 /*
  * Hardware Abstraction Layer — ADC (this file is the STM32 implementation).
@@ -28,5 +29,13 @@ void     adc_hal_config_channel(adc_hal_handle_t *h);
 void     adc_hal_set_channel(adc_hal_handle_t *h, uint32_t channel); /* update + reconfigure */
 uint32_t adc_hal_single_convert(adc_hal_handle_t *h);  /* SWSTART + EOC + read DR */
 uint32_t adc_hal_to_mv(uint32_t raw, uint32_t vdda_mv);
+
+/* --- interrupt support (used by the driver via the platform-independent
+ *     irq framework: it registers adc_hal_irq_id() with irq_register) --- */
+irq_id_t adc_hal_irq_id(adc_hal_handle_t *h);          /* chip IRQn for this ADC */
+void     adc_hal_enable_eoc_irq(adc_hal_handle_t *h);  /* set ADC_CR1_EOCIE */
+void     adc_hal_disable_eoc_irq(adc_hal_handle_t *h); /* clear ADC_CR1_EOCIE */
+void     adc_hal_start_convert(adc_hal_handle_t *h);   /* SWSTART only (no wait) */
+uint32_t adc_hal_read_dr(adc_hal_handle_t *h);         /* read DR (clears EOC) */
 
 #endif /* ADC_HAL_H */

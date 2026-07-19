@@ -5,6 +5,7 @@
 #include "iface/stream_device.h"  /* uart IS-A stream_device (data stream) */
 #include "uart_hal.h"         /* opaque handle ONLY — no STM32 types reach the driver */
 #include "irq.h"              /* platform-independent interrupt API (irq_register/enable) */
+#include "osal/osal.h"        /* osal_sem_t (TX completion + line serialization) */
 #include <stdint.h>
 
 /* Size of the RX ring buffer fed by the UART receive ISR. */
@@ -47,6 +48,16 @@ struct _uart {
      * NULL when no async read is pending. (Synchronous read()/getc() and an
      * async read must not be used on the same uart at the same time.) */
     io_xfer_t *async_rx;
+    /* TX state machine, driven by the TXE ISR. Used by the blocking write(),
+     * the console printf path (uart_console_putc) and the async submit WRITE so
+     * that ALL transmission on one UART is serialized and never corrupts itself.
+     * A single in-progress transfer owns the line; tx_idle (1 = free) makes the
+     * next writer wait until the current one finishes. */
+    const char *tx_ptr;        /* next byte to send (thread sets, ISR advances) */
+    size_t tx_rem;             /* bytes remaining to send */
+    io_xfer_t *async_tx;       /* non-NULL => the in-progress TX is an async xfer */
+    osal_sem_t tx_idle;        /* 1 = line free, 0 = a TX is in progress */
+    osal_sem_t tx_done_sem;    /* signaled when a blocking TX finishes */
 };
 
 device *uart_create(const void *config);

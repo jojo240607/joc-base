@@ -13,6 +13,7 @@ static int adc_dev_read(device *self, void *buf, size_t len);
 static int adc_dev_write(device *self, const void *buf, size_t len);
 static int adc_dev_ioctl(device *self, int cmd, void *arg);
 static void adc_hw_init(adc *self);
+static void adc_isr(void *ctx);   /* EOC ISR (registered via the irq framework) */
 
 /* subclass vtable (defined below; forward-declared so adc_init can reference it) */
 static const struct stream_deviceVtable adc_stream_vtable;
@@ -133,8 +134,27 @@ static int adc_stream_read(stream_device *self, void *buf, size_t len)
     adc *a = (adc *)self;
     if (len < sizeof(uint32_t)) return -1;
     if (a->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    if (a->parent.mode == STREAM_MODE_IRQ) {
+        /* interrupt-driven: trigger the conversion, block on the EOC semaphore,
+         * then take the value the ISR stashed into last_raw. */
+        osal_sem_init(&a->eoc_sem, 0);
+        adc_hal_start_convert(a->hal);
+        osal_sem_wait(&a->eoc_sem);
+        *(uint32_t *)buf = a->last_raw;
+        return (int)sizeof(uint32_t);
+    }
     *(uint32_t *)buf = adc_read(a);    /* polling single conversion */
     return (int)sizeof(uint32_t);
+}
+
+/* EOC ISR (registered via the unified irq framework). Reads DR — this clears
+ * EOC so the interrupt will not re-fire — and hands the result to the blocked
+ * IRQ-mode reader via the completion semaphore. */
+static void adc_isr(void *ctx)
+{
+    adc *a = (adc *)ctx;
+    a->last_raw = adc_hal_read_dr(a->hal);
+    osal_sem_give(&a->eoc_sem);
 }
 static int adc_stream_write(stream_device *self, const void *buf, size_t len)
     { (void)self; (void)buf; (void)len; return -1; }   /* ADC is read-only */
@@ -181,6 +201,25 @@ static int adc_dev_ioctl(device *self, int cmd, void *arg)
         if (!arg) return -1;
         *(uint32_t *)arg = adc_read_mv(a);
         return 0;
+    case STREAM_IOCTL_SET_MODE: {
+        if (!arg) return -1;
+        stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
+        if (m == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+        a->parent.mode = m;
+        if (m == STREAM_MODE_IRQ) {
+            irq_set_priority(a->eoc_irq, 1);
+            adc_hal_enable_eoc_irq(a->hal);
+            irq_enable(a->eoc_irq);
+        } else {
+            adc_hal_disable_eoc_irq(a->hal);
+            irq_disable(a->eoc_irq);
+        }
+        return 0;
+    }
+    case STREAM_IOCTL_GET_MODE:
+        if (!arg) return -1;
+        *(stream_xfer_mode_t *)arg = a->parent.mode;
+        return 0;
     default:
         return -1;
     }
@@ -212,4 +251,16 @@ static void adc_hw_init(adc *self)
     }
 
     adc_hal_config_channel(self->hal);
+
+    /* Register the EOC ISR through the platform-independent irq framework. The
+     * callback is installed once at open(); the EOC interrupt itself is only
+     * enabled when the stream is in STREAM_MODE_IRQ (here, if it already is, or
+     * later via STREAM_IOCTL_SET_MODE). */
+    self->eoc_irq = adc_hal_irq_id(self->hal);
+    irq_register(self->eoc_irq, adc_isr, self);
+    if (self->parent.mode == STREAM_MODE_IRQ) {
+        irq_set_priority(self->eoc_irq, 1);
+        adc_hal_enable_eoc_irq(self->hal);
+        irq_enable(self->eoc_irq);
+    }
 }

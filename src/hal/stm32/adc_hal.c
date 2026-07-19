@@ -124,6 +124,36 @@ uint32_t adc_hal_single_convert(adc_hal_handle_t *h)
     return (uint32_t)(adc->DR & 0x0FFFUL);   /* 12-bit right-aligned */
 }
 
+/* Return the chip interrupt id for this ADC so the driver can register its EOC
+ * ISR through the platform-independent irq framework without naming a
+ * Cortex-M / STM32 interrupt directly. On STM32F4 all ADCs share ADC_IRQn. */
+irq_id_t adc_hal_irq_id(adc_hal_handle_t *h)
+{
+    (void)h;
+    return (irq_id_t)ADC_IRQn;
+}
+void adc_hal_enable_eoc_irq(adc_hal_handle_t *h)
+{
+    if (h) h->adc->CR1 |= ADC_CR1_EOCIE;
+}
+void adc_hal_disable_eoc_irq(adc_hal_handle_t *h)
+{
+    if (h) h->adc->CR1 &= ~ADC_CR1_EOCIE;
+}
+/* Trigger a single regular conversion WITHOUT busy-waiting. The EOC ISR reads
+ * DR (clearing EOC) when the conversion completes. */
+void adc_hal_start_convert(adc_hal_handle_t *h)
+{
+    if (h) h->adc->CR2 |= ADC_CR2_SWSTART;
+}
+/* Read the data register (12-bit). Reading DR clears EOC, so the EOC ISR MUST
+ * call this to stop the interrupt from re-firing. */
+uint32_t adc_hal_read_dr(adc_hal_handle_t *h)
+{
+    if (!h) return 0U;
+    return (uint32_t)(h->adc->DR & 0x0FFFUL);
+}
+
 uint32_t adc_hal_to_mv(uint32_t raw, uint32_t vdda_mv)
 {
     return (raw * vdda_mv) / 4095UL;    /* 12-bit full scale */

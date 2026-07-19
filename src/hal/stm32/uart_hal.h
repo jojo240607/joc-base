@@ -31,6 +31,12 @@ char uart_hal_read_dr(uart_hal_handle_t *h);     /* read DR (clears RXNE) */
 void uart_hal_enable_rx_irq(uart_hal_handle_t *h);  /* set USART_CR1_RXNEIE */
 void uart_hal_disable_rx_irq(uart_hal_handle_t *h); /* clear USART_CR1_RXNEIE */
 irq_id_t uart_hal_irq_id(uart_hal_handle_t *h);    /* chip IRQn for this USART */
+/* --- TX interrupt support (drive blocking writes / async submit from the TXE ISR) --- */
+void uart_hal_enable_tx_irq(uart_hal_handle_t *h);  /* set USART_CR1_TXEIE */
+void uart_hal_disable_tx_irq(uart_hal_handle_t *h); /* clear USART_CR1_TXEIE */
+int  uart_hal_tx_ready(uart_hal_handle_t *h);       /* (SR & USART_SR_TXE) != 0 */
+int  uart_hal_rx_pending(uart_hal_handle_t *h);     /* (SR & USART_SR_RXNE) != 0 */
+void uart_hal_write_dr(uart_hal_handle_t *h, char c);/* write DR (triggers TX) */
 uint32_t uart_hal_get_brr(uart_hal_handle_t *h);   /* read back BRR for self-test */
 uint32_t uart_hal_get_cr1(uart_hal_handle_t *h);   /* read back CR1 for self-test */
 

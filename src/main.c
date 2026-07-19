@@ -237,8 +237,19 @@ int main(void)
 
                         char out[64];
                         int n = snprintf(out, sizeof(out),
-                                         "[IOXFER] sync r=%d done=%d | async r=%d done=%d cb=%d\r\n",
-                                         rs, (int)sx.done, ra, (int)ax.done, g_io_cb_fired);
+                                         "[IOXFER] sync r=%d done=%d | async r=%d (started)\r\n",
+                                         rs, (int)sx.done, ra);
+                        d_uart->vtable->write(d_uart, out, (size_t)n);
+
+                        /* The async transfer completes in the TXE ISR. The
+                         * blocking write just above can only proceed once the
+                         * line is free — i.e. AFTER the async transfer finished —
+                         * so by the time it returned, ax.done and the callback
+                         * flag are final. Print them now to prove the interrupt
+                         * path + completion callback fired end-to-end. */
+                        n = snprintf(out, sizeof(out),
+                                     "[IOXFER] async done=%d cb=%d\r\n",
+                                     (int)ax.done, g_io_cb_fired);
                         d_uart->vtable->write(d_uart, out, (size_t)n);
                     }
                 }

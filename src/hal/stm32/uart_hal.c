@@ -82,6 +82,27 @@ void uart_hal_disable_rx_irq(uart_hal_handle_t *h)
     if (h) h->usart->CR1 &= ~USART_CR1_RXNEIE;
 }
 
+void uart_hal_enable_tx_irq(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR1 |= USART_CR1_TXEIE;
+}
+void uart_hal_disable_tx_irq(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR1 &= ~USART_CR1_TXEIE;
+}
+int uart_hal_tx_ready(uart_hal_handle_t *h)
+{
+    return (h && (h->usart->SR & USART_SR_TXE)) ? 1 : 0;
+}
+int uart_hal_rx_pending(uart_hal_handle_t *h)
+{
+    return (h && (h->usart->SR & USART_SR_RXNE)) ? 1 : 0;
+}
+void uart_hal_write_dr(uart_hal_handle_t *h, char c)
+{
+    if (h) h->usart->DR = (uint8_t)c;
+}
+
 /* Return the chip interrupt id for this USART so the driver can register its
  * ISR through the platform-independent irq framework without naming a
  * Cortex-M / STM32 interrupt directly. */

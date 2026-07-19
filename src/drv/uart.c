@@ -1,5 +1,6 @@
 #include "uart.h"
 #include "iface/io_xfer.h"            /* io_xfer_t, io_xfer_complete (async API) */
+#include "osal/osal.h"               /* osal_sem_wait / _init (TX serialization) */
 #include "devmgr/device_manager.h"   /* resolve the pinmux arbiter by name */
 #include "drv/pinmux.h"               /* request + program pins through pinmux */
 #include <stdlib.h>
@@ -19,6 +20,9 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg);
 static const struct stream_deviceVtable uart_stream_vtable;
 /* async transfer helper (defined below) */
 static int uart_stream_submit(stream_device *self, io_xfer_t *xfer);
+/* TX state machine (defined below) */
+static void uart_tx_isr(uart *u);
+static int uart_tx_blocking(uart *u, const char *s, size_t len);
 
 /* public methods — `static`, reachable ONLY through self->fun-> */
 static void uart_set_baudrate(uart *self, uint32_t baud);
@@ -84,6 +88,7 @@ void uart_init(uart *self)
     self->parent.parent.class  = DEVICE_CLASS_STREAM;
     self->parent.mode          = STREAM_MODE_IRQ;     /* RX is interrupt-driven */
     self->fun = &uart_fun;
+    osal_sem_init(&self->tx_idle, 1);  /* line starts free; the TXE ISR gives it back */
     /* hardware bring-up is deferred to open() (see uart_dev_open) */
 }
 
@@ -106,7 +111,12 @@ void uart_set_console(uart *self)
 
 void uart_console_putc(char c)
 {
-    if (g_console)
+    if (!g_console) return;
+    /* In IRQ mode route through the TX state machine so printf output is
+     * serialized with stream writes on the same UART (no wire corruption). */
+    if (g_console->parent.mode == STREAM_MODE_IRQ)
+        uart_tx_blocking(g_console, &c, 1);
+    else
         uart_hal_putc(g_console->hal, c);
 }
 
@@ -145,19 +155,69 @@ static char uart_rx_getc(uart *self)
 static void uart_isr(void *ctx)
 {
     uart *u = (uart *)ctx;
-    uart_rx_putc(u, uart_hal_read_dr(u->hal));
-
-    if (u->async_rx) {
-        io_xfer_t *x = u->async_rx;
-        while (x->done < x->len && u->rx_head != u->rx_tail) {
-            ((char *)x->buf)[x->done++] = u->rx_buf[u->rx_tail];
-            u->rx_tail = (uint16_t)((u->rx_tail + 1U) % UART_RX_BUF_SIZE);
-        }
-        if (x->done >= x->len) {        /* transfer complete */
-            u->async_rx = NULL;
-            io_xfer_complete(x, 0);      /* wake sync waiter + invoke callback */
+    /* RX: only act when a character is actually pending, so reading DR (which
+     * clears RXNE) is never done spuriously. */
+    if (uart_hal_rx_pending(u->hal)) {
+        uart_rx_putc(u, uart_hal_read_dr(u->hal));
+        if (u->async_rx) {
+            io_xfer_t *x = u->async_rx;
+            while (x->done < x->len && u->rx_head != u->rx_tail) {
+                ((char *)x->buf)[x->done++] = u->rx_buf[u->rx_tail];
+                u->rx_tail = (uint16_t)((u->rx_tail + 1U) % UART_RX_BUF_SIZE);
+            }
+            if (x->done >= x->len) {        /* transfer complete */
+                u->async_rx = NULL;
+                io_xfer_complete(x, 0);      /* wake sync waiter + invoke callback */
+            }
         }
     }
+    /* TX: drain the in-progress transfer (blocking write or async submit). */
+    if (uart_hal_tx_ready(u->hal)) {
+        uart_tx_isr(u);
+    }
+}
+
+/* TXE ISR: send the next byte of the in-progress transfer. When the last byte
+ * leaves, disable the TXE interrupt and release the line (tx_idle); for a
+ * blocking writer also signal the per-transfer completion semaphore, for an
+ * async writer signal the xfer instead. */
+static void uart_tx_isr(uart *u)
+{
+    if (u->tx_rem > 0) {
+        uart_hal_write_dr(u->hal, *u->tx_ptr++);
+        u->tx_rem--;
+        if (u->tx_rem == 0) {
+            uart_hal_disable_tx_irq(u->hal);
+            if (u->async_tx) {
+                io_xfer_t *x = u->async_tx;
+                u->async_tx = NULL;
+                x->done = x->len;
+                osal_sem_give(&u->tx_idle);   /* line free for the next TX */
+                io_xfer_complete(x, 0);        /* wake async waiter + callback */
+            } else {
+                osal_sem_give(&u->tx_idle);
+                osal_sem_give(&u->tx_done_sem);/* wake the blocking writer */
+            }
+        }
+    } else {
+        uart_hal_disable_tx_irq(u->hal);       /* nothing pending; silence */
+    }
+}
+
+/* Blocking transmit through the TX state machine. Serialized with every other
+ * TX (printf, async submit) via tx_idle, so they can never interleave on the
+ * wire. Used by uart_stream_write (IRQ mode) and uart_console_putc. */
+static int uart_tx_blocking(uart *u, const char *s, size_t len)
+{
+    if (len == 0) return 0;
+    osal_sem_wait(&u->tx_idle);          /* wait for the line to be free */
+    u->async_tx = NULL;
+    u->tx_ptr   = s;
+    u->tx_rem   = len;
+    osal_sem_init(&u->tx_done_sem, 0);
+    uart_hal_enable_tx_irq(u->hal);      /* TXE ISR drains tx_rem */
+    osal_sem_wait(&u->tx_done_sem);      /* block until the last byte is sent */
+    return (int)len;
 }
 
 /* --- unified device-interface virtual implementations --- */
@@ -215,21 +275,23 @@ static int uart_dev_open(device *self)
      * chip IRQ number (uart_hal_irq_id), so the driver never names a Cortex-M /
      * STM32 interrupt directly. The ISR (uart_isr) reads DR and fills the ring
      * buffer; read()/getc() then drain it. */
-    irq_id_t rx_irq = uart_hal_irq_id(u->hal);
-    irq_register(rx_irq, uart_isr, u);
-    irq_set_priority(rx_irq, 0);
-    uart_hal_enable_rx_irq(u->hal);
-    irq_enable(rx_irq);
+    irq_id_t id = uart_hal_irq_id(u->hal);
+    irq_register(id, uart_isr, u);          /* combined RX+TX ISR */
+    irq_set_priority(id, 0);
+    if (u->parent.mode == STREAM_MODE_IRQ)
+        uart_hal_enable_rx_irq(u->hal);     /* RX ISR only in IRQ mode */
+    irq_enable(id);
     return 0;
 }
 
 static int uart_dev_close(device *self)
 {
     uart *u = (uart *)self;
-    irq_id_t rx_irq = uart_hal_irq_id(u->hal);
-    irq_disable(rx_irq);                 /* stop the ISR first */
+    irq_id_t id = uart_hal_irq_id(u->hal);
+    irq_disable(id);                    /* stop the ISR first */
     uart_hal_disable_rx_irq(u->hal);
-    irq_register(rx_irq, NULL, NULL);   /* uninstall the callback */
+    uart_hal_disable_tx_irq(u->hal);
+    irq_register(id, NULL, NULL);       /* uninstall the callback */
     uart_hal_deinit(u->hal);
     return 0;
 }
@@ -242,7 +304,12 @@ static int uart_stream_read(stream_device *self, void *buf, size_t len)
     uart *u = (uart *)self;
     if (len < 1 || !buf) return -1;
     if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
-    *(char *)buf = uart_rx_getc(u);      /* ISR-fed ring (IRQ) — spin until byte */
+    if (u->parent.mode == STREAM_MODE_POLL) {
+        while (!uart_hal_rx_pending(u->hal)) { }        /* busy-wait, no ISR */
+        *(char *)buf = uart_hal_read_dr(u->hal);
+        return 1;
+    }
+    *(char *)buf = uart_rx_getc(u);      /* IRQ: ISR-fed ring — spin until byte */
     return 1;
 }
 
@@ -252,8 +319,10 @@ static int uart_stream_write(stream_device *self, const void *buf, size_t len)
     const char *s = (const char *)buf;
     if (!buf) return -1;
     if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    if (u->parent.mode == STREAM_MODE_IRQ)
+        return uart_tx_blocking(u, s, len);             /* interrupt-driven TX */
     for (size_t i = 0; i < len; i++)
-        uart_hal_putc(u->hal, s[i]);    /* polling TX (IRQ/DMA TX is a future add) */
+        uart_hal_putc(u->hal, s[i]);    /* polling TX */
     return (int)len;
 }
 
@@ -287,15 +356,41 @@ static int uart_stream_submit(stream_device *self, io_xfer_t *xfer)
     if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
 
     if (xfer->dir == IO_XFER_DIR_WRITE) {
-        const char *s = (const char *)xfer->buf;
-        for (size_t i = 0; i < xfer->len; i++)
-            uart_hal_putc(u->hal, s[i]);    /* polling TX */
-        xfer->done = xfer->len;
-        io_xfer_complete(xfer, 0);          /* signal + callback (inline completion) */
-        return 0;
+        if (u->parent.mode == STREAM_MODE_POLL) {
+            const char *s = (const char *)xfer->buf;
+            for (size_t i = 0; i < xfer->len; i++)
+                uart_hal_putc(u->hal, s[i]);    /* polling TX */
+            xfer->done = xfer->len;
+            io_xfer_complete(xfer, 0);          /* signal + callback (inline) */
+            return 0;
+        }
+        /* IRQ: drive TX from the TXE ISR (serialized via tx_idle). The ISR
+         * calls io_xfer_complete() when the last byte leaves. */
+        osal_sem_wait(&u->tx_idle);
+        u->async_tx = xfer;
+        u->tx_ptr   = (const char *)xfer->buf;
+        u->tx_rem   = xfer->len;
+        xfer->done  = 0;
+        if (xfer->len == 0) {
+            u->async_tx = NULL;
+            osal_sem_give(&u->tx_idle);
+            io_xfer_complete(xfer, 0);
+            return 0;
+        }
+        uart_hal_enable_tx_irq(u->hal);
+        return 0;                               /* ISR completes */
     }
 
-    /* READ: hand off to the RX ISR. Drain any bytes already buffered, then let
+    /* READ */
+    if (u->parent.mode == STREAM_MODE_POLL) {
+        while (xfer->done < xfer->len) {
+            while (!uart_hal_rx_pending(u->hal)) { }
+            ((char *)xfer->buf)[xfer->done++] = uart_hal_read_dr(u->hal);
+        }
+        io_xfer_complete(xfer, 0);
+        return 0;
+    }
+    /* IRQ: hand off to the RX ISR. Drain any bytes already buffered, then let
      * uart_isr() finish the rest and call io_xfer_complete(). */
     u->async_rx = xfer;
     while (xfer->done < xfer->len && u->rx_head != u->rx_tail) {
@@ -334,6 +429,19 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg)
     case UART_IOCTL_GET_CR1:
         if (!arg) return -1;
         *(uint32_t *)arg = uart_hal_get_cr1(u->hal);
+        return 0;
+    case STREAM_IOCTL_SET_MODE: {
+        if (!arg) return -1;
+        stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
+        if (m == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+        u->parent.mode = m;
+        if (m == STREAM_MODE_IRQ) uart_hal_enable_rx_irq(u->hal);
+        else uart_hal_disable_rx_irq(u->hal);
+        return 0;
+    }
+    case STREAM_IOCTL_GET_MODE:
+        if (!arg) return -1;
+        *(stream_xfer_mode_t *)arg = u->parent.mode;
         return 0;
     default:
         return -1;
