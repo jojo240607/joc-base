@@ -19,6 +19,9 @@ static int temp_dev_write(device *self, const void *buf, size_t len);
 static int temp_dev_ioctl(device *self, int cmd, void *arg);
 static float temp_vread_celsius(temp_sensor *t);
 
+/* subclass vtable (defined below; forward-declared so temp_sensor_init can ref it) */
+static const struct control_deviceVtable temp_control_vtable;
+
 /* public methods — `static`, reachable ONLY through self->fun-> */
 static float temp_sensor_read_celsius(temp_sensor *self);
 static int32_t temp_sensor_read_celsius_x10(temp_sensor *self);
@@ -58,8 +61,8 @@ device *temp_sensor_create(const void *config)
     self->vdda_mv = c->vdda_mv;
     self->ts_cal1 = temp_hal_ts_cal1();
     self->ts_cal2 = temp_hal_ts_cal2();
-    self->parent.type = DEVICE_TYPE_TEMP_SENSOR;  /* driver sets its own class */
-    self->parent.name = c->name;                   /* driver sets its own name */
+    self->parent.parent.type = DEVICE_TYPE_TEMP_SENSOR;  /* driver sets its own class */
+    self->parent.parent.name = c->name;                   /* driver sets its own name */
     temp_sensor_init(self);
     return (device *)self;
 }
@@ -75,7 +78,10 @@ void temp_sensor_destroy(temp_sensor *self)
 void temp_sensor_init(temp_sensor *self)
 {
     if (!self) return;
-    self->parent.vtable = &temp_dev_vtable;   /* per-class shared vtable */
+    self->parent.parent.vtable = &temp_dev_vtable;       /* base device vtable */
+    self->parent.vtable        = &temp_control_vtable;   /* control-class vtable */
+    self->parent.parent.type   = DEVICE_TYPE_TEMP_SENSOR;
+    self->parent.parent.class  = DEVICE_CLASS_CONTROL;
     self->fun = &temp_sensor_fun;
     /* no hardware to bring up; open()/close() are no-ops */
 }
@@ -124,7 +130,9 @@ static int temp_dev_write(device *self, const void *buf, size_t len)
     return -1;   /* sensor is read-only */
 }
 
-static int temp_dev_ioctl(device *self, int cmd, void *arg)
+/* control-class ops — the REAL implementations; the base deviceVtable forwards
+ * here. command() is the ioctl-style control surface; set/get unused -> -1. */
+static int temp_control_command(control_device *self, int cmd, void *arg)
 {
     temp_sensor *t = (temp_sensor *)self;
     switch (cmd) {
@@ -148,6 +156,20 @@ static int temp_dev_ioctl(device *self, int cmd, void *arg)
         return -1;
     }
 }
+static int temp_control_set(control_device *self, int param, const void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+static int temp_control_get(control_device *self, int param, void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+
+static const struct control_deviceVtable temp_control_vtable = {
+    .command = temp_control_command,
+    .set     = temp_control_set,
+    .get     = temp_control_get,
+};
+
+/* base device-interface ops forward to the control-class vtable */
+static int temp_dev_ioctl(device *self, int cmd, void *arg)
+    { return temp_control_command((control_device *)self, cmd, arg); }
 
 /* --- core reading: talks to the ADC purely through the device interface --- */
 static float temp_vread_celsius(temp_sensor *t)

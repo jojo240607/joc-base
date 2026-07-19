@@ -12,6 +12,9 @@ static int gpio_dev_read(device *self, void *buf, size_t len);
 static int gpio_dev_write(device *self, const void *buf, size_t len);
 static int gpio_dev_ioctl(device *self, int cmd, void *arg);
 
+/* subclass vtable (defined below; forward-declared so gpio_pin_init can ref it) */
+static const struct control_deviceVtable gpio_control_vtable;
+
 /* public methods — `static`, reachable ONLY through self->fun-> */
 static void gpio_pin_set(gpio_pin *self);
 static void gpio_pin_reset(gpio_pin *self);
@@ -64,8 +67,8 @@ device *gpio_pin_create(const void *config)
     self->port = port;                       /* cache resolved pad for claim */
     self->pin = pin;
     self->af = af;
-    self->parent.type = DEVICE_TYPE_GPIO;    /* driver sets its own class */
-    self->parent.name = c->name;             /* driver sets its own name */
+    self->parent.parent.type = DEVICE_TYPE_GPIO;    /* driver sets its own class */
+    self->parent.parent.name = c->name;             /* driver sets its own name */
     gpio_pin_init(self);
     return (device *)self;
 }
@@ -81,7 +84,10 @@ void gpio_pin_destroy(gpio_pin *self)
 void gpio_pin_init(gpio_pin *self)
 {
     if (!self) return;
-    self->parent.vtable = &gpio_dev_vtable;   /* per-class shared vtable */
+    self->parent.parent.vtable = &gpio_dev_vtable;       /* base device vtable */
+    self->parent.vtable        = &gpio_control_vtable;   /* control-class vtable */
+    self->parent.parent.type   = DEVICE_TYPE_GPIO;
+    self->parent.parent.class  = DEVICE_CLASS_CONTROL;
     self->fun = &gpio_pin_fun;
     /* hardware bring-up is deferred to open() (see gpio_dev_open) */
 }
@@ -109,9 +115,9 @@ static int gpio_dev_open(device *self)
      * elsewhere) makes request fail and we refuse to touch the hardware. */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
-        if (pm->fun->request(pm, g->port, g->pin, g->af, g->parent.name) != 0) {
+        if (pm->fun->request(pm, g->port, g->pin, g->af, g->parent.parent.name) != 0) {
             printf("[gpio] %s: pin P%c%d CONFLICT — refused\r\n",
-                   g->parent.name, 'A' + g->port, (int)g->pin);
+                   g->parent.parent.name, 'A' + g->port, (int)g->pin);
             return -2;                       /* conflict: do NOT configure */
         }
         pinmux_pin_cfg_t cfg = {
@@ -148,7 +154,9 @@ static int gpio_dev_write(device *self, const void *buf, size_t len)
     return 1;
 }
 
-static int gpio_dev_ioctl(device *self, int cmd, void *arg)
+/* control-class ops — the REAL implementations; the base deviceVtable forwards
+ * here. command() is the ioctl-style control surface; set/get unused -> -1. */
+static int gpio_control_command(control_device *self, int cmd, void *arg)
 {
     gpio_pin *g = (gpio_pin *)self;
     switch (cmd) {
@@ -163,3 +171,17 @@ static int gpio_dev_ioctl(device *self, int cmd, void *arg)
         return -1;
     }
 }
+static int gpio_control_set(control_device *self, int param, const void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+static int gpio_control_get(control_device *self, int param, void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+
+static const struct control_deviceVtable gpio_control_vtable = {
+    .command = gpio_control_command,
+    .set     = gpio_control_set,
+    .get     = gpio_control_get,
+};
+
+/* base device-interface ops forward to the control-class vtable */
+static int gpio_dev_ioctl(device *self, int cmd, void *arg)
+    { return gpio_control_command((control_device *)self, cmd, arg); }

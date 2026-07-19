@@ -40,6 +40,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include "iface/device.h"
+#include "iface/stream_device.h"   /* device_as_stream downcast */
+#include "iface/io_xfer.h"         /* io_transfer_sync / io_transfer_async */
 #include "devmgr/device_manager.h"
 #include "board.h"
 #include "drv/clock.h"
@@ -49,6 +51,15 @@
 #include "drv/temp_sensor.h"
 #include "drv/pinmux.h"
 #include "selftest.h"
+
+/* completion callback for the IOXFER async demo: records that the transfer
+ * finished. Runs in ISR/thread context depending on the engine; just sets a
+ * flag so it stays ISR-safe. */
+static void io_demo_cb(io_xfer_t *x)
+{
+    if (x && x->arg)
+        *(int *)x->arg = 1;
+}
 
 int main(void)
 {
@@ -197,6 +208,39 @@ int main(void)
                     int n = snprintf(out, sizeof(out), "TICKS %lu\r\n",
                                      (unsigned long)board_ticks());
                     d_uart->vtable->write(d_uart, out, (size_t)n);
+                }
+                else if (strcmp(line, "IOXFER") == 0)
+                {
+                    /* Demo the unified sync/async transfer API (the framework
+                     * top-level over stream_device). Try it: type IOXFER and the
+                     * board sends two lines through io_transfer_sync / _async.
+                     * The async path uses a completion callback (cb) that sets a
+                     * flag, proving the ISR/callback plumbing end-to-end. */
+                    stream_device *s = device_as_stream(d_uart);
+                    if (!s) {
+                        d_uart->vtable->write(d_uart, "ERR no stream\r\n", 14);
+                    } else {
+                        static int g_io_cb_fired;
+                        g_io_cb_fired = 0;
+
+                        const char *m1 = "[IOXFER] sync transfer\r\n";
+                        io_xfer_t sx = { .buf = (void *)m1, .len = strlen(m1),
+                                         .dir = IO_XFER_DIR_WRITE };
+                        int rs = io_transfer_sync(s, &sx);
+
+                        const char *m2 = "[IOXFER] async transfer (cb)\r\n";
+                        io_xfer_t ax = { .buf = (void *)m2, .len = strlen(m2),
+                                         .dir = IO_XFER_DIR_WRITE,
+                                         .callback = io_demo_cb,
+                                         .arg = &g_io_cb_fired };
+                        int ra = io_transfer_async(s, &ax);
+
+                        char out[64];
+                        int n = snprintf(out, sizeof(out),
+                                         "[IOXFER] sync r=%d done=%d | async r=%d done=%d cb=%d\r\n",
+                                         rs, (int)sx.done, ra, (int)ax.done, g_io_cb_fired);
+                        d_uart->vtable->write(d_uart, out, (size_t)n);
+                    }
                 }
                 else
                 {

@@ -14,6 +14,9 @@ static int adc_dev_write(device *self, const void *buf, size_t len);
 static int adc_dev_ioctl(device *self, int cmd, void *arg);
 static void adc_hw_init(adc *self);
 
+/* subclass vtable (defined below; forward-declared so adc_init can reference it) */
+static const struct stream_deviceVtable adc_stream_vtable;
+
 /* public methods — `static`, reachable ONLY through self->fun-> (forward decls
  * so the const fun table below can reference them, per the moban template) */
 static uint32_t adc_read(adc *self);
@@ -57,8 +60,8 @@ device *adc_create(const void *config)
     if (c->channel < 16U && c->ain_signal) {
         pinmux_hal_resolve(c->ain_signal, &self->port, &self->pin, &self->af);
     }
-    self->parent.type = DEVICE_TYPE_ADC;     /* driver sets its own class */
-    self->parent.name = c->name;             /* driver sets its own name */
+    self->parent.parent.type = DEVICE_TYPE_ADC;     /* driver sets its own class */
+    self->parent.parent.name = c->name;             /* driver sets its own name */
     adc_init(self);
     return (device *)self;
 }
@@ -74,7 +77,11 @@ void adc_destroy(adc *self)
 void adc_init(adc *self)
 {
     if (!self) return;
-    self->parent.vtable = &adc_dev_vtable;   /* per-class shared vtable */
+    self->parent.parent.vtable = &adc_dev_vtable;     /* base device vtable */
+    self->parent.vtable        = &adc_stream_vtable;  /* stream-class vtable */
+    self->parent.parent.type   = DEVICE_TYPE_ADC;
+    self->parent.parent.class  = DEVICE_CLASS_STREAM;
+    self->parent.mode          = STREAM_MODE_POLL;    /* single polling conversion */
     self->fun = &adc_fun;
     /* hardware bring-up is deferred to open() (see adc_dev_open) */
 }
@@ -118,19 +125,39 @@ static int adc_dev_close(device *self)
     return 0;
 }
 
-static int adc_dev_read(device *self, void *buf, size_t len)
+/* stream-class ops — the REAL implementations; the base deviceVtable forwards
+ * here. An ADC is a sampling stream: one read() returns one converted sample.
+ * The transfer engine is chosen by self->parent.mode (POLL/IRQ/DMA). */
+static int adc_stream_read(stream_device *self, void *buf, size_t len)
 {
     adc *a = (adc *)self;
     if (len < sizeof(uint32_t)) return -1;
-    *(uint32_t *)buf = adc_read(a);
+    if (a->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    *(uint32_t *)buf = adc_read(a);    /* polling single conversion */
     return (int)sizeof(uint32_t);
 }
+static int adc_stream_write(stream_device *self, const void *buf, size_t len)
+    { (void)self; (void)buf; (void)len; return -1; }   /* ADC is read-only */
+static int adc_stream_flush(stream_device *self)
+    { (void)self; return 0; }
+static int adc_stream_read_frame(stream_device *self, void *buf, size_t len, void *meta)
+    { (void)self; (void)buf; (void)len; (void)meta; return -1; }
+static int adc_stream_write_frame(stream_device *self, const void *buf, size_t len, const void *meta)
+    { (void)self; (void)buf; (void)len; (void)meta; return -1; }
 
+static const struct stream_deviceVtable adc_stream_vtable = {
+    .read        = adc_stream_read,
+    .write       = adc_stream_write,
+    .flush       = adc_stream_flush,
+    .read_frame  = adc_stream_read_frame,
+    .write_frame = adc_stream_write_frame,
+};
+
+/* base device-interface ops forward to the stream-class vtable */
+static int adc_dev_read(device *self, void *buf, size_t len)
+    { return adc_stream_read((stream_device *)self, buf, len); }
 static int adc_dev_write(device *self, const void *buf, size_t len)
-{
-    (void)self; (void)buf; (void)len;
-    return -1;   /* ADC is read-only */
-}
+    { return adc_stream_write((stream_device *)self, buf, len); }
 
 static int adc_dev_ioctl(device *self, int cmd, void *arg)
 {
@@ -169,9 +196,9 @@ static void adc_hw_init(adc *self)
      * (16/17/18) need no GPIO pin, so skip them. */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm && self->channel < 16U) {
-        if (pm->fun->request(pm, self->port, self->pin, self->af, self->parent.name) != 0) {
+        if (pm->fun->request(pm, self->port, self->pin, self->af, self->parent.parent.name) != 0) {
             printf("[adc] %s: pin P%c%d CONFLICT — refused\r\n",
-                   self->parent.name, 'A' + self->port, self->pin);
+                   self->parent.parent.name, 'A' + self->port, self->pin);
             return;                          /* conflict: do NOT configure */
         }
         pinmux_pin_cfg_t cfg = {

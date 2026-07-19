@@ -15,6 +15,9 @@ add_executable(${PROJECT_NAME}.elf
     src/syscalls.c
     src/system_stm32f4xx.c
     # interface layer (single unified driver interface — header-only, platform-independent)
+    src/iface/io_xfer.c          # unified sync/async transfer API (framework top-level)
+    # OS abstraction layer (semaphore + critical section; RTOS-portable)
+    src/osal/osal_baremetal.c
     # driver layer (implements interfaces, delegates to HAL — platform-independent)
     src/drv/adc.c
     src/drv/gpio_pin.c
@@ -47,6 +50,7 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/device
     src/cmsis
     src/iface
+    src/osal
     src/drv
     src/devmgr
     src/board

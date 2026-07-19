@@ -19,6 +19,7 @@ struct selftestVtable {
     int (*test_gpio)(selftest *self);
     int (*test_adc)(selftest *self);
     int (*test_temp)(selftest *self);
+    int (*test_io)(selftest *self);     /* unified sync/async transfer API */
 };
 
 struct _selftest {

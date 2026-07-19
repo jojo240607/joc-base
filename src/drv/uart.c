@@ -1,4 +1,5 @@
 #include "uart.h"
+#include "iface/io_xfer.h"            /* io_xfer_t, io_xfer_complete (async API) */
 #include "devmgr/device_manager.h"   /* resolve the pinmux arbiter by name */
 #include "drv/pinmux.h"               /* request + program pins through pinmux */
 #include <stdlib.h>
@@ -13,6 +14,11 @@ static int uart_dev_close(device *self);
 static int uart_dev_read(device *self, void *buf, size_t len);
 static int uart_dev_write(device *self, const void *buf, size_t len);
 static int uart_dev_ioctl(device *self, int cmd, void *arg);
+
+/* subclass vtable (defined below; forward-declared so uart_init can reference it) */
+static const struct stream_deviceVtable uart_stream_vtable;
+/* async transfer helper (defined below) */
+static int uart_stream_submit(stream_device *self, io_xfer_t *xfer);
 
 /* public methods — `static`, reachable ONLY through self->fun-> */
 static void uart_set_baudrate(uart *self, uint32_t baud);
@@ -52,8 +58,8 @@ device *uart_create(const void *config)
     memset(self, 0, sizeof(uart));
     self->hal = uart_hal_create(c->periph, c->baud);
     if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
-    self->parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
-    self->parent.name = c->name;             /* driver sets its own name */
+    self->parent.parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
+    self->parent.parent.name = c->name;             /* driver sets its own name */
     self->tx_signal = c->tx_signal;          /* cache names for pinmux claim at open() */
     self->rx_signal = c->rx_signal;
     uart_init(self);
@@ -72,7 +78,11 @@ void uart_destroy(uart *self)
 void uart_init(uart *self)
 {
     if (!self) return;
-    self->parent.vtable = &uart_dev_vtable;   /* per-class shared vtable */
+    self->parent.parent.vtable = &uart_dev_vtable;    /* base device vtable */
+    self->parent.vtable        = &uart_stream_vtable; /* stream-class vtable */
+    self->parent.parent.type   = DEVICE_TYPE_UART;
+    self->parent.parent.class  = DEVICE_CLASS_STREAM;
+    self->parent.mode          = STREAM_MODE_IRQ;     /* RX is interrupt-driven */
     self->fun = &uart_fun;
     /* hardware bring-up is deferred to open() (see uart_dev_open) */
 }
@@ -128,11 +138,26 @@ static char uart_rx_getc(uart *self)
 }
 
 /* The receive ISR callback. Registered with the framework via irq_register()
- * (see uart_dev_open); `ctx` is the uart instance. Reading DR clears RXNE. */
+ * (see uart_dev_open); `ctx` is the uart instance. Reading DR clears RXNE.
+ * After pushing the byte into the ring, if an asynchronous read is in progress
+ * (async_rx != NULL) we drain the ring straight into that xfer and signal
+ * completion once it is full — this is the genuine IRQ-driven async path. */
 static void uart_isr(void *ctx)
 {
     uart *u = (uart *)ctx;
     uart_rx_putc(u, uart_hal_read_dr(u->hal));
+
+    if (u->async_rx) {
+        io_xfer_t *x = u->async_rx;
+        while (x->done < x->len && u->rx_head != u->rx_tail) {
+            ((char *)x->buf)[x->done++] = u->rx_buf[u->rx_tail];
+            u->rx_tail = (uint16_t)((u->rx_tail + 1U) % UART_RX_BUF_SIZE);
+        }
+        if (x->done >= x->len) {        /* transfer complete */
+            u->async_rx = NULL;
+            io_xfer_complete(x, 0);      /* wake sync waiter + invoke callback */
+        }
+    }
 }
 
 /* --- unified device-interface virtual implementations --- */
@@ -156,12 +181,12 @@ static int uart_dev_open(device *self)
 
         /* TX */
         if (!pinmux_hal_resolve(u->tx_signal, &port, &pin, &af)) {
-            printf("[uart] %s: unknown TX signal \"%s\"\r\n", u->parent.name, u->tx_signal);
+            printf("[uart] %s: unknown TX signal \"%s\"\r\n", u->parent.parent.name, u->tx_signal);
             return -3;
         }
-        if (pm->fun->request(pm, port, pin, af, u->parent.name) != 0) {
+        if (pm->fun->request(pm, port, pin, af, u->parent.parent.name) != 0) {
             printf("[uart] %s: TX pin P%c%d CONFLICT — refused\r\n",
-                   u->parent.name, 'A' + port, pin);
+                   u->parent.parent.name, 'A' + port, pin);
             return -2;                       /* conflict: do NOT configure */
         }
         cfg.af = af;
@@ -169,14 +194,14 @@ static int uart_dev_open(device *self)
 
         /* RX */
         if (!pinmux_hal_resolve(u->rx_signal, &port, &pin, &af)) {
-            printf("[uart] %s: unknown RX signal \"%s\"\r\n", u->parent.name, u->rx_signal);
-            pm->fun->release_owner(pm, u->parent.name);   /* roll back TX */
+            printf("[uart] %s: unknown RX signal \"%s\"\r\n", u->parent.parent.name, u->rx_signal);
+            pm->fun->release_owner(pm, u->parent.parent.name);   /* roll back TX */
             return -3;
         }
-        if (pm->fun->request(pm, port, pin, af, u->parent.name) != 0) {
+        if (pm->fun->request(pm, port, pin, af, u->parent.parent.name) != 0) {
             printf("[uart] %s: RX pin P%c%d CONFLICT — refused\r\n",
-                   u->parent.name, 'A' + port, pin);
-            pm->fun->release_owner(pm, u->parent.name);   /* roll back TX */
+                   u->parent.parent.name, 'A' + port, pin);
+            pm->fun->release_owner(pm, u->parent.parent.name);   /* roll back TX */
             return -2;
         }
         cfg.af = af;
@@ -209,23 +234,84 @@ static int uart_dev_close(device *self)
     return 0;
 }
 
-static int uart_dev_read(device *self, void *buf, size_t len)
+/* stream-class ops — the REAL implementations; the base deviceVtable forwards
+ * here so there is a single source of truth for the data path. The transfer
+ * engine is chosen by self->parent.mode (POLL/IRQ/DMA, see stream_device.h). */
+static int uart_stream_read(stream_device *self, void *buf, size_t len)
 {
     uart *u = (uart *)self;
     if (len < 1 || !buf) return -1;
-    *(char *)buf = uart_rx_getc(u);      /* drain the ISR-fed ring buffer */
+    if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    *(char *)buf = uart_rx_getc(u);      /* ISR-fed ring (IRQ) — spin until byte */
     return 1;
 }
 
-static int uart_dev_write(device *self, const void *buf, size_t len)
+static int uart_stream_write(stream_device *self, const void *buf, size_t len)
 {
     uart *u = (uart *)self;
     const char *s = (const char *)buf;
     if (!buf) return -1;
+    if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
     for (size_t i = 0; i < len; i++)
-        uart_hal_putc(u->hal, s[i]);
+        uart_hal_putc(u->hal, s[i]);    /* polling TX (IRQ/DMA TX is a future add) */
     return (int)len;
 }
+
+static int uart_stream_flush(stream_device *self)
+    { (void)self; return 0; }
+static int uart_stream_read_frame(stream_device *self, void *buf, size_t len, void *meta)
+    { (void)self; (void)buf; (void)len; (void)meta; return -1; }
+static int uart_stream_write_frame(stream_device *self, const void *buf, size_t len, const void *meta)
+    { (void)self; (void)buf; (void)len; (void)meta; return -1; }
+
+static const struct stream_deviceVtable uart_stream_vtable = {
+    .read        = uart_stream_read,
+    .write       = uart_stream_write,
+    .flush       = uart_stream_flush,
+    .read_frame  = uart_stream_read_frame,
+    .write_frame = uart_stream_write_frame,
+    .submit      = uart_stream_submit,
+};
+
+/* async START (stream vtable). Begins a transfer and returns immediately; the
+ * driver later calls io_xfer_complete() (from the ISR for reads, or inline for
+ * the polling TX below). This is the single hook the framework needs to support
+ * both io_transfer_sync (block on the completion semaphore) and
+ * io_transfer_async (return at once, callback on completion). */
+static int uart_stream_submit(stream_device *self, io_xfer_t *xfer)
+{
+    uart *u = (uart *)self;
+    if (!xfer || !xfer->buf) return -1;
+    if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+
+    if (xfer->dir == IO_XFER_DIR_WRITE) {
+        const char *s = (const char *)xfer->buf;
+        for (size_t i = 0; i < xfer->len; i++)
+            uart_hal_putc(u->hal, s[i]);    /* polling TX */
+        xfer->done = xfer->len;
+        io_xfer_complete(xfer, 0);          /* signal + callback (inline completion) */
+        return 0;
+    }
+
+    /* READ: hand off to the RX ISR. Drain any bytes already buffered, then let
+     * uart_isr() finish the rest and call io_xfer_complete(). */
+    u->async_rx = xfer;
+    while (xfer->done < xfer->len && u->rx_head != u->rx_tail) {
+        ((char *)xfer->buf)[xfer->done++] = u->rx_buf[u->rx_tail];
+        u->rx_tail = (uint16_t)((u->rx_tail + 1U) % UART_RX_BUF_SIZE);
+    }
+    if (xfer->done >= xfer->len) {          /* all available already */
+        u->async_rx = NULL;
+        io_xfer_complete(xfer, 0);
+    }
+    return 0;                               /* started; ISR completes if not done */
+}
+
+/* base device-interface ops forward to the stream-class vtable */
+static int uart_dev_read(device *self, void *buf, size_t len)
+    { return uart_stream_read((stream_device *)self, buf, len); }
+static int uart_dev_write(device *self, const void *buf, size_t len)
+    { return uart_stream_write((stream_device *)self, buf, len); }
 
 static int uart_dev_ioctl(device *self, int cmd, void *arg)
 {

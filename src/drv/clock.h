@@ -2,6 +2,7 @@
 #define CLOCK_H
 
 #include "iface/device.h"
+#include "iface/control_device.h"  /* clock IS-A control_device (parameter/state) */
 #include <stdint.h>
 
 /* device-level control commands for the clock driver */
@@ -25,7 +26,7 @@ struct clockFun {
 };
 
 struct _sys_clock {
-    device parent;                /* unified interface — MUST be first member */
+    control_device parent;        /* unified interface — MUST be first member (IS-A control_device) */
     const struct clockFun *fun;
     uint32_t sysclk_hz;
 };

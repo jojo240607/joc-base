@@ -2,6 +2,7 @@
 #define GPIO_PIN_H
 
 #include "iface/device.h"
+#include "iface/control_device.h"  /* gpio pin IS-A control_device (output/state) */
 #include "gpio_hal.h"         /* opaque handle ONLY — no STM32 types reach the driver */
 #include "pinmux_hal.h"       /* pinmux_port_t (port index for the pinmux) */
 #include <stdint.h>
@@ -29,7 +30,7 @@ struct gpio_pinFun {
 };
 
 struct _gpio_pin {
-    device parent;                /* unified interface — MUST be first member */
+    control_device parent;        /* unified interface — MUST be first member (IS-A control_device) */
     const struct gpio_pinFun *fun;
     gpio_hal_handle_t *hal;       /* opaque — driver never dereferences it */
     uint32_t mode;                /* cached direction (0=in,1=out,2=alt) */

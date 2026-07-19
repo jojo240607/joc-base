@@ -10,6 +10,9 @@ static int clock_dev_read(device *self, void *buf, size_t len);
 static int clock_dev_write(device *self, const void *buf, size_t len);
 static int clock_dev_ioctl(device *self, int cmd, void *arg);
 
+/* subclass vtable (defined below; forward-declared so clock_init can reference it) */
+static const struct control_deviceVtable clock_control_vtable;
+
 /* public methods — `static`, reachable ONLY through self->fun-> */
 static uint32_t clock_get_sysclk_hz(sys_clock *self);
 
@@ -38,8 +41,8 @@ device *clock_create(const void *config)
     sys_clock *self = (sys_clock *)malloc(sizeof(sys_clock));
     if (!self) return NULL;
     memset(self, 0, sizeof(sys_clock));
-    self->parent.type = DEVICE_TYPE_CLOCK;   /* driver sets its own class */
-    self->parent.name = c->name;             /* driver sets its own name */
+    self->parent.parent.type = DEVICE_TYPE_CLOCK;   /* driver sets its own class */
+    self->parent.parent.name = c->name;             /* driver sets its own name */
     clock_init(self);
     return (device *)self;
 }
@@ -54,7 +57,10 @@ void clock_destroy(sys_clock *self)
 void clock_init(sys_clock *self)
 {
     if (!self) return;
-    self->parent.vtable = &clock_dev_vtable;   /* per-class shared vtable */
+    self->parent.parent.vtable = &clock_dev_vtable;     /* base device vtable */
+    self->parent.vtable        = &clock_control_vtable; /* control-class vtable */
+    self->parent.parent.type   = DEVICE_TYPE_CLOCK;
+    self->parent.parent.class  = DEVICE_CLASS_CONTROL;
     self->fun = &clock_fun;
     self->sysclk_hz = clock_hal_sysclk_hz();
     /* hardware bring-up (PLL) is deferred to open() (see clock_dev_open) */
@@ -100,7 +106,10 @@ static int clock_dev_write(device *self, const void *buf, size_t len)
     return -1;   /* clock is not writable */
 }
 
-static int clock_dev_ioctl(device *self, int cmd, void *arg)
+/* control-class ops — the REAL implementations; the base deviceVtable forwards
+ * here. command() is the ioctl-style control surface; set/get are unused by the
+ * clock (it is read-only state) so they return -1. */
+static int clock_control_command(control_device *self, int cmd, void *arg)
 {
     sys_clock *c = (sys_clock *)self;
     switch (cmd) {
@@ -112,3 +121,17 @@ static int clock_dev_ioctl(device *self, int cmd, void *arg)
         return -1;
     }
 }
+static int clock_control_set(control_device *self, int param, const void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+static int clock_control_get(control_device *self, int param, void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+
+static const struct control_deviceVtable clock_control_vtable = {
+    .command = clock_control_command,
+    .set     = clock_control_set,
+    .get     = clock_control_get,
+};
+
+/* base device-interface ops forward to the control-class vtable */
+static int clock_dev_ioctl(device *self, int cmd, void *arg)
+    { return clock_control_command((control_device *)self, cmd, arg); }

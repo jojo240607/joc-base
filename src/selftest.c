@@ -10,6 +10,8 @@
 #include "drv/gpio_pin.h"
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
+#include "iface/stream_device.h"   /* device_as_stream downcast */
+#include "iface/io_xfer.h"         /* io_transfer_sync / io_transfer_async */
 
 #define UART_PCLK2_HZ 84000000UL
 #define UART_BAUD     115200UL
@@ -19,6 +21,7 @@ static int selftest_vuart(selftest *self);
 static int selftest_vgpio(selftest *self);
 static int selftest_vadc(selftest *self);
 static int selftest_vtemp(selftest *self);
+static int selftest_vio(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -27,6 +30,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_gpio  = selftest_vgpio,
     .test_adc   = selftest_vadc,
     .test_temp  = selftest_vtemp,
+    .test_io    = selftest_vio,
 };
 
 const struct selftestFun selftest_fun = {
@@ -98,6 +102,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_temp(self);
     printf("[BIST] temp  : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_io(self);
+    printf("[BIST] io    : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     printf("SELF-TEST: %s\r\n", pass ? "PASS" : "FAIL");
@@ -187,4 +195,29 @@ static int selftest_vtemp(selftest *self)
        test is robust to ambient/self-heating, while still rejecting garbage. */
     int temp_ok = (t10 > -200 && t10 < 1200);   /* -20.0 C .. 120.0 C */
     return temp_ok;
+}
+
+/* Verify the unified sync/async transfer API wiring WITHOUT putting any bytes
+ * on the wire (keeps the serial clean for the PC companion test). We check:
+ *   - the stream downcast (device_as_stream) resolves for uart and adc;
+ *   - io_transfer_async is REJECTED (-1) for a driver without submit (adc);
+ *   - io_transfer_async is ACCEPTED (0) for a driver with submit (uart).
+ * The real transmit/receive paths are exercised interactively via the IOXFER
+ * command in main.c. */
+static int selftest_vio(selftest *self)
+{
+    stream_device *us = device_as_stream(self->uart);
+    stream_device *as = device_as_stream(self->adc);
+    if (!us || !as) return 0;
+
+    char dummy[1];
+    io_xfer_t no_submit = { .buf = dummy, .len = 0, .dir = IO_XFER_DIR_WRITE };
+    int rejected = (io_transfer_async(as, &no_submit) == -1);   /* adc: no submit */
+
+    io_xfer_t has_submit = { .buf = dummy, .len = 0, .dir = IO_XFER_DIR_WRITE };
+    int accepted = (io_transfer_async(us, &has_submit) == 0);   /* uart: has submit */
+
+    printf("       downcast ok, async reject(adc)=%s accept(uart)=%s\r\n",
+           rejected ? "yes" : "NO", accepted ? "yes" : "NO");
+    return rejected && accepted;
 }

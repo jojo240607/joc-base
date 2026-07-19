@@ -2,6 +2,7 @@
 #define TEMP_SENSOR_H
 
 #include "iface/device.h"
+#include "iface/control_device.h"  /* temp sensor IS-A control_device (read via get/command) */
 #include "adc.h"               /* only for the ADC_IOCTL_* command constants */
 #include <stdint.h>
 
@@ -30,7 +31,7 @@ struct temp_sensorFun {
 };
 
 struct _temp_sensor {
-    device parent;                /* unified interface — MUST be first member */
+    control_device parent;        /* unified interface — MUST be first member (IS-A control_device) */
     const struct temp_sensorFun *fun;
     device *adc;                  /* unified device interface to ANY ADC */
     uint32_t vdda_mv;             /* actual supply in mV (default 3300) */

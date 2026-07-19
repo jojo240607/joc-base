@@ -2,6 +2,7 @@
 #define ADC_H
 
 #include "iface/device.h"
+#include "iface/stream_device.h"  /* adc IS-A stream_device (sampling stream) */
 #include "adc_hal.h"          /* opaque handle ONLY — no STM32 types reach the driver */
 #include "pinmux_hal.h"       /* pinmux_port_t (resolved port for the pinmux claim) */
 #include <stdint.h>
@@ -33,7 +34,7 @@ struct adcFun {
 };
 
 struct _adc {
-    device parent;                /* unified interface — MUST be first member */
+    stream_device parent;         /* unified interface — MUST be first member (IS-A stream_device) */
     const struct adcFun *fun;
     adc_hal_handle_t *hal;        /* opaque — driver never dereferences it */
     uint32_t channel;            /* logical channel (0..N), kept as driver state */

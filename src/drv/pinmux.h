@@ -2,6 +2,7 @@
 #define PINMUX_H
 
 #include "iface/device.h"
+#include "iface/control_device.h"  /* pinmux IS-A control_device (arbitrator/state) */
 #include "pinmux_hal.h"         /* pinmux_port_t, pinmux_pin_cfg_t (no STM32 types) */
 #include <stdint.h>
 
@@ -53,7 +54,7 @@ struct pinmuxFun {
 };
 
 struct _pinmux {
-    device parent;                /* unified interface — MUST be first member */
+    control_device parent;        /* unified interface — MUST be first member (IS-A control_device) */
     const struct pinmuxFun *fun;
     pinmux_pin_state_t state[PINMUX_PORT_COUNT][16];  /* ownership matrix */
 };

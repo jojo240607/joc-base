@@ -2,6 +2,7 @@
 #define UART_H
 
 #include "iface/device.h"
+#include "iface/stream_device.h"  /* uart IS-A stream_device (data stream) */
 #include "uart_hal.h"         /* opaque handle ONLY — no STM32 types reach the driver */
 #include "irq.h"              /* platform-independent interrupt API (irq_register/enable) */
 #include <stdint.h>
@@ -31,7 +32,7 @@ struct uartFun {
 };
 
 struct _uart {
-    device parent;                /* unified interface — MUST be first member */
+    stream_device parent;         /* unified interface — MUST be first member (IS-A stream_device) */
     const struct uartFun *fun;
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
     const char *tx_signal;        /* cached TX signal name (resolved at open) */
@@ -41,6 +42,11 @@ struct _uart {
     char rx_buf[UART_RX_BUF_SIZE];
     volatile uint16_t rx_head;    /* advanced by the ISR (interrupt context) */
     volatile uint16_t rx_tail;    /* advanced by read()/getc() (thread context) */
+    /* In-progress asynchronous READ (started via stream submit). The ISR drains
+     * the ring into this xfer and calls io_xfer_complete() when it is full.
+     * NULL when no async read is pending. (Synchronous read()/getc() and an
+     * async read must not be used on the same uart at the same time.) */
+    io_xfer_t *async_rx;
 };
 
 device *uart_create(const void *config);

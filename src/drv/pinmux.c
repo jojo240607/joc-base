@@ -11,6 +11,9 @@ static int pinmux_dev_read(device *self, void *buf, size_t len);
 static int pinmux_dev_write(device *self, const void *buf, size_t len);
 static int pinmux_dev_ioctl(device *self, int cmd, void *arg);
 
+/* subclass vtable (defined below; forward-declared so pinmux_init can reference it) */
+static const struct control_deviceVtable pinmux_control_vtable;
+
 /* public methods — `static`, reachable ONLY through self->fun-> */
 static int  pinmux_request(pinmux *self, pinmux_port_t port, uint8_t pin,
                            uint8_t af, const char *owner);
@@ -54,8 +57,8 @@ device *pinmux_create(const void *config)
     pinmux *self = (pinmux *)malloc(sizeof(pinmux));
     if (!self) return NULL;
     memset(self, 0, sizeof(pinmux));
-    self->parent.type = DEVICE_TYPE_PINMUX;          /* driver sets its own class */
-    self->parent.name = (c && c->name) ? c->name : "pinmux";
+    self->parent.parent.type = DEVICE_TYPE_PINMUX;          /* driver sets its own class */
+    self->parent.parent.name = (c && c->name) ? c->name : "pinmux";
     pinmux_init(self);
     return (device *)self;
 }
@@ -70,7 +73,10 @@ void pinmux_destroy(pinmux *self)
 void pinmux_init(pinmux *self)
 {
     if (!self) return;
-    self->parent.vtable = &pinmux_dev_vtable;   /* per-class shared vtable */
+    self->parent.parent.vtable = &pinmux_dev_vtable;      /* base device vtable */
+    self->parent.vtable        = &pinmux_control_vtable;  /* control-class vtable */
+    self->parent.parent.type   = DEVICE_TYPE_PINMUX;
+    self->parent.parent.class  = DEVICE_CLASS_CONTROL;
     self->fun = &pinmux_fun;
     /* ownership matrix is already zeroed by the create() memset */
 }
@@ -218,7 +224,9 @@ static int pinmux_dev_write(device *self, const void *buf, size_t len)
     return -1;                              /* not a data stream */
 }
 
-static int pinmux_dev_ioctl(device *self, int cmd, void *arg)
+/* control-class ops — the REAL implementations; the base deviceVtable forwards
+ * here. command() is the ioctl-style control surface; set/get unused -> -1. */
+static int pinmux_control_command(control_device *self, int cmd, void *arg)
 {
     pinmux *pm = (pinmux *)self;
     if (!pm || !arg) return -1;
@@ -252,6 +260,20 @@ static int pinmux_dev_ioctl(device *self, int cmd, void *arg)
         return -1;
     }
 }
+static int pinmux_control_set(control_device *self, int param, const void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+static int pinmux_control_get(control_device *self, int param, void *val)
+    { (void)self; (void)param; (void)val; return -1; }
+
+static const struct control_deviceVtable pinmux_control_vtable = {
+    .command = pinmux_control_command,
+    .set     = pinmux_control_set,
+    .get     = pinmux_control_get,
+};
+
+/* base device-interface ops forward to the control-class vtable */
+static int pinmux_dev_ioctl(device *self, int cmd, void *arg)
+    { return pinmux_control_command((control_device *)self, cmd, arg); }
 
 /* --- built-in self-test of the conflict-detection logic ------------------ */
 int pinmux_run_selftest(pinmux *self)
