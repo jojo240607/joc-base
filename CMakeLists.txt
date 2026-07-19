@@ -15,7 +15,8 @@ add_executable(${PROJECT_NAME}.elf
     src/syscalls.c
     src/system_stm32f4xx.c
     # interface layer (single unified driver interface — header-only, platform-independent)
-    src/iface/io_xfer.c          # unified sync/async transfer API (framework top-level)
+    src/iface/stream_device.c    # stream_device transfer_sync/async default impl
+    src/iface/io_xfer.c          # io_xfer_t descriptor + io_xfer_complete (driver/ISR helper)
     # OS abstraction layer (semaphore + critical section; RTOS-portable)
     src/osal/osal_baremetal.c
     # driver layer (implements interfaces, delegates to HAL — platform-independent)

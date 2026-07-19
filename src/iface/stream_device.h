@@ -62,9 +62,16 @@ struct stream_deviceVtable {
     /* Optional async START: begin the transfer described by `xfer` and return
      * immediately (IRQ/DMA) or complete it inline (POLL, calling
      * io_xfer_complete before returning). When the transfer finishes the driver
-     * calls io_xfer_complete(). NULL = not supported: io_transfer_sync falls
-     * back to a read/write loop and io_transfer_async returns -1. */
+     * calls io_xfer_complete(). NULL = not supported: stream_device_transfer_sync
+     * falls back to a read/write loop and stream_device_transfer_async returns -1. */
     int (*submit)(stream_device *self, io_xfer_t *xfer);
+    /* Unified synchronous / asynchronous transfer — the OOC entry points. These
+     * normally point at the framework defaults stream_device_default_transfer_sync
+     * / _async (which internally use submit or fall back to read/write). A driver
+     * MAY override them (e.g. a native DMA engine). Callers reach them via the
+     * inline stream_device_transfer_sync / _async wrappers, never as bare fns. */
+    int (*transfer_sync)(stream_device *self, io_xfer_t *xfer);
+    int (*transfer_async)(stream_device *self, io_xfer_t *xfer);
 };
 
 struct _stream_device {
@@ -79,5 +86,31 @@ static inline device *stream_device_to_device(stream_device *s) { return &s->par
 /* downcast (device -> subclass, requires class match, else NULL) */
 static inline stream_device *device_as_stream(device *d)
     { return (d && d->class == DEVICE_CLASS_STREAM) ? (stream_device *)d : NULL; }
+
+/* Framework default implementation of the unified transfer API, shared by every
+ * stream driver. A driver's vtable normally points transfer_sync / transfer_async
+ * at these; a driver MAY override them for a specialized engine. */
+int stream_device_default_transfer_sync (stream_device *self, io_xfer_t *xfer);
+int stream_device_default_transfer_async(stream_device *self, io_xfer_t *xfer);
+
+/* OOC entry points: dispatch the transfer THROUGH the object's vtable
+ * (polymorphic). If a driver left the slot NULL we fall back to the shared
+ * default so behavior stays correct (e.g. the read/write loop for drivers
+ * without submit). This is how callers should always invoke the transfer API —
+ * via the stream_device object, never a bare module-level function. */
+static inline int stream_device_transfer_sync(stream_device *self, io_xfer_t *xfer)
+{
+    if (!self || !self->vtable) return -1;
+    if (self->vtable->transfer_sync)
+        return self->vtable->transfer_sync(self, xfer);
+    return stream_device_default_transfer_sync(self, xfer);
+}
+static inline int stream_device_transfer_async(stream_device *self, io_xfer_t *xfer)
+{
+    if (!self || !self->vtable) return -1;
+    if (self->vtable->transfer_async)
+        return self->vtable->transfer_async(self, xfer);
+    return stream_device_default_transfer_async(self, xfer);
+}
 
 #endif /* STREAM_DEVICE_H */

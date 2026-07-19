@@ -271,12 +271,14 @@ static const struct stream_deviceVtable uart_stream_vtable = {
     .read_frame  = uart_stream_read_frame,
     .write_frame = uart_stream_write_frame,
     .submit      = uart_stream_submit,
+    .transfer_sync  = stream_device_default_transfer_sync,
+    .transfer_async = stream_device_default_transfer_async,
 };
 
 /* async START (stream vtable). Begins a transfer and returns immediately; the
  * driver later calls io_xfer_complete() (from the ISR for reads, or inline for
  * the polling TX below). This is the single hook the framework needs to support
- * both io_transfer_sync (block on the completion semaphore) and
+ * both stream_device_transfer_sync (block on the completion semaphore) and
  * io_transfer_async (return at once, callback on completion). */
 static int uart_stream_submit(stream_device *self, io_xfer_t *xfer)
 {

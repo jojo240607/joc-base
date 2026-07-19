@@ -11,7 +11,7 @@
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
-#include "iface/io_xfer.h"         /* io_transfer_sync / io_transfer_async */
+#include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
 
 #define UART_PCLK2_HZ 84000000UL
 #define UART_BAUD     115200UL
@@ -200,7 +200,7 @@ static int selftest_vtemp(selftest *self)
 /* Verify the unified sync/async transfer API wiring WITHOUT putting any bytes
  * on the wire (keeps the serial clean for the PC companion test). We check:
  *   - the stream downcast (device_as_stream) resolves for uart and adc;
- *   - io_transfer_async is REJECTED (-1) for a driver without submit (adc);
+ *   - stream_device_transfer_async is REJECTED (-1) for a driver without submit (adc);
  *   - io_transfer_async is ACCEPTED (0) for a driver with submit (uart).
  * The real transmit/receive paths are exercised interactively via the IOXFER
  * command in main.c. */
@@ -212,10 +212,10 @@ static int selftest_vio(selftest *self)
 
     char dummy[1];
     io_xfer_t no_submit = { .buf = dummy, .len = 0, .dir = IO_XFER_DIR_WRITE };
-    int rejected = (io_transfer_async(as, &no_submit) == -1);   /* adc: no submit */
+    int rejected = (stream_device_transfer_async(as, &no_submit) == -1);   /* adc: no submit */
 
     io_xfer_t has_submit = { .buf = dummy, .len = 0, .dir = IO_XFER_DIR_WRITE };
-    int accepted = (io_transfer_async(us, &has_submit) == 0);   /* uart: has submit */
+    int accepted = (stream_device_transfer_async(us, &has_submit) == 0);   /* uart: has submit */
 
     printf("       downcast ok, async reject(adc)=%s accept(uart)=%s\r\n",
            rejected ? "yes" : "NO", accepted ? "yes" : "NO");

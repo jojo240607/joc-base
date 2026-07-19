@@ -151,6 +151,8 @@ static const struct stream_deviceVtable adc_stream_vtable = {
     .flush       = adc_stream_flush,
     .read_frame  = adc_stream_read_frame,
     .write_frame = adc_stream_write_frame,
+    .transfer_sync  = stream_device_default_transfer_sync,
+    .transfer_async = stream_device_default_transfer_async,
 };
 
 /* base device-interface ops forward to the stream-class vtable */

@@ -6,17 +6,16 @@
 #include <stddef.h>
 
 /*
- * Unified synchronous / asynchronous transfer API for stream devices.
+ * Unified synchronous / asynchronous transfer descriptor + driver/ISR completion
+ * helper for stream devices.
  *
- * This is the "framework top-level" the driver author asked for: a single pair
- * of calls that works on ANY stream_device regardless of which low-level engine
- * (POLL / IRQ / DMA) the driver uses internally:
+ * The transfer API ITSELF lives in the stream_device interface
+ * (iface/stream_device.h): stream_device_transfer_sync / _async are reached
+ * through the stream_device object (polymorphic). This file only defines the
+ * transfer descriptor (io_xfer_t) and the driver/ISR-side completion helper
+ * io_xfer_complete() that a driver calls when a transfer finishes.
  *
- *   io_transfer_sync (dev, xfer)  — start, then block until completion.
- *   io_transfer_async(dev, xfer)  — start, return immediately; the driver's ISR
- *                                   calls xfer->callback on completion.
- *
- * How the two map onto the three engines (driver-internal):
+ * How sync/async map onto the three engines (driver-internal):
  *   POLL    — sync: start + spin polling. async: the driver does it inline then
  *                    calls io_xfer_complete() (callback fires before async
  *                    returns — i.e. it "completes synchronously").
@@ -27,8 +26,8 @@
  *                    RTOS port must swap — driver code is untouched.
  *
  * A driver opts into async by filling stream_deviceVtable.submit. Drivers that
- * do not implement it still work: io_transfer_sync falls back to a read/write
- * loop, and io_transfer_async returns -1 (not supported).
+ * do not implement it still work: stream_device_transfer_sync falls back to a
+ * read/write loop, and stream_device_transfer_async returns -1 (not supported).
  */
 typedef enum {
     IO_XFER_DIR_READ  = 0,
@@ -50,13 +49,10 @@ struct io_xfer {
     osal_sem_t     sem;       /* internal completion flag (signaled by driver) */
 };
 
-/* Framework-level unified transfer API (works on any stream_device). */
-int io_transfer_sync (stream_device *dev, io_xfer_t *xfer);
-int io_transfer_async(stream_device *dev, io_xfer_t *xfer);
-
 /* Driver/ISR-side helper: call when a transfer finishes. Signals the sync
  * waiter (if any) via the semaphore and invokes the completion callback (if
- * any). Safe to call from interrupt context. */
+ * any). Safe to call from interrupt context. The transfer API itself
+ * (stream_device_transfer_sync / _async) is declared in iface/stream_device.h. */
 void io_xfer_complete(io_xfer_t *xfer, int status);
 
 #endif /* IO_XFER_H */

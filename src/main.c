@@ -41,7 +41,7 @@
 #include <stdlib.h>
 #include "iface/device.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
-#include "iface/io_xfer.h"         /* io_transfer_sync / io_transfer_async */
+#include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
 #include "devmgr/device_manager.h"
 #include "board.h"
 #include "drv/clock.h"
@@ -213,7 +213,7 @@ int main(void)
                 {
                     /* Demo the unified sync/async transfer API (the framework
                      * top-level over stream_device). Try it: type IOXFER and the
-                     * board sends two lines through io_transfer_sync / _async.
+                     * board sends two lines through stream_device_transfer_sync / _async.
                      * The async path uses a completion callback (cb) that sets a
                      * flag, proving the ISR/callback plumbing end-to-end. */
                     stream_device *s = device_as_stream(d_uart);
@@ -226,14 +226,14 @@ int main(void)
                         const char *m1 = "[IOXFER] sync transfer\r\n";
                         io_xfer_t sx = { .buf = (void *)m1, .len = strlen(m1),
                                          .dir = IO_XFER_DIR_WRITE };
-                        int rs = io_transfer_sync(s, &sx);
+                        int rs = stream_device_transfer_sync(s, &sx);
 
                         const char *m2 = "[IOXFER] async transfer (cb)\r\n";
                         io_xfer_t ax = { .buf = (void *)m2, .len = strlen(m2),
                                          .dir = IO_XFER_DIR_WRITE,
                                          .callback = io_demo_cb,
                                          .arg = &g_io_cb_fired };
-                        int ra = io_transfer_async(s, &ax);
+                        int ra = stream_device_transfer_async(s, &ax);
 
                         char out[64];
                         int n = snprintf(out, sizeof(out),
