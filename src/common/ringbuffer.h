@@ -13,10 +13,11 @@
  * (fun + vtable, like the drv/ classes) but is NOT a `device` subclass — it is
  * just a byte FIFO, with zero chip knowledge, so it ports untouched.
  *
- * The data-stream device base class (iface/stream_device.h) embeds one of these
- * (`rx_rb`) so every stream driver gets a ready-to-use RX ring buffer; a driver
- * only has to attach a storage buffer via stream_device_init_ringbuffer() and
- * then push (ISR context) / pop (thread context) through the ringbuffer API.
+ * The data-stream device base class (iface/stream_device.h) holds a POINTER to
+ * one of these (`rx_rb`); a driver that needs an RX ring attaches one via
+ * stream_device_init_ringbuffer() (heap-allocated, backed by the driver's own
+ * storage) and then push (ISR context) / pop (thread context) through the
+ * ringbuffer API. Drivers that don't need a ring leave the pointer NULL.
  *
  * CONCURRENCY MODEL — single-producer / single-consumer (SPSC), lock-free:
  *   - the PRODUCER (e.g. a receive ISR) only ever writes `head`;

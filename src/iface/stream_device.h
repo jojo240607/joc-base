@@ -79,21 +79,27 @@ struct _stream_device {
     device parent;                         /* IS-A device */
     const struct stream_deviceVtable *vtable;
     stream_xfer_mode_t mode;               /* selected engine (POLL/IRQ/DMA) */
-    /* Embedded RX ring buffer. A stream driver attaches a storage buffer via
-     * stream_device_init_ringbuffer() and then pushes received bytes (typically
-     * from its RX ISR) and pops them in read() — no per-driver ring needed.
-     * Left zeroed (buf == NULL) until a driver attaches a buffer. */
-    ringbuffer rx_rb;
+    /* RX ring buffer handle. A stream driver that needs an RX ring attaches one
+     * via stream_device_init_ringbuffer() (which heap-allocates a ringbuffer
+     * object backed by `buf`); drivers that don't need one (e.g. ADC) leave this
+     * NULL and pay only a single pointer instead of a full ringbuffer struct.
+     * Access it via stream_device_get_ringbuffer() (NULL-safe). */
+    ringbuffer *rx_rb;
 };
 
-/* Attach a storage buffer to the embedded RX ring buffer so a driver can use
- * it. `buf` is normally a static array supplied by the driver/board; the ring
- * buffer does NOT free external storage. Call once at open() time. */
+/* Attach an RX ring buffer to this stream device. Allocates a ringbuffer object
+ * (heap) backed by `buf` (external storage — NOT freed by the ring; pass NULL to
+ * let the ring allocate its own). Call once at open() time for devices that need
+ * an RX ring. Re-attaching frees any previously attached ring first. */
 void stream_device_init_ringbuffer(stream_device *self, uint8_t *buf, size_t size);
 
-/* Access the embedded RX ring buffer (e.g. to push from an ISR / pop in read).
- * Returns NULL if `self` is NULL. The ring buffer is usable only after
- * stream_device_init_ringbuffer() has attached a buffer. */
+/* Free the attached RX ring buffer (if any). Call from the device's destroy path
+ * so the heap object is released. Safe to call when no ring was attached. */
+void stream_device_free_ringbuffer(stream_device *self);
+
+/* Access the attached RX ring buffer (e.g. to push from an ISR / pop in read).
+ * Returns NULL if `self` is NULL or no ring is attached — callers MUST NULL-check
+ * before use. The ring is usable only after stream_device_init_ringbuffer(). */
 ringbuffer *stream_device_get_ringbuffer(stream_device *self);
 
 /* upcast (subclass -> device, free pointer cast) */

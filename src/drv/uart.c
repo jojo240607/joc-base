@@ -75,6 +75,7 @@ void uart_destroy(uart *self)
 {
     if (!self) return;
     uart_deinit(self);
+    stream_device_free_ringbuffer((stream_device *)self);  /* release RX ring (heap) */
     uart_hal_destroy(self->hal);   /* mirror create: free the HAL handle */
     free(self);
 }

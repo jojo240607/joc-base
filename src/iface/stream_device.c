@@ -81,15 +81,23 @@ int stream_device_default_transfer_async(stream_device *self, io_xfer_t *xfer)
 void stream_device_init_ringbuffer(stream_device *self, uint8_t *buf, size_t size)
 {
     if (!self || size < 2) return;
-    /* Initialize the embedded ringbuffer object in place (no heap): point it at
-     * the caller's storage and run the shared class init(). */
-    self->rx_rb.buf = buf;
-    self->rx_rb.size = size;
-    self->rx_rb.owns_buf = 0;
-    ringbuffer_init(&self->rx_rb);
+    /* Allocate the ringbuffer object on the heap, backed by the caller's storage
+     * (owns_buf = 0, so only the small ringbuffer struct is heap; the byte store
+     * stays in the driver). Free any previously attached ring first. */
+    stream_device_free_ringbuffer(self);
+    ringbuffer_config_t cfg = { .buf = buf, .size = size, .overwrite = 0 };
+    self->rx_rb = ringbuffer_create(&cfg);
+}
+
+void stream_device_free_ringbuffer(stream_device *self)
+{
+    if (self && self->rx_rb) {
+        ringbuffer_destroy(self->rx_rb);   /* frees the heap object (not buf) */
+        self->rx_rb = NULL;
+    }
 }
 
 ringbuffer *stream_device_get_ringbuffer(stream_device *self)
 {
-    return self ? &self->rx_rb : NULL;
+    return self ? self->rx_rb : NULL;
 }
