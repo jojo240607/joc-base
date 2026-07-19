@@ -34,3 +34,22 @@ void IRQ_CommonHandler(void)
     uint32_t vect = (SCB->ICSR & SCB_ICSR_VECTACTIVE_Msk) >> SCB_ICSR_VECTACTIVE_Pos;
     irq_dispatch((irq_id_t)((int)vect - 16));
 }
+
+/* SysTick is a core (Cortex-M) peripheral, configured here in the chip HAL so
+ * event-device drivers never include the raw CMSIS header. */
+irq_id_t irq_hal_systick_id(void)
+{
+    return (irq_id_t)SysTick_IRQn;
+}
+
+int irq_hal_systick_config(uint32_t cpu_hz, uint32_t tick_hz)
+{
+    if (tick_hz == 0 || cpu_hz < tick_hz)
+        return -1;
+    return (int)SysTick_Config(cpu_hz / tick_hz);
+}
+
+void irq_hal_systick_clear(void)
+{
+    (void)SysTick->CTRL;        /* read clears COUNTFLAG, re-arms the tick */
+}

@@ -18,11 +18,11 @@ Info : Listening on port 3333 for gdb connections
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 [stm32f4x.cpu] halted due to debug-request, current mode: Thread 
-xPSR: 0x01000000 pc: 0x08001f0c msp: 0x20020000
+xPSR: 0x01000000 pc: 0x080021b4 msp: 0x20020000
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 Info : Unable to match requested speed 2000 kHz, using 1800 kHz
 [stm32f4x.cpu] halted due to debug-request, current mode: Thread 
-xPSR: 0x01000000 pc: 0x08001f0c msp: 0x20020000
+xPSR: 0x01000000 pc: 0x080021b4 msp: 0x20020000
 Info : Unable to match requested speed 8000 kHz, using 4000 kHz
 Info : Unable to match requested speed 8000 kHz, using 4000 kHz
 ** Programming Started **

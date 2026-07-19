@@ -38,4 +38,12 @@ void irq_hal_clear_pending(irq_id_t id);
  * reference it; defined in irq_hal.c. */
 void IRQ_CommonHandler(void);
 
+/* SysTick (Cortex-M core timer) helpers. The irq HAL already owns the core
+ * NVIC/SCB programming, so it also owns SysTick — event devices (timers, RTC
+ * wakeup) ride on it. Drivers obtain the SysTick irq id and configure/clear the
+ * tick through these so they NEVER touch the raw CMSIS vector/register layer. */
+irq_id_t irq_hal_systick_id(void);                          /* == SysTick_IRQn */
+int      irq_hal_systick_config(uint32_t cpu_hz, uint32_t tick_hz); /* 0 = ok */
+void     irq_hal_systick_clear(void);                       /* clear COUNTFLAG */
+
 #endif /* IRQ_HAL_H */

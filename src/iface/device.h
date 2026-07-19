@@ -51,8 +51,22 @@ typedef enum {
     DEVICE_TYPE_GPIO,         /* 3 */
     DEVICE_TYPE_TEMP_SENSOR,  /* 4 */
     DEVICE_TYPE_PINMUX,       /* 5 — pin multiplexer / conflict arbitrator */
+    DEVICE_TYPE_SYSTICK,      /* 6 — core timer, modeled as an EVENT device */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
+
+/* Coarse driver CLASS — the four big families a peripheral belongs to. This is
+ * the AXIS that lets the upper layer downcast a `device *` to the right subclass
+ * (see iface/device_class.h). It is set by the driver at init, alongside the
+ * finer-grained `type`. Keep the two axes separate: `type` names the exact
+ * driver, `class` names the family it inherits from. */
+typedef enum {
+    DEVICE_CLASS_STREAM,      /* 0 — UART/SPI/I2C/I2S/ADC/DAC/CAN/ETH/USB/LCD */
+    DEVICE_CLASS_BLOCK,       /* 1 — Flash/NOR/NAND/EEPROM/SD/eMMC */
+    DEVICE_CLASS_EVENT,       /* 2 — keys/encoders/EXTI/timers/RTC/semaphore */
+    DEVICE_CLASS_CONTROL,     /* 3 — GPIO/PWM/clock/pinmux/watchdog/power/DAC */
+    DEVICE_CLASS_COUNT
+} device_class_t;
 
 /* Common device-control commands shared by all drivers (driver-specific ones
  * are defined in each drv header). */
@@ -70,6 +84,7 @@ struct _device {
     const struct deviceVtable *vtable;  /* shared per-class vtable (pointer, per Ibase) */
     driver_type_t type;              /* device class — set by the driver at init */
     const char *name;                /* logical name — set by the driver at init */
+    device_class_t class;            /* family (STREAM/BLOCK/EVENT/CONTROL) */
 };
 
 /* small accessors (header-only) for the management layer */
@@ -77,6 +92,8 @@ static inline driver_type_t device_get_type(const device *self)
     { return self ? self->type : DEVICE_TYPE_COUNT; }
 static inline const char *device_get_name(const device *self)
     { return self ? self->name : NULL; }
+static inline device_class_t device_get_class(const device *self)
+    { return self ? self->class : DEVICE_CLASS_COUNT; }
 
 /* The vtable is installed by each driver in its own init() — it points at that
  * driver's per-class `static const` vtable, so the base provides no vtable

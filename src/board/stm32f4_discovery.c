@@ -28,29 +28,37 @@
 
 #include "temp_hal.h"
 
-/* ---- board-level SysTick tick service (irq framework demo) ----------------
- * The board knows the chip, so it configures SysTick and registers its ISR
- * through the GENERIC irq API — proving a core exception can be dispatched by
- * the same platform-independent framework that serves device IRQs. */
-static volatile uint32_t g_ticks;
+/* ---- board-level SysTick tick service, built as an EVENT device ------------
+ * SysTick is modeled as an `event_device` (see drv/systick.c): the driver
+ * configures the core timer and registers its ISR through the GENERIC irq
+ * framework; the board subscribes a tick callback. This proves the four-class
+ * model + the irq framework work together. main.c still calls board_tick_init()
+ * / board_ticks(), so its TICKS command is unchanged. */
+#include "drv/systick.h"
 
-static void tick_isr(void *ctx)
+static volatile uint32_t g_board_ticks;
+
+static void board_tick_cb(void *ctx, device_event_type_t ev, void *data)
 {
-    (void)ctx;
-    g_ticks++;
-    (void)SysTick->CTRL;        /* read to clear COUNTFLAG, re-arms the tick */
+    (void)ctx; (void)ev; (void)data;
+    g_board_ticks++;
 }
 
 void board_tick_init(void)
 {
-    /* 1 kHz tick off HCLK (SysTick_Config sets CLKSOURCE = HCLK). */
-    SysTick_Config(SystemCoreClock / 1000U);
-    irq_register((irq_id_t)SysTick_IRQn, tick_isr, NULL);
-    irq_set_priority((irq_id_t)SysTick_IRQn, 0);
-    irq_enable((irq_id_t)SysTick_IRQn);
+    systick_config_t c;
+    c.name    = "systick";
+    c.cpu_hz  = SystemCoreClock;   /* board knows the real core clock */
+    c.tick_hz = 1000;              /* 1 ms tick */
+    device *d = systick_create(&c);
+    if (d)
+        device_manager_register("systick", d);
+    event_device *e = device_as_event(d);
+    if (e)
+        e->vtable->set_event_callback(e, DEVICE_EVENT_TICK, board_tick_cb, NULL);
 }
 
-uint32_t board_ticks(void) { return g_ticks; }
+uint32_t board_ticks(void) { return g_board_ticks; }
 
 /* ---- board devices as DATA (each driver's own config, filled by the board) */
 static const pinmux_config_t g_pinmux = { "pinmux" };

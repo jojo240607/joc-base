@@ -22,6 +22,7 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/temp_sensor.c
     src/drv/uart.c
     src/drv/pinmux.c
+    src/drv/systick.c
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
     # device manager (generic name -> device* registry — platform-independent)
