@@ -27,6 +27,7 @@
 #include "drv/pinmux.h"
 #include "drv/timer.h"
 #include "drv/pwm.h"
+#include "drv/exti.h"
 
 #include "temp_hal.h"
 
@@ -96,6 +97,14 @@ static const timer_config_t g_timer13 = { "timer13", (void *)TIM5, 84000000, 20 
  * and duty on the SAME TIM3, so one peripheral emits BOTH a periodic event AND
  * a PWM waveform — this is the timer<->pwm "配合". Output pin PA6 (AF2). */
 static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 0, 1, "TIM3_CH1_PA6" };
+/* External interrupt demo. exti0 (PE5) and exti1 (PE6) SHARE EXTI9_5 (IRQ23) —
+ * same port E, different pin fields in SYSCFG EXTICR, so no conflict — which
+ * exercises the multi-handler irq framework's sibling-guard on a shared line.
+ * exti2 (PE0) uses a DEDICATED line (EXTI0, IRQ6). The self-test software-
+ * triggers each to prove the ISR fires and siblings don't cross-trigger. */
+static const exti_config_t g_exti0 = { "exti0", "GPIOE_5", EXTI_EDGE_RISING, 2 };
+static const exti_config_t g_exti1 = { "exti1", "GPIOE_6", EXTI_EDGE_RISING, 2 };
+static const exti_config_t g_exti2 = { "exti2", "GPIOE_0", EXTI_EDGE_RISING, 2 };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -126,6 +135,9 @@ static const board_node_t g_nodes[] = {
     { timer_create,       &g_timer12 },
     { timer_create,       &g_timer13 },
     { pwm_create,         &g_pwm0 },
+    { exti_create,        &g_exti0 },
+    { exti_create,        &g_exti1 },
+    { exti_create,        &g_exti2 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

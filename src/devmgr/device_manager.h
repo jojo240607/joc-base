@@ -17,9 +17,9 @@
  * (src/board/), which is the only place that knows both the HAL and the
  * device names. The manager itself stays 100% platform-independent.
  */
-/* 6 base devices (pinmux/clk/uart/led/adc/temp) + 11 timers + systick = 18 on
- * this board; size with headroom for more. */
-#define DEVICE_MANAGER_MAX 24
+/* 6 base + 14 timers + systick + 1 pwm + 3 exti = 25 on this board; size with
+ * headroom for more. */
+#define DEVICE_MANAGER_MAX 32
 
 /* Register a device under `name` (overwrites if the name already exists). */
 void device_manager_register(const char *name, device *dev);

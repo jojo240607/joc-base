@@ -13,6 +13,7 @@
 #include "drv/temp_sensor.h"
 #include "drv/timer.h"
 #include "drv/pwm.h"
+#include "drv/exti.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -30,6 +31,7 @@ static int selftest_vio(selftest *self);
 static int selftest_vmode(selftest *self);
 static int selftest_vtimer(selftest *self);
 static int selftest_vpwm(selftest *self);
+static int selftest_vexti(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -42,6 +44,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_mode  = selftest_vmode,
     .test_timer = selftest_vtimer,
     .test_pwm   = selftest_vpwm,
+    .test_exti  = selftest_vexti,
 };
 
 const struct selftestFun selftest_fun = {
@@ -131,6 +134,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_pwm(self);
     printf("[BIST] pwm   : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_exti(self);
+    printf("[BIST] exti  : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -476,5 +483,93 @@ static int selftest_vpwm(selftest *self)
     pwmd->vtable->close(pwmd);
     te->vtable->disable(te);
     tim->vtable->close(tim);
+    return ok;
+}
+
+/* Verify the external-interrupt driver end-to-end WITHOUT a physical button:
+ * we SOFTWARE-TRIGGER each line (EXTI->SWIER) so the ISR fires, then confirm
+ * the per-device interrupt count and the subscribed callback both incremented.
+ * The shared-line pair (exti0 PE5 + exti1 PE6 on EXTI9_5 / IRQ23) proves the
+ * multi-handler irq framework works for EXTI too: triggering ONLY A must NOT
+ * make B's handler run (each ISR guards on its own PR bit). */
+static volatile uint32_t g_exti_cb_count;   /* bumped from ISR context */
+static void selftest_exti_cb(void *ctx, device_event_type_t ev, void *ev_data)
+{
+    (void)ctx; (void)ev; (void)ev_data;
+    g_exti_cb_count++;
+}
+
+static int selftest_vexti(selftest *self)
+{
+    (void)self;
+    int ok = 1;
+
+    /* --- single, dedicated line: exti2 = PE0 -> EXTI0 (IRQ6) --- */
+    device *d0 = device_manager_get("exti2");
+    if (!d0) { printf("       exti2: MISSING\r\n"); ok = 0; }
+    else {
+        event_device *e0 = device_as_event(d0);
+        g_exti_cb_count = 0;
+        d0->vtable->open(d0);
+        e0->vtable->set_event_callback(e0, DEVICE_EVENT_IRQ, selftest_exti_cb, NULL);
+        e0->vtable->enable(e0);
+        d0->vtable->ioctl(d0, EXTI_IOCTL_TRIGGER, NULL);   /* simulate edge */
+        for (volatile uint32_t k = 0; k < 2000U; k++) { }  /* let ISR run */
+        d0->vtable->ioctl(d0, EXTI_IOCTL_TRIGGER, NULL);
+        for (volatile uint32_t k = 0; k < 2000U; k++) { }
+        uint32_t cnt = 0;
+        d0->vtable->ioctl(d0, EXTI_IOCTL_GET_COUNT, &cnt);
+        int ok_single = (cnt >= 2U) && (g_exti_cb_count >= 2U);
+        if (!ok_single) ok = 0;
+        printf("       exti2(PE0,IRQ6): count=%lu cb=%lu (%s)\r\n",
+               (unsigned long)cnt, (unsigned long)g_exti_cb_count,
+               ok_single ? "PASS" : "FAIL");
+        e0->vtable->disable(e0);
+        e0->vtable->clear_event_callback(e0, DEVICE_EVENT_IRQ);
+        d0->vtable->close(d0);
+    }
+
+    /* --- shared line: exti0(PE5) + exti1(PE6) on EXTI9_5 (IRQ23) --- */
+    device *da = device_manager_get("exti0");
+    device *db = device_manager_get("exti1");
+    if (!da || !db) { printf("       exti0/exti1: MISSING\r\n"); ok = 0; }
+    else {
+        event_device *ea = device_as_event(da);
+        event_device *eb = device_as_event(db);
+        g_exti_cb_count = 0;
+        da->vtable->open(da);
+        db->vtable->open(db);
+        ea->vtable->set_event_callback(ea, DEVICE_EVENT_IRQ, selftest_exti_cb, NULL);
+        eb->vtable->set_event_callback(eb, DEVICE_EVENT_IRQ, selftest_exti_cb, NULL);
+        ea->vtable->enable(ea);
+        eb->vtable->enable(eb);
+
+        /* trigger ONLY A (PE5) */
+        da->vtable->ioctl(da, EXTI_IOCTL_TRIGGER, NULL);
+        for (volatile uint32_t k = 0; k < 2000U; k++) { }
+        uint32_t ca = 0, cb = 0;
+        da->vtable->ioctl(da, EXTI_IOCTL_GET_COUNT, &ca);
+        db->vtable->ioctl(db, EXTI_IOCTL_GET_COUNT, &cb);
+        /* A must fire; B must NOT (sibling guard on a shared NVIC line) */
+        int ok_a = (ca >= 1U) && (cb == 0U);
+        if (!ok_a) ok = 0;
+
+        /* trigger ONLY B (PE6) */
+        db->vtable->ioctl(db, EXTI_IOCTL_TRIGGER, NULL);
+        for (volatile uint32_t k = 0; k < 2000U; k++) { }
+        da->vtable->ioctl(da, EXTI_IOCTL_GET_COUNT, &ca);
+        db->vtable->ioctl(db, EXTI_IOCTL_GET_COUNT, &cb);
+        int ok_b = (cb >= 1U) && (ca >= 1U);   /* B now fired, A unchanged */
+        if (!ok_b) ok = 0;
+
+        printf("       exti0(PE5)+exti1(PE6) IRQ23: A=%lu B=%lu (sibling-guard %s)\r\n",
+               (unsigned long)ca, (unsigned long)cb, (ok_a && ok_b) ? "PASS" : "FAIL");
+        ea->vtable->disable(ea);
+        eb->vtable->disable(eb);
+        ea->vtable->clear_event_callback(ea, DEVICE_EVENT_IRQ);
+        eb->vtable->clear_event_callback(eb, DEVICE_EVENT_IRQ);
+        da->vtable->close(da);
+        db->vtable->close(db);
+    }
     return ok;
 }
