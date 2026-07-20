@@ -100,10 +100,17 @@ void adc_hal_config_channel(adc_hal_handle_t *h)
     adc->CR2 |= ADC_CR2_ADON;
     for (volatile uint32_t i = 0; i < 1000UL; i++) { }
 
-    /* discard the first (unstable) conversion */
+    /* Discard the first (unstable) conversion. The EOC flag is only used here to
+     * learn the conversion finished; if the EOC interrupt (EOCIE) is enabled
+     * (e.g. the driver runs in IRQ mode), the EOC ISR would read DR and clear
+     * EOC the instant it is set, so this busy-wait would spin forever. Mask
+     * EOCIE around the wait so the flag stays visible, then restore it. */
+    uint32_t eocie = adc->CR1 & ADC_CR1_EOCIE;
+    adc->CR1 &= ~ADC_CR1_EOCIE;
     adc->CR2 |= ADC_CR2_SWSTART;
     while ((adc->SR & ADC_SR_EOC) == 0) { }
     (void)adc->DR;
+    adc->CR1 |= eocie;
 }
 
 void adc_hal_set_channel(adc_hal_handle_t *h, uint32_t channel)
@@ -119,9 +126,15 @@ uint32_t adc_hal_single_convert(adc_hal_handle_t *h)
 {
     if (!h) return 0U;
     ADC_TypeDef *adc = h->adc;
+    /* Mask EOCIE while busy-waiting on EOC: otherwise the EOC ISR clears the
+     * flag the moment it is set and this loop spins forever (see config_channel). */
+    uint32_t eocie = adc->CR1 & ADC_CR1_EOCIE;
+    adc->CR1 &= ~ADC_CR1_EOCIE;
     adc->CR2 |= ADC_CR2_SWSTART;
     while ((adc->SR & ADC_SR_EOC) == 0) { }
-    return (uint32_t)(adc->DR & 0x0FFFUL);   /* 12-bit right-aligned */
+    uint32_t raw = (uint32_t)(adc->DR & 0x0FFFUL);   /* 12-bit right-aligned */
+    adc->CR1 |= eocie;
+    return raw;
 }
 
 /* Return the chip interrupt id for this ADC so the driver can register its EOC

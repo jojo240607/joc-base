@@ -83,7 +83,7 @@ void adc_init(adc *self)
     self->parent.vtable        = &adc_stream_vtable;  /* stream-class vtable */
     self->parent.parent.type   = DEVICE_TYPE_ADC;
     self->parent.parent.class  = DEVICE_CLASS_STREAM;
-    self->parent.mode          = STREAM_MODE_POLL;    /* single polling conversion */
+    self->parent.mode          = STREAM_MODE_IRQ;    /* EOC interrupt-driven conversion */
     self->fun = &adc_fun;
     /* hardware bring-up is deferred to open() (see adc_dev_open) */
 }
