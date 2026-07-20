@@ -1,4 +1,5 @@
 #include "uart.h"
+#include "irq_manager.h"              /* centralized interrupt manager */
 #include "iface/io_xfer.h"            /* io_xfer_t, io_xfer_complete (async API) */
 #include "osal/osal.h"               /* osal_sem_wait / _init (TX serialization) */
 #include "devmgr/device_manager.h"   /* resolve the pinmux arbiter by name */
@@ -280,11 +281,11 @@ static int uart_dev_open(device *self)
      * STM32 interrupt directly. The ISR (uart_isr) reads DR and fills the ring
      * buffer; read()/getc() then drain it. */
     irq_id_t id = uart_hal_irq_id(u->hal);
-    irq_register(id, uart_isr, u);          /* combined RX+TX ISR */
     irq_set_priority(id, 0);
     if (u->parent.mode == STREAM_MODE_IRQ)
         uart_hal_enable_rx_irq(u->hal);     /* RX ISR only in IRQ mode */
-    irq_enable(id);
+    irq_manager_attach(id, uart_isr, u);    /* register handler via the manager */
+    irq_manager_enable(id);                 /* arm NVIC (safe: callback present) */
     return 0;
 }
 
@@ -292,10 +293,9 @@ static int uart_dev_close(device *self)
 {
     uart *u = (uart *)self;
     irq_id_t id = uart_hal_irq_id(u->hal);
-    irq_disable(id);                    /* stop the ISR first */
+    irq_manager_detach(id);             /* mask NVIC + uninstall callback */
     uart_hal_disable_rx_irq(u->hal);
     uart_hal_disable_tx_irq(u->hal);
-    irq_register(id, NULL, NULL);       /* uninstall the callback */
     uart_hal_deinit(u->hal);
     return 0;
 }

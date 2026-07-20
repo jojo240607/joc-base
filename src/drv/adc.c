@@ -1,5 +1,6 @@
 #include "adc.h"
 #include "adc_hal.h"
+#include "irq_manager.h"              /* centralized interrupt manager */
 #include "devmgr/device_manager.h"   /* resolve the pinmux arbiter by name */
 #include "drv/pinmux.h"               /* request + program pins through pinmux */
 #include <stdlib.h>
@@ -209,10 +210,10 @@ static int adc_dev_ioctl(device *self, int cmd, void *arg)
         if (m == STREAM_MODE_IRQ) {
             irq_set_priority(a->eoc_irq, 1);
             adc_hal_enable_eoc_irq(a->hal);
-            irq_enable(a->eoc_irq);
+            irq_manager_enable(a->eoc_irq);    /* arm NVIC (cb already attached) */
         } else {
             adc_hal_disable_eoc_irq(a->hal);
-            irq_disable(a->eoc_irq);
+            irq_manager_disable(a->eoc_irq);   /* mask NVIC (cb stays attached) */
         }
         return 0;
     }
@@ -257,10 +258,10 @@ static void adc_hw_init(adc *self)
      * enabled when the stream is in STREAM_MODE_IRQ (here, if it already is, or
      * later via STREAM_IOCTL_SET_MODE). */
     self->eoc_irq = adc_hal_irq_id(self->hal);
-    irq_register(self->eoc_irq, adc_isr, self);
-    if (self->parent.mode == STREAM_MODE_IRQ) {
-        irq_set_priority(self->eoc_irq, 1);
-        adc_hal_enable_eoc_irq(self->hal);
-        irq_enable(self->eoc_irq);
-    }
+    irq_set_priority(self->eoc_irq, 1);
+    if (self->parent.mode == STREAM_MODE_IRQ)
+        adc_hal_enable_eoc_irq(self->hal);      /* peripheral EOC IE (gated by mode) */
+    irq_manager_attach(self->eoc_irq, adc_isr, self);  /* register handler */
+    if (self->parent.mode == STREAM_MODE_IRQ)
+        irq_manager_enable(self->eoc_irq);     /* arm NVIC only in IRQ mode */
 }

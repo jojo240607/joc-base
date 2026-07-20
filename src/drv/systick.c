@@ -1,5 +1,6 @@
 #include "systick.h"
 #include "irq.h"             /* platform-independent interrupt framework */
+#include "irq_manager.h"     /* centralized interrupt manager */
 #include "irq_hal.h"         /* chip HAL: SysTick id + config (driver stays clean) */
 #include <stdlib.h>
 #include <string.h>
@@ -68,14 +69,14 @@ static int systick_clear_cb(event_device *self, device_event_type_t ev)
 static int systick_enable(event_device *self)
 {
     (void)self;
-    irq_enable(irq_hal_systick_id());   /* arm the core timer interrupt */
+    irq_manager_enable(irq_hal_systick_id());   /* arm (safe: cb attached at create) */
     return 0;
 }
 
 static int systick_disable(event_device *self)
 {
     (void)self;
-    irq_disable(irq_hal_systick_id());
+    irq_manager_disable(irq_hal_systick_id());
     return 0;
 }
 
@@ -119,9 +120,9 @@ device *systick_create(const void *config)
     /* register the ISR through the PLATFORM-INDEPENDENT irq framework — no
      * vector-table / NVIC code lives in this driver. */
     irq_id_t id = irq_hal_systick_id();
-    irq_register(id, systick_isr, s);
     irq_set_priority(id, 0);
-    irq_enable(id);
+    irq_manager_attach(id, systick_isr, s);   /* register handler */
+    irq_manager_enable(id);                   /* arm NVIC */
 
     return &s->parent.parent;
 }
@@ -130,7 +131,6 @@ void systick_destroy(systick *self)
 {
     if (!self) return;
     irq_id_t id = irq_hal_systick_id();
-    irq_disable(id);
-    irq_register(id, NULL, NULL);
+    irq_manager_detach(id);             /* mask NVIC + uninstall callback */
     free(self);
 }

@@ -1,4 +1,5 @@
 #include "selftest.h"
+#include "irq_manager.h"     /* dump the centralized interrupt registry in BIST */
 #include "stm32f4xx.h"
 #include <stdio.h>
 #include <string.h>
@@ -86,6 +87,8 @@ int selftest_run(selftest *self)
     int r;
 
     printf("\r\n--- On-board self-test (BIST) ---\r\n");
+
+    irq_manager_dump();   /* dump the centralized interrupt registry (verify wiring) */
 
     r = self->vtable->test_clock(self);
     printf("[BIST] clock : %s\r\n", r ? "PASS" : "FAIL");

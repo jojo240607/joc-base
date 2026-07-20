@@ -31,6 +31,7 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/systick.c
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
+    src/irq/irq_manager.c   # centralized interrupt manager (registry + dump)
     # device manager (generic name -> device* registry — platform-independent)
     src/devmgr/device_manager.c
     # board layer (per-board: the only place that knows the real peripherals)
