@@ -285,8 +285,8 @@ static int selftest_vmode(selftest *self)
 }
 
 /* Verify the general-purpose TIM driver works end-to-end as a periodic EVENT
- * source for EVERY instantiated timer (timer0..timer10 = TIM2/1/6/7/8/9/11/12/
- * 14/10/13). For each: register a TICK callback, open, enable (start counting +
+ * source for EVERY instantiated timer (timer0..timer13 = TIM2/1/6/7/8/9/11/12/
+ * 14/10/13/3/4/5). For each: register a TICK callback, open, enable (start counting +
  * arm NVIC), busy-wait ~300 ms, then confirm BOTH that the overflow ISR fired
  * (overflows) AND that the registered callback was invoked (cb_count). The last
  * two (timer9=TIM10, timer10=TIM13) share an IRQ line with TIM1/TIM8, so this
@@ -355,7 +355,8 @@ static int selftest_vtimer(selftest *self)
     (void)self;
     static const char *timers[] = {
         "timer0", "timer1", "timer2", "timer3", "timer4",
-        "timer5", "timer6", "timer7", "timer8", "timer9", "timer10"
+        "timer5", "timer6", "timer7", "timer8", "timer9", "timer10",
+        "timer11", "timer12", "timer13"
     };
     int ok = 1;
     for (unsigned i = 0; i < sizeof(timers) / sizeof(timers[0]); i++) {

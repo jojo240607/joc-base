@@ -85,6 +85,11 @@ static const timer_config_t g_timer8 = { "timer8", (void *)TIM14, 84000000, 20 }
  * IRQ44 (same as TIM8_UP). Both must fire on the shared line simultaneously. */
 static const timer_config_t g_timer9  = { "timer9",  (void *)TIM10, 168000000, 20 }; /* TIM10, APB2 168MHz, 20Hz, IRQ25 (shares w/ TIM1) */
 static const timer_config_t g_timer10 = { "timer10", (void *)TIM13, 84000000,  20 }; /* TIM13, APB1 84MHz, 20Hz, IRQ44 (shares w/ TIM8) */
+/* TIM3/4/5 are general-purpose timers on APB1 (84MHz) with their OWN dedicated
+ * IRQ lines (29/30/50), so they exercise the single-handler path (no sharing). */
+static const timer_config_t g_timer11 = { "timer11", (void *)TIM3, 84000000, 20 }; /* TIM3,  APB1 84MHz, 20Hz, IRQ29 */
+static const timer_config_t g_timer12 = { "timer12", (void *)TIM4, 84000000, 20 }; /* TIM4,  APB1 84MHz, 20Hz, IRQ30 */
+static const timer_config_t g_timer13 = { "timer13", (void *)TIM5, 84000000, 20 }; /* TIM5,  APB1 84MHz, 20Hz, IRQ50 */
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -111,6 +116,9 @@ static const board_node_t g_nodes[] = {
     { timer_create,       &g_timer8 },
     { timer_create,       &g_timer9 },
     { timer_create,       &g_timer10 },
+    { timer_create,       &g_timer11 },
+    { timer_create,       &g_timer12 },
+    { timer_create,       &g_timer13 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */
