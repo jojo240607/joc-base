@@ -285,10 +285,17 @@ static int selftest_vmode(selftest *self)
 }
 
 /* Verify the general-purpose TIM driver works end-to-end as a periodic EVENT
- * source: open timer0, enable it (start counting + arm NVIC), busy-wait a few
- * hundred ms, then confirm the overflow ISR actually fired (overflows > 0).
- * timer0 is configured at 20 Hz, so a ~300 ms wait should yield several
- * overflows. No external wiring; the ISR increments a counter we read back. */
+ * source: open timer0, register a TICK callback, enable it (start counting +
+ * arm NVIC), busy-wait a few hundred ms, then confirm BOTH that the overflow
+ * ISR actually fired (overflows > 0) AND that the registered callback was
+ * invoked (cb_count > 0). timer0 is configured at 20 Hz, so a ~300 ms wait
+ * should yield several overflows/callbacks. No external wiring. */
+static volatile uint32_t g_timer_cb_count;   /* bumped from ISR context */
+static void selftest_timer_cb(void *ctx, device_event_type_t ev, void *ev_data)
+{
+    (void)ctx; (void)ev; (void)ev_data;
+    g_timer_cb_count++;
+}
 static int selftest_vtimer(selftest *self)
 {
     (void)self;
@@ -297,6 +304,8 @@ static int selftest_vtimer(selftest *self)
     event_device *te = device_as_event(tim);
     if (!te) return 0;
 
+    g_timer_cb_count = 0;
+    te->vtable->set_event_callback(te, DEVICE_EVENT_TICK, selftest_timer_cb, NULL);
     tim->vtable->open(tim);
     te->vtable->enable(te);          /* start counting + arm NVIC */
 
@@ -306,10 +315,14 @@ static int selftest_vtimer(selftest *self)
     uint32_t ov = 0;
     tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov);
     te->vtable->disable(te);
+    te->vtable->clear_event_callback(te, DEVICE_EVENT_TICK);
     tim->vtable->close(tim);
 
-    int ok = (ov >= 2U);
-    printf("       timer0 overflows=%lu (expect >=2) %s\r\n",
-           (unsigned long)ov, ok ? "" : "[FAIL]");
+    int ok_isr   = (ov >= 2U);
+    int ok_cb    = (g_timer_cb_count >= 2U);
+    int ok       = ok_isr && ok_cb;
+    printf("       timer0 overflows=%lu (ISR %s), cb_count=%lu (callback %s)\r\n",
+           (unsigned long)ov, ok_isr ? "PASS" : "FAIL",
+           (unsigned long)g_timer_cb_count, ok_cb ? "PASS" : "FAIL");
     return ok;
 }
