@@ -143,3 +143,8 @@ void tim_hal_clear_uif(tim_hal_handle_t *h)
 {
     if (h) h->tim->SR &= ~TIM_SR_UIF;
 }
+
+int tim_hal_uif_pending(tim_hal_handle_t *h)
+{
+    return (h && (h->tim->SR & TIM_SR_UIF)) ? 1 : 0;
+}

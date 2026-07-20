@@ -50,7 +50,7 @@ def main():
     for attempt in range(3):
         ser.reset_input_buffer()
         ser.write(b"BIST\n")
-        deadline = time.time() + 12   # timer BIST now exercises 9 timers (~3.7s)
+        deadline = time.time() + 16   # timer BIST now exercises 11 timers + 2 shared-line tests (~5s)
         while time.time() < deadline:
             line = ser.readline().decode(errors="replace").strip()
             if not line:
@@ -67,6 +67,12 @@ def main():
         print("[companion] ERROR: no SELF-TEST line received (board not responding?)")
         ser.close()
         sys.exit(1)
+
+    # Settle: the board is back in its command loop right after SELF-TEST, but
+    # give it a beat (and drain any trailing output) before firing interactive
+    # commands, so PING/ECHO/ADC don't race the end of the (now ~5s) BIST.
+    time.sleep(0.4)
+    ser.reset_input_buffer()
 
     def exchange(cmd, expect):
         ser.reset_input_buffer()

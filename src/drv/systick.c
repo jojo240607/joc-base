@@ -68,15 +68,15 @@ static int systick_clear_cb(event_device *self, device_event_type_t ev)
 
 static int systick_enable(event_device *self)
 {
-    (void)self;
-    irq_manager_enable(irq_hal_systick_id());   /* arm (safe: cb attached at create) */
+    systick *s = (systick *)self;
+    irq_manager_enable(irq_hal_systick_id(), systick_isr, s);   /* arm (cb attached) */
     return 0;
 }
 
 static int systick_disable(event_device *self)
 {
-    (void)self;
-    irq_manager_disable(irq_hal_systick_id());
+    systick *s = (systick *)self;
+    irq_manager_disable(irq_hal_systick_id(), systick_isr, s);
     return 0;
 }
 
@@ -122,7 +122,7 @@ device *systick_create(const void *config)
     irq_id_t id = irq_hal_systick_id();
     irq_set_priority(id, 0);
     irq_manager_attach(id, systick_isr, s);   /* register handler */
-    irq_manager_enable(id);                   /* arm NVIC */
+    irq_manager_enable(id, systick_isr, s);   /* arm NVIC */
 
     return &s->parent.parent;
 }
@@ -131,6 +131,6 @@ void systick_destroy(systick *self)
 {
     if (!self) return;
     irq_id_t id = irq_hal_systick_id();
-    irq_manager_detach(id);             /* mask NVIC + uninstall callback */
+    irq_manager_detach(id, systick_isr, self);   /* mask NVIC + uninstall callback */
     free(self);
 }

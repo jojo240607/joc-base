@@ -285,24 +285,77 @@ static int selftest_vmode(selftest *self)
 }
 
 /* Verify the general-purpose TIM driver works end-to-end as a periodic EVENT
- * source for EVERY instantiated timer (timer0..timer8 = TIM2/1/6/7/8/9/11/12/14).
- * For each: register a TICK callback, open, enable (start counting + arm NVIC),
- * busy-wait ~300 ms, then confirm BOTH that the overflow ISR fired (overflows)
- * AND that the registered callback was invoked (cb_count). All nine timers sit
- * on DISTINCT IRQ lines, so they never collide in the single-handler irq_manager.
- * TIM10/TIM13 are deliberately excluded — they share a line with TIM1_UP/TIM8_UP. */
+ * source for EVERY instantiated timer (timer0..timer10 = TIM2/1/6/7/8/9/11/12/
+ * 14/10/13). For each: register a TICK callback, open, enable (start counting +
+ * arm NVIC), busy-wait ~300 ms, then confirm BOTH that the overflow ISR fired
+ * (overflows) AND that the registered callback was invoked (cb_count). The last
+ * two (timer9=TIM10, timer10=TIM13) share an IRQ line with TIM1/TIM8, so this
+ * also exercises the multi-handler irq framework per-timer. The dedicated
+ * shared-line test below proves the two peers on one line fire TOGETHER. */
 static volatile uint32_t g_timer_cb_count;   /* bumped from ISR context */
 static void selftest_timer_cb(void *ctx, device_event_type_t ev, void *ev_data)
 {
     (void)ctx; (void)ev; (void)ev_data;
     g_timer_cb_count++;
 }
+
+/* Shared-line coexistence test: enable BOTH peers on one IRQ line at once and
+ * confirm BOTH handlers fire. Each ISR guards on its own UIF, so the sibling's
+ * overflow cannot spuriously bump the other's counter. This is the real proof
+ * that irq_dispatch() invokes every handler registered on a shared line. */
+static volatile uint32_t g_timer_cb_a, g_timer_cb_b;
+static void selftest_timer_cb_a(void *c, device_event_type_t e, void *d)
+{ (void)c; (void)e; (void)d; g_timer_cb_a++; }
+static void selftest_timer_cb_b(void *c, device_event_type_t e, void *d)
+{ (void)c; (void)e; (void)d; g_timer_cb_b++; }
+
+static int selftest_timer_shared_line(const char *na, const char *nb)
+{
+    device *da = device_manager_get(na);
+    device *db = device_manager_get(nb);
+    if (!da || !db) { printf("       %s+%s: MISSING\r\n", na, nb); return 0; }
+    event_device *ea = device_as_event(da);
+    event_device *eb = device_as_event(db);
+    if (!ea || !eb) { printf("       %s+%s: not-event\r\n", na, nb); return 0; }
+
+    g_timer_cb_a = g_timer_cb_b = 0;
+    ea->vtable->set_event_callback(ea, DEVICE_EVENT_TICK, selftest_timer_cb_a, NULL);
+    eb->vtable->set_event_callback(eb, DEVICE_EVENT_TICK, selftest_timer_cb_b, NULL);
+    da->vtable->open(da);
+    db->vtable->open(db);
+    ea->vtable->enable(ea);          /* arm the shared NVIC line */
+    eb->vtable->enable(eb);          /* second peer on the SAME line */
+
+    /* busy-wait ~300 ms (both timers are 20 Hz => expect a handful of overflows) */
+    for (volatile uint32_t k = 0; k < (SystemCoreClock / 10U); k++) { }
+
+    uint32_t oa = 0, ob = 0;
+    da->vtable->ioctl(da, TIMER_IOCTL_GET_OVERFLOWS, &oa);
+    db->vtable->ioctl(db, TIMER_IOCTL_GET_OVERFLOWS, &ob);
+    ea->vtable->disable(ea);
+    eb->vtable->disable(eb);
+    ea->vtable->clear_event_callback(ea, DEVICE_EVENT_TICK);
+    eb->vtable->clear_event_callback(eb, DEVICE_EVENT_TICK);
+    da->vtable->close(da);
+    db->vtable->close(db);
+
+    int ok_a  = (oa >= 2U && g_timer_cb_a >= 2U);
+    int ok_b  = (ob >= 2U && g_timer_cb_b >= 2U);
+    int ok    = ok_a && ok_b;
+    if (!ok) ok = 0;
+    printf("       %s+%s: ov_a=%lu cb_a=%lu, ov_b=%lu cb_b=%lu (%s)\r\n",
+           na, nb, (unsigned long)oa, (unsigned long)g_timer_cb_a,
+           (unsigned long)ob, (unsigned long)g_timer_cb_b,
+           ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 static int selftest_vtimer(selftest *self)
 {
     (void)self;
     static const char *timers[] = {
         "timer0", "timer1", "timer2", "timer3", "timer4",
-        "timer5", "timer6", "timer7", "timer8"
+        "timer5", "timer6", "timer7", "timer8", "timer9", "timer10"
     };
     int ok = 1;
     for (unsigned i = 0; i < sizeof(timers) / sizeof(timers[0]); i++) {
@@ -332,5 +385,9 @@ static int selftest_vtimer(selftest *self)
                timers[i], (unsigned long)ov, ok_isr ? "PASS" : "FAIL",
                (unsigned long)g_timer_cb_count, ok_cb ? "PASS" : "FAIL");
     }
+
+    /* Shared-line coexistence: TIM1+TIM10 on IRQ25, TIM8+TIM13 on IRQ44. */
+    if (!selftest_timer_shared_line("timer1", "timer9"))  ok = 0;
+    if (!selftest_timer_shared_line("timer4", "timer10")) ok = 0;
     return ok;
 }

@@ -285,7 +285,7 @@ static int uart_dev_open(device *self)
     if (u->parent.mode == STREAM_MODE_IRQ)
         uart_hal_enable_rx_irq(u->hal);     /* RX ISR only in IRQ mode */
     irq_manager_attach(id, uart_isr, u);    /* register handler via the manager */
-    irq_manager_enable(id);                 /* arm NVIC (safe: callback present) */
+    irq_manager_enable(id, uart_isr, u);    /* arm NVIC (safe: callback present) */
     return 0;
 }
 
@@ -293,7 +293,7 @@ static int uart_dev_close(device *self)
 {
     uart *u = (uart *)self;
     irq_id_t id = uart_hal_irq_id(u->hal);
-    irq_manager_detach(id);             /* mask NVIC + uninstall callback */
+    irq_manager_detach(id, uart_isr, u); /* mask NVIC + uninstall callback */
     uart_hal_disable_rx_irq(u->hal);
     uart_hal_disable_tx_irq(u->hal);
     uart_hal_deinit(u->hal);

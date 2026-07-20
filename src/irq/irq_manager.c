@@ -1,69 +1,120 @@
 #include "irq_manager.h"
+#include "irq.h"
 #include "irq_hal.h"   /* irq_hal_index() + IRQ_HAL_TABLE_SIZE (HAL index mapping) */
 #include <stdio.h>
 
 /*
- * Centralized interrupt registry.
+ * Centralized interrupt registry — a thin layer ON TOP of the platform-neutral
+ * irq framework (irq_register / irq_unregister / irq_enable / irq_disable).
  *
- * One slot per exception the chip can raise, indexed by the platform's LINEAR
- * interrupt index (irq_hal_index maps irq_id_t -> this index). The HAL owns the
- * index mapping and table size, so this file stays chip-free — exactly like
- * irq.c. The manager merely ADDS bookkeeping + a dump on top of the raw
- * framework, and enforces "enabled => has callback".
+ * The manager adds bookkeeping + a dump on top of the raw framework, and
+ * enforces "enabled => has callback". Crucially, it reference-counts the NVIC
+ * enable PER IRQ LINE: because several handlers can share one line (TIM1_UP +
+ * TIM10 on STM32F4 IRQ 25), the line must stay armed while ANY of its handlers
+ * is enabled, and be masked only when the last enabled handler goes away. Each
+ * handler is identified by its (id, cb, ctx) triple so enable/disable/detach on
+ * a shared line never disturbs a sibling.
+ *
+ * It is still fully platform-independent: it only calls irq_register /
+ * irq_unregister / irq_enable / irq_disable and irq_hal_index. Drivers keep
+ * using their HAL to learn the irq id (e.g. uart_hal_irq_id), so nothing
+ * becomes chip-specific.
  */
-static irq_mgr_entry_t g_mgr[IRQ_HAL_TABLE_SIZE];
+
+/* Flat pool of attached handlers, bounded by the realistic number of
+ * concurrently-attached interrupt sources (well under IRQ_HAL_TABLE_SIZE even
+ * with shared lines). */
+#define IRQ_MGR_POOL 48
+
+static irq_mgr_entry_t g_mgr[IRQ_MGR_POOL];
+
+/* Count the enabled handlers on a given irq line. */
+static int mgr_enabled_on_line(irq_id_t id)
+{
+    int n = 0;
+    for (int i = 0; i < IRQ_MGR_POOL; i++)
+        if (g_mgr[i].registered && g_mgr[i].enabled && g_mgr[i].id == id)
+            n++;
+    return n;
+}
+
+/* Find the pool entry for a specific handler (id, cb, ctx). */
+static irq_mgr_entry_t *mgr_find(irq_id_t id, irq_callback_t cb, void *ctx)
+{
+    for (int i = 0; i < IRQ_MGR_POOL; i++)
+        if (g_mgr[i].registered && g_mgr[i].id == id &&
+            g_mgr[i].cb == cb && g_mgr[i].ctx == ctx)
+            return &g_mgr[i];
+    return NULL;
+}
 
 int irq_manager_attach(irq_id_t id, irq_callback_t cb, void *ctx)
 {
     int idx = irq_hal_index(id);
     if (idx < 0 || idx >= (int)IRQ_HAL_TABLE_SIZE)
         return -1;
+    if (!cb)
+        return -1;
 
     /* install the handler FIRST so the source can never fire into a gap */
-    irq_register(id, cb, ctx);
+    if (irq_register(id, cb, ctx) != 0)
+        return -1;               /* line full or id out of range */
 
-    g_mgr[idx].id         = id;
-    g_mgr[idx].cb         = cb;
-    g_mgr[idx].ctx        = ctx;
-    g_mgr[idx].registered = 1;
-    /* attach alone does not arm the NVIC; enabled tracks the real HW state */
-    g_mgr[idx].enabled    = 0;
+    irq_mgr_entry_t *e = mgr_find(id, cb, ctx);   /* already in the pool? */
+    if (!e) {
+        for (int i = 0; i < IRQ_MGR_POOL; i++) {  /* else grab a free slot */
+            if (!g_mgr[i].registered) { e = &g_mgr[i]; break; }
+        }
+    }
+    if (!e) {                    /* pool exhausted: roll back the irq register */
+        irq_unregister(id, cb, ctx);
+        return -1;
+    }
+    e->id         = id;
+    e->cb         = cb;
+    e->ctx        = ctx;
+    e->registered = 1;
+    e->enabled    = 0;            /* attach alone does not arm the NVIC */
     return 0;
 }
 
-void irq_manager_enable(irq_id_t id)
+void irq_manager_enable(irq_id_t id, irq_callback_t cb, void *ctx)
 {
-    int idx = irq_hal_index(id);
-    if (idx < 0 || idx >= (int)IRQ_HAL_TABLE_SIZE)
-        return;
-    /* SAFE: never enable a slot that has no handler (empty-slot lockup guard) */
-    if (!g_mgr[idx].registered || !g_mgr[idx].cb)
-        return;
-    irq_enable(id);
-    g_mgr[idx].enabled = 1;
+    irq_mgr_entry_t *e = mgr_find(id, cb, ctx);
+    if (!e)
+        return;                   /* not attached -> nothing to arm */
+    if (e->enabled)
+        return;                   /* idempotent */
+    int was_enabled = mgr_enabled_on_line(id);
+    e->enabled = 1;
+    if (was_enabled == 0)        /* first enabled handler on this line -> arm NVIC */
+        irq_enable(id);
 }
 
-void irq_manager_disable(irq_id_t id)
+void irq_manager_disable(irq_id_t id, irq_callback_t cb, void *ctx)
 {
-    int idx = irq_hal_index(id);
-    if (idx < 0 || idx >= (int)IRQ_HAL_TABLE_SIZE)
+    irq_mgr_entry_t *e = mgr_find(id, cb, ctx);
+    if (!e || !e->enabled)
         return;
-    irq_disable(id);
-    g_mgr[idx].enabled = 0;
+    e->enabled = 0;
+    if (mgr_enabled_on_line(id) == 0)   /* last enabled handler gone -> mask NVIC */
+        irq_disable(id);
 }
 
-int irq_manager_detach(irq_id_t id)
+int irq_manager_detach(irq_id_t id, irq_callback_t cb, void *ctx)
 {
-    int idx = irq_hal_index(id);
-    if (idx < 0 || idx >= (int)IRQ_HAL_TABLE_SIZE)
+    irq_mgr_entry_t *e = mgr_find(id, cb, ctx);
+    if (!e)
         return -1;
-    irq_disable(id);                 /* mask first, then uninstall */
-    irq_register(id, NULL, NULL);
-    g_mgr[idx].id         = id;
-    g_mgr[idx].cb         = NULL;
-    g_mgr[idx].ctx        = NULL;
-    g_mgr[idx].registered = 0;
-    g_mgr[idx].enabled    = 0;
+    irq_unregister(id, cb, ctx);
+    e->id         = id;
+    e->cb         = NULL;
+    e->ctx        = NULL;
+    e->registered = 0;
+    e->enabled    = 0;
+    /* mask the NVIC line only if no enabled handler remains on it */
+    if (mgr_enabled_on_line(id) == 0)
+        irq_disable(id);
     return 0;
 }
 
@@ -72,25 +123,26 @@ const irq_mgr_entry_t *irq_manager_get(irq_id_t id)
     int idx = irq_hal_index(id);
     if (idx < 0 || idx >= (int)IRQ_HAL_TABLE_SIZE)
         return NULL;
-    if (!g_mgr[idx].registered)
-        return NULL;
-    return &g_mgr[idx];
+    for (int i = 0; i < IRQ_MGR_POOL; i++)
+        if (g_mgr[i].registered && g_mgr[i].id == id)
+            return &g_mgr[i];     /* first registered on this line */
+    return NULL;
 }
 
 void irq_manager_dump(void)
 {
     printf("--- IRQ manager table ---\r\n");
     int n = 0;
-    for (int idx = 0; idx < (int)IRQ_HAL_TABLE_SIZE; idx++) {
-        if (!g_mgr[idx].registered)
+    for (int i = 0; i < IRQ_MGR_POOL; i++) {
+        if (!g_mgr[i].registered)
             continue;
         n++;
         printf("  irq %3d : reg=%d en=%d cb=%s\r\n",
-               (int)g_mgr[idx].id,
-               g_mgr[idx].registered,
-               g_mgr[idx].enabled,
-               g_mgr[idx].cb ? "yes" : "no");
+               (int)g_mgr[i].id,
+               g_mgr[i].registered,
+               g_mgr[i].enabled,
+               g_mgr[i].cb ? "yes" : "no");
     }
-    printf("  (%d source(s) attached)\r\n", n);
+    printf("  (%d handler(s) attached)\r\n", n);
     printf("--- end IRQ manager table ---\r\n");
 }

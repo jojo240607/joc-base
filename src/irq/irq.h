@@ -2,6 +2,7 @@
 #define IRQ_H
 
 #include <stdint.h>
+#include <stddef.h>   /* NULL */
 
 /*
  * Unified, PLATFORM-INDEPENDENT interrupt framework.
@@ -37,11 +38,24 @@ typedef int irq_id_t;
 /* Callback invoked from interrupt context; ctx is the per-registration context. */
 typedef void (*irq_callback_t)(void *ctx);
 
-/* Register (or replace) the handler for an interrupt source.
- *   cb  != NULL  -> install/overwrite the handler (called with `ctx`).
- *   cb  == NULL  -> uninstall the handler (the slot dispatches to nothing).
- * Returns 0 on success, <0 if the id is outside the platform's range. */
+/* Max handlers that may share a single physical IRQ line. On STM32F4 several
+ * peripherals route their interrupt to the SAME line (e.g. TIM1_UP and TIM10
+ * both land on IRQ 25; TIM8_UP and TIM13 both land on IRQ 44). The dispatch
+ * walks this many slots per line and invokes every registered callback, so a
+ * driver that shares a line MUST guard on its OWN peripheral status flag. */
+#ifndef IRQ_MAX_HANDLERS_PER_LINE
+#define IRQ_MAX_HANDLERS_PER_LINE 4
+#endif
+
+/* Register (ADD) a handler for an interrupt source. Multiple handlers may be
+ * registered on the same id (a shared IRQ line); each is invoked in turn when
+ * the line fires. Registering the same (cb, ctx) pair twice is idempotent.
+ * Returns 0 on success, <0 if the id is out of range or the line is full. */
 int  irq_register(irq_id_t id, irq_callback_t cb, void *ctx);
+
+/* Remove a previously-registered handler, identified by its (cb, ctx) pair.
+ * Returns 0 if found and removed, <0 otherwise. */
+int  irq_unregister(irq_id_t id, irq_callback_t cb, void *ctx);
 
 /* Enable / disable the interrupt at the NVIC (HAL-backed). */
 void irq_enable(irq_id_t id);

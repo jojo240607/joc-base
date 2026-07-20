@@ -210,10 +210,10 @@ static int adc_dev_ioctl(device *self, int cmd, void *arg)
         if (m == STREAM_MODE_IRQ) {
             irq_set_priority(a->eoc_irq, 1);
             adc_hal_enable_eoc_irq(a->hal);
-            irq_manager_enable(a->eoc_irq);    /* arm NVIC (cb already attached) */
+            irq_manager_enable(a->eoc_irq, adc_isr, a);    /* arm NVIC (cb attached) */
         } else {
             adc_hal_disable_eoc_irq(a->hal);
-            irq_manager_disable(a->eoc_irq);   /* mask NVIC (cb stays attached) */
+            irq_manager_disable(a->eoc_irq, adc_isr, a);   /* mask NVIC (cb stays) */
         }
         return 0;
     }
@@ -263,5 +263,5 @@ static void adc_hw_init(adc *self)
         adc_hal_enable_eoc_irq(self->hal);      /* peripheral EOC IE (gated by mode) */
     irq_manager_attach(self->eoc_irq, adc_isr, self);  /* register handler */
     if (self->parent.mode == STREAM_MODE_IRQ)
-        irq_manager_enable(self->eoc_irq);     /* arm NVIC only in IRQ mode */
+        irq_manager_enable(self->eoc_irq, adc_isr, self); /* arm NVIC in IRQ mode */
 }

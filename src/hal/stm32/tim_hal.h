@@ -39,6 +39,11 @@ uint32_t tim_hal_get_counter(tim_hal_handle_t *h);
 irq_id_t tim_hal_irq_id(tim_hal_handle_t *h);          /* chip IRQn for this TIM */
 void tim_hal_enable_update_irq(tim_hal_handle_t *h);   /* set TIM_DIER_UIE */
 void tim_hal_disable_update_irq(tim_hal_handle_t *h);  /* clear TIM_DIER_UIE */
-void tim_hal_clear_uif(tim_hal_handle_t *h);           /* clear TIM_SR_UIF */
+void tim_hal_clear_uif(tim_hal_handle_t *h);
+
+/* Returns non-zero if this timer's Update Interrupt Flag (UIF) is set. Drivers
+ * that share an IRQ line MUST check this before acting, so a sibling peripheral
+ * on the same line doesn't spuriously trigger their handler. */
+int tim_hal_uif_pending(tim_hal_handle_t *h);           /* clear TIM_SR_UIF */
 
 #endif /* TIM_HAL_H */

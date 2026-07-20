@@ -34,11 +34,16 @@ static const struct deviceVtable timer_dev_vtable = {
 };
 
 /* The overflow ISR: runs in interrupt context via the unified irq framework.
- * Clear UIF FIRST (or the interrupt re-enters immediately), then count and
- * notify the subscriber. */
+ * Because two timers can share one IRQ line (TIM1_UP + TIM10 on IRQ 25,
+ * TIM8_UP + TIM13 on IRQ 44), this handler FIRST checks whether ITS OWN timer
+ * raised UIF. If a sibling on the shared line was the real trigger, we return
+ * immediately without touching our counter. Only then do we clear UIF (or the
+ * interrupt re-enters immediately) and notify the subscriber. */
 static void timer_isr(void *ctx)
 {
     timer *t = (timer *)ctx;
+    if (!tim_hal_uif_pending(t->hal))
+        return;                         /* shared line: sibling peripheral fired */
     tim_hal_clear_uif(t->hal);          /* re-arm: must clear before returning */
     t->overflows++;
     if (t->cb)
@@ -72,14 +77,14 @@ static int timer_enable(event_device *self)
 {
     timer *t = (timer *)self;
     tim_hal_start(t->hal);
-    irq_manager_enable(t->irq);
+    irq_manager_enable(t->irq, timer_isr, t);
     return 0;
 }
 
 static int timer_disable(event_device *self)
 {
     timer *t = (timer *)self;
-    irq_manager_disable(t->irq);
+    irq_manager_disable(t->irq, timer_isr, t);
     tim_hal_stop(t->hal);
     return 0;
 }
@@ -99,7 +104,7 @@ static int timer_dev_close(device *self)
 {
     timer_disable((event_device *)self);
     timer *t = (timer *)self;
-    irq_manager_detach(t->irq);          /* mask NVIC + uninstall callback */
+    irq_manager_detach(t->irq, timer_isr, t);   /* mask NVIC + uninstall callback */
     return 0;
 }
 
@@ -154,7 +159,7 @@ device *timer_create(const void *config)
 void timer_destroy(timer *self)
 {
     if (!self) return;
-    irq_manager_detach(self->irq);
+    irq_manager_detach(self->irq, timer_isr, self);
     tim_hal_destroy(self->hal);
     free(self);
 }
