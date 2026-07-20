@@ -94,6 +94,7 @@ static int timer_dev_open(device *self)
     timer *t = (timer *)self;
     tim_hal_enable_clock(t->hal);
     tim_hal_config(t->hal, t->timer_clk_hz, t->tick_hz);
+    tim_hal_set_repetition(t->hal, t->repetition);   /* RCR (adv TIM; no-op on GP) */
     tim_hal_enable_update_irq(t->hal);   /* peripheral UIE (gated by class) */
     irq_set_priority(t->irq, 1);
     irq_manager_attach(t->irq, timer_isr, t);   /* register handler */
@@ -123,6 +124,13 @@ static int timer_dev_ioctl(device *self, int cmd, void *arg)
     case TIMER_IOCTL_GET_COUNTER:
         if (arg) *(uint32_t *)arg = tim_hal_get_counter(t->hal);
         return 0;
+    case TIMER_IOCTL_SET_REPETITION:
+        if (!arg) return -1;
+        t->repetition = *(const uint32_t *)arg;
+        return tim_hal_set_repetition(t->hal, t->repetition);  /* -1 on GP TIM */
+    case TIMER_IOCTL_GET_REPETITION:
+        if (arg) *(uint32_t *)arg = tim_hal_get_repetition(t->hal);
+        return 0;
     default:
         return -1;
     }
@@ -149,6 +157,7 @@ device *timer_create(const void *config)
     t->irq = tim_hal_irq_id(t->hal);
     t->timer_clk_hz = c->timer_clk_hz;
     t->tick_hz = c->tick_hz;
+    t->repetition = 0;
     t->overflows = 0;
     t->cb = NULL;
     t->cb_ctx = NULL;

@@ -34,6 +34,7 @@ struct _timer {
     irq_id_t irq;               /* this timer's interrupt id (from HAL) */
     uint32_t timer_clk_hz;      /* cached from config (used at open) */
     uint32_t tick_hz;           /* cached from config (used at open) */
+    uint32_t repetition;        /* advanced-TIM RCR: TICK every (rep+1) overflows */
     volatile uint32_t overflows;/* free-running overflow counter (ISR increments) */
     device_event_cb_t cb;       /* subscribed tick callback (or NULL) */
     void *cb_ctx;               /* callback context */
@@ -46,5 +47,7 @@ void timer_destroy(timer *self);
 /* ioctl commands (driver-specific) */
 #define TIMER_IOCTL_GET_OVERFLOWS  0x01   /* arg = uint32_t* : overflow count */
 #define TIMER_IOCTL_GET_COUNTER    0x02   /* arg = uint32_t* : current CNT */
+#define TIMER_IOCTL_SET_REPETITION 0x03   /* arg = uint32_t* : RCR 0..255 (adv TIM) */
+#define TIMER_IOCTL_GET_REPETITION 0x04   /* arg = uint32_t* : current RCR */
 
 #endif /* TIMER_H */

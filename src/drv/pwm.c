@@ -82,6 +82,23 @@ device *pwm_create(const void *config)
     p->period_ticks = 0;
     p->duty_ticks   = 0;
 
+    /* Advanced-TIM options (TIM1/TIM8): resolve the complementary pin if given. */
+    p->comp_port = 0; p->comp_pin = 0; p->comp_af = 0;
+    p->deadtime_ticks = c->deadtime_ticks;
+    p->complementary   = c->complementary;
+    p->break_enable    = c->break_enable;
+    p->break_polarity  = c->break_polarity;
+    if (c->comp_pin_signal) {
+        pinmux_port_t cp; uint8_t cpn, cpa;
+        if (!pinmux_hal_resolve(c->comp_pin_signal, &cp, &cpn, &cpa)) {
+            printf("[pwm] %s: unknown complementary signal \"%s\"\r\n",
+                   c->name, c->comp_pin_signal);
+            free(p);
+            return NULL;
+        }
+        p->comp_port = cp; p->comp_pin = cpn; p->comp_af = cpa;
+    }
+
     return &p->parent.parent;
 }
 
@@ -109,6 +126,20 @@ static int pwm_dev_open(device *self)
             .af = p->af, .mode = 2, .otype = 0, .speed = 3, .pupd = 0
         };
         pm->fun->config(pm, p->port, p->pin, &cfg);
+        /* Complementary pin (advanced TIM only): same AF, also claimed. */
+        if (p->comp_port) {
+            if (pm->fun->request(pm, p->comp_port, p->comp_pin, p->comp_af,
+                                 p->parent.parent.name) != 0) {
+                printf("[pwm] %s: complementary pin P%c%d CONFLICT — refused\r\n",
+                       p->parent.parent.name, 'A' + (int)p->comp_port,
+                       (int)p->comp_pin);
+                return -2;
+            }
+            pinmux_pin_cfg_t ccfg = {
+                .af = p->comp_af, .mode = 2, .otype = 0, .speed = 3, .pupd = 0
+            };
+            pm->fun->config(pm, p->comp_port, p->comp_pin, &ccfg);
+        }
     }
 
     tim_hal_enable_clock(p->hal);
@@ -134,6 +165,21 @@ static int pwm_dev_open(device *self)
     tim_hal_pwm_config_channel(p->hal, p->channel, 1, 0);
     pwm_apply_percent(p, 0);
     tim_hal_pwm_channel_enable(p->hal, p->channel, 1);
+
+    /* Advanced-TIM (TIM1/TIM8) extras: dead-time, complementary outputs, break,
+     * and the Main Output Enable. On a GP TIM these are no-ops, so a PWM device
+     * on TIM2..TIM5 works unchanged. MOE MUST be set or the pins stay inactive. */
+    if (tim_hal_is_advanced(p->hal)) {
+        if (p->deadtime_ticks)
+            tim_hal_pwm_set_deadtime(p->hal,
+                                     tim_hal_pwm_encode_deadtime(p->deadtime_ticks));
+        for (int ch = 1; ch <= 4; ch++)
+            if (p->complementary & (1U << (ch - 1)))
+                tim_hal_pwm_config_complementary(p->hal, ch, 0);
+        if (p->break_enable)
+            tim_hal_pwm_set_break(p->hal, 1, p->break_polarity);
+        tim_hal_pwm_main_output_enable(p->hal, 1);   /* BDTR.MOE = 1 */
+    }
     return 0;
 }
 
@@ -185,6 +231,18 @@ static int pwm_control_command(control_device *self, int cmd, void *arg)
         return 0;
     case PWM_IOCTL_DISABLE_CHANNEL:
         tim_hal_pwm_channel_enable(p->hal, p->channel, 0);
+        return 0;
+    case PWM_IOCTL_GET_BDTR:
+        if (arg) *(uint32_t *)arg = tim_hal_pwm_get_bdtr(p->hal);
+        return 0;
+    case PWM_IOCTL_GET_COMPLEMENTARY:
+        if (arg) {
+            uint32_t mask = 0;
+            for (int ch = 1; ch <= 4; ch++)
+                if (tim_hal_pwm_complementary_enabled(p->hal, ch))
+                    mask |= (1U << (ch - 1));
+            *(uint32_t *)arg = mask;
+        }
         return 0;
     default:
         return -1;

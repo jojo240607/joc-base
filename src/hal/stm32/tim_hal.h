@@ -86,4 +86,53 @@ void tim_hal_pwm_channel_enable(tim_hal_handle_t *h, int ch, int on);
 uint32_t tim_hal_pwm_get_duty(tim_hal_handle_t *h, int ch);  /* current CCRx */
 uint32_t tim_hal_pwm_period_ticks(tim_hal_handle_t *h);      /* ARR + 1 */
 
+/* ===========================================================================
+ * ADVANCED-TIMER features (TIM1 / TIM8 on F4).
+ *
+ * The advanced TIMs add silicon the general-purpose TIMs lack:
+ *   - a REPETITION COUNTER (RCR): the Update event (and thus the timer
+ *     driver's TICK) only fires every (RCR+1) counter overflows — a clean way
+ *     to divide the TICK rate without touching PSC/ARR;
+ *   - a BDTR register with the Main Output Enable (MOE), a Dead-Time Generator
+ *     (DTG) and a Break (BRK) fault input. On TIM1/TIM8 the PWM pins stay
+ *     INACTIVE until MOE=1, so a PWM driver that ignores BDTR produces NO
+ *     output on an advanced TIM — that is the gap these helpers close.
+ * All of these are NO-OPS (or return -1 / 0) on a general-purpose TIM, so the
+ * drivers can call them unconditionally and stay chip-agnostic.
+ * =========================================================================== */
+
+/* Non-zero iff this handle is an advanced TIM (TIM1/TIM8). Drivers use it to
+ * decide whether to touch BDTR / the complementary outputs. */
+int tim_hal_is_advanced(tim_hal_handle_t *h);
+
+/* Repetition counter (RCR). rep is 0..255; the Update event fires every
+ * (rep+1) overflows. Advanced TIMs only — returns -1 on a GP TIM (where RCR
+ * does not exist). Read back with tim_hal_get_repetition. */
+int  tim_hal_set_repetition(tim_hal_handle_t *h, uint32_t rep);
+uint32_t tim_hal_get_repetition(tim_hal_handle_t *h);   /* current RCR (0 on GP) */
+
+/* Main Output Enable (BDTR.MOE). Must be 1 for any PWM pin to drive on an
+ * advanced TIM. No-op on a GP TIM. */
+void tim_hal_pwm_main_output_enable(tim_hal_handle_t *h, int on);
+
+/* Encode a dead-time in timer ticks into the 8-bit DTG field (4-zone formula
+ * from the F4 reference manual). Returns the DTG byte to write to BDTR.DTG. */
+uint8_t tim_hal_pwm_encode_deadtime(uint32_t dt_ticks);
+/* Program the dead-time (BDTR.DTG). Advanced TIMs only. */
+void tim_hal_pwm_set_deadtime(tim_hal_handle_t *h, uint8_t dtg);
+
+/* Enable the COMPLEMENTARY output (CHxN) for a channel and set its polarity
+ * (0 = active-high, 1 = active-low). The channel itself must already be in a
+ * PWM mode (tim_hal_pwm_config_channel). Advanced TIMs only. */
+void tim_hal_pwm_config_complementary(tim_hal_handle_t *h, int ch, int polarity_n);
+
+/* Configure the Break (fault) input: enable != 0 arms BRK; polarity 0 = the
+ * break is active-low on BRK, 1 = active-high. On a break the hardware clears
+ * MOE automatically (default action). Advanced TIMs only. */
+void tim_hal_pwm_set_break(tim_hal_handle_t *h, int enable, int polarity);
+
+/* Readback helpers for verification (return 0 on a GP TIM). */
+uint32_t tim_hal_pwm_get_bdtr(tim_hal_handle_t *h);            /* raw BDTR */
+int      tim_hal_pwm_complementary_enabled(tim_hal_handle_t *h, int ch); /* CCER.CCxNE */
+
 #endif /* TIM_HAL_H */

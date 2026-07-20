@@ -96,7 +96,16 @@ static const timer_config_t g_timer13 = { "timer13", (void *)TIM5, 84000000, 20 
  * period + counter as a 20 Hz TICK source). pwm0 only configures the channel
  * and duty on the SAME TIM3, so one peripheral emits BOTH a periodic event AND
  * a PWM waveform — this is the timer<->pwm "配合". Output pin PA6 (AF2). */
-static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 0, 1, "TIM3_CH1_PA6" };
+static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 0, 1,
+                                      "TIM3_CH1_PA6", NULL, 0, 0, 0, 0 };
+/* Advanced-timer PWM demo: pwm1 is CH1 of TIM8 (an ADVANCED TIM), COORDINATING
+ * with timer4 (which owns TIM8's 20 Hz period + counter as a TICK source). TIM8
+ * is advanced, so its PWM pins stay dead until BDTR.MOE=1 — the driver sets it.
+ * pwm1 also exercises the advanced-only features: a COMPLEMENTARY output
+ * (CH1N on PA7) and a 64-tick DEAD-TIME inserted between the two switches.
+ * Output pins PC6 (CH1) + PA7 (CH1N), both AF3. */
+static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM8, 168000000, 0, 1,
+                                      "TIM8_CH1_PC6", "TIM8_CH1N", 64, 1, 0, 0 };
 /* External interrupt demo. exti0 (PE5) and exti1 (PE6) SHARE EXTI9_5 (IRQ23) —
  * same port E, different pin fields in SYSCFG EXTICR, so no conflict — which
  * exercises the multi-handler irq framework's sibling-guard on a shared line.
@@ -135,6 +144,7 @@ static const board_node_t g_nodes[] = {
     { timer_create,       &g_timer12 },
     { timer_create,       &g_timer13 },
     { pwm_create,         &g_pwm0 },
+    { pwm_create,         &g_pwm1 },
     { exti_create,        &g_exti0 },
     { exti_create,        &g_exti1 },
     { exti_create,        &g_exti2 },

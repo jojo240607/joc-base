@@ -32,6 +32,8 @@ static int selftest_vmode(selftest *self);
 static int selftest_vtimer(selftest *self);
 static int selftest_vpwm(selftest *self);
 static int selftest_vexti(selftest *self);
+static int selftest_vadvtimer(selftest *self);
+static int selftest_vadvpwm(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -45,6 +47,8 @@ static const struct selftestVtable selftest_vtable = {
     .test_timer = selftest_vtimer,
     .test_pwm   = selftest_vpwm,
     .test_exti  = selftest_vexti,
+    .test_adv_timer = selftest_vadvtimer,
+    .test_adv_pwm   = selftest_vadvpwm,
 };
 
 const struct selftestFun selftest_fun = {
@@ -138,6 +142,14 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_exti(self);
     printf("[BIST] exti  : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_adv_timer(self);
+    printf("[BIST] adv_timer: %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_adv_pwm(self);
+    printf("[BIST] adv_pwm  : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -571,5 +583,133 @@ static int selftest_vexti(selftest *self)
         da->vtable->close(da);
         db->vtable->close(db);
     }
+    return ok;
+}
+
+/* Verify the ADVANCED-TIMER REPETITION COUNTER (RCR) on TIM1 (timer1). The RCR
+ * makes the Update event — and thus the timer driver's TICK — fire only every
+ * (RCR+1) counter overflows, i.e. it divides the TICK rate without touching
+ * PSC/ARR. We use timer11 (TIM3, 20 Hz, RCR=0) as a deterministic 1-second
+ * reference: with RCR=3 the timer1 TICK count over one timer11 second must be
+ * ~1/4 of timer11's, and the RCR readback must report 3. */
+static int selftest_vadvtimer(selftest *self)
+{
+    (void)self;
+    device *ref = device_manager_get("timer11");  /* TIM3, 20 Hz, RCR=0 */
+    device *adv = device_manager_get("timer1");   /* TIM1, advanced, 20 Hz */
+    if (!ref || !adv) { printf("       timer1/timer11: MISSING\r\n"); return 0; }
+    event_device *re = device_as_event(ref);
+    event_device *ae = device_as_event(adv);
+    if (!re || !ae) { printf("       timer1/timer11: not-event\r\n"); return 0; }
+
+    ref->vtable->open(ref);  re->vtable->enable(re);    /* reference clock */
+    adv->vtable->open(adv); ae->vtable->enable(ae);
+
+    uint32_t rep = 3;
+    adv->vtable->ioctl(adv, TIMER_IOCTL_SET_REPETITION, &rep);
+
+    /* count TICKs over one timer11 second (20 reference ticks). */
+    uint32_t ref0 = 0;
+    ref->vtable->ioctl(ref, TIMER_IOCTL_GET_OVERFLOWS, &ref0);
+    uint32_t adv0 = 0;
+    adv->vtable->ioctl(adv, TIMER_IOCTL_GET_OVERFLOWS, &adv0);
+    uint32_t ref_now = ref0;
+    for (;;) {
+        ref->vtable->ioctl(ref, TIMER_IOCTL_GET_OVERFLOWS, &ref_now);
+        if (ref_now - ref0 >= 20U) break;     /* ~1 s at 20 Hz */
+    }
+    uint32_t adv_now = 0;
+    adv->vtable->ioctl(adv, TIMER_IOCTL_GET_OVERFLOWS, &adv_now);
+    uint32_t ref_ticks = ref_now - ref0;
+    uint32_t adv_ticks = adv_now - adv0;
+
+    uint32_t rep_rb = 0;
+    adv->vtable->ioctl(adv, TIMER_IOCTL_GET_REPETITION, &rep_rb);
+
+    /* With RCR=3 the advanced TICK rate is 1/(3+1) of the reference. */
+    int ok_rep = (rep_rb == 3U);
+    uint32_t expect = ref_ticks / 4U;          /* expected advanced ticks */
+    int ok_div = (expect > 0) &&
+                 (adv_ticks >= expect - 2U) &&  /* within +/-2 ticks of ref/4 */
+                 (adv_ticks <= expect + 2U);
+    int ok = ok_rep && ok_div;
+
+    printf("       timer1(TIM1,RCR=3): adv_ticks=%lu ref_ticks=%lu (expect ~1/4, %s)\r\n",
+           (unsigned long)adv_ticks, (unsigned long)ref_ticks, ok_div ? "PASS" : "FAIL");
+    printf("         RCR readback=%lu (expect 3, %s)\r\n",
+           (unsigned long)rep_rb, ok_rep ? "PASS" : "FAIL");
+
+    /* restore RCR=0 so later BIST runs see the normal 20 Hz rate, then tear down */
+    rep = 0;
+    adv->vtable->ioctl(adv, TIMER_IOCTL_SET_REPETITION, &rep);
+    ae->vtable->disable(ae); adv->vtable->close(adv);
+    re->vtable->disable(re); ref->vtable->close(ref);
+    return ok;
+}
+
+/* Verify the ADVANCED-TIMER PWM features on TIM8 (timer4 + pwm1): the Main
+ * Output Enable (MOE) that gates the pins, the inserted DEAD-TIME (DTG), and the
+ * COMPLEMENTARY output (CH1N). pwm1 coordinates with timer4 (which owns TIM8's
+ * 20 Hz period), so this also proves TIM8 keeps emitting its TICK while the
+ * advanced PWM is live. Without MOE the pins would stay dead — that is exactly
+ * the gap these checks close. */
+static int selftest_vadvpwm(selftest *self)
+{
+    (void)self;
+    device *tim = device_manager_get("timer4");   /* TIM8, 20 Hz TICK source */
+    device *pwmd = device_manager_get("pwm1");     /* TIM8 CH1 + CH1N, dead-time */
+    if (!tim || !pwmd) { printf("       timer4/pwm1: MISSING\r\n"); return 0; }
+    event_device *te = device_as_event(tim);
+    if (!te) { printf("       timer4: not-event\r\n"); return 0; }
+
+    tim->vtable->open(tim);
+    te->vtable->enable(te);
+    if (pwmd->vtable->open(pwmd) != 0) {
+        printf("       pwm1: OPEN FAILED (pin conflict?)\r\n");
+        te->vtable->disable(te); tim->vtable->close(tim);
+        return 0;
+    }
+
+    int ok = 1;
+
+    /* BDTR: MOE must be set (or pins stay dead) and DTG must hold 64 ticks. */
+    uint32_t bdtr = 0;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_GET_BDTR, &bdtr);
+    int ok_moe = (bdtr & 0x8000U) ? 1 : 0;          /* BDTR.MOE */
+    int ok_dtg = ((bdtr & 0xFFU) == 64U);           /* dead-time = 64 ticks */
+
+    /* Complementary output (CH1N) must be enabled in CCER. */
+    uint32_t comp = 0;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_GET_COMPLEMENTARY, &comp);
+    int ok_comp = (comp & 1U) ? 1 : 0;              /* bit0 = CH1N */
+
+    /* Duty 50% must land in CCR (period/2). */
+    int pct = 50;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_SET_DUTY_PERCENT, &pct);
+    uint32_t period = 0, duty = 0;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_GET_PERIOD_TICKS, &period);
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_GET_DUTY_TICKS, &duty);
+    int ok_duty = (period > 0) &&
+                  (duty >= period / 2 - 2U) && (duty <= period / 2 + 2U);
+
+    /* Coordination: timer4 must keep counting while the advanced PWM is live. */
+    uint32_t ov0 = 0;
+    tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov0);
+    for (volatile uint32_t k = 0; k < (SystemCoreClock / 20U); k++) { }
+    uint32_t ov1 = 0;
+    tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov1);
+    int ok_coord = (ov1 > ov0);
+
+    if (!ok_moe || !ok_dtg || !ok_comp || !ok_duty || !ok_coord) ok = 0;
+    printf("       pwm1(TIM8 CH1+CH1N): MOE=%s DTG=%lu(64? %s) comp=%s\r\n",
+           ok_moe ? "on" : "OFF", (unsigned long)(bdtr & 0xFFU),
+           ok_dtg ? "PASS" : "FAIL", ok_comp ? "on" : "OFF");
+    printf("         duty@50%%=%lu (~%lu, %s); timer4 ov %lu->%lu while PWM (%s)\\r\\n",
+           (unsigned long)duty, (unsigned long)(period / 2), ok_duty ? "PASS" : "FAIL",
+           (unsigned long)ov0, (unsigned long)ov1, ok_coord ? "PASS" : "FAIL");
+
+    pwmd->vtable->close(pwmd);
+    te->vtable->disable(te);
+    tim->vtable->close(tim);
     return ok;
 }

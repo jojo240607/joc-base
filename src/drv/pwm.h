@@ -37,6 +37,12 @@ typedef struct {
     uint32_t freq_hz;        /* PWM frequency; 0 = coordinate with existing period */
     int      channel;        /* compare channel 1..4 */
     const char *pin_signal;  /* AF signal name, e.g. "TIM3_CH1_PA6" */
+    /* --- advanced-TIM (TIM1/TIM8) options; ignored on a GP TIM --- */
+    const char *comp_pin_signal; /* complementary output pin (e.g. "TIM8_CH1N") or NULL */
+    uint16_t deadtime_ticks; /* dead-time in timer ticks (0 = none) */
+    uint8_t  complementary;  /* bitmask of channels with complementary out (bit ch-1) */
+    uint8_t  break_enable;   /* 1 = arm the Break (fault) input */
+    uint8_t  break_polarity; /* 0 = break active-low, 1 = break active-high */
 } pwm_config_t;
 
 struct _pwm {
@@ -49,6 +55,14 @@ struct _pwm {
     pinmux_port_t port;          /* resolved port for pinmux claim + HAL */
     uint8_t  pin;                /* resolved pin */
     uint8_t  af;                 /* resolved AF number */
+    /* advanced-TIM cached config (only used when tim_hal_is_advanced) */
+    pinmux_port_t comp_port;     /* complementary pin port (or 0) */
+    uint8_t  comp_pin;           /* complementary pin */
+    uint8_t  comp_af;            /* complementary pin AF */
+    uint16_t deadtime_ticks;     /* dead-time in timer ticks */
+    uint8_t  complementary;      /* complementary channel bitmask */
+    uint8_t  break_enable;       /* 1 = arm break */
+    uint8_t  break_polarity;     /* break polarity */
     uint32_t period_ticks;       /* cached ARR + 1 (PWM period) */
     uint32_t duty_ticks;         /* cached CCR (current duty) */
     int      coord;              /* 1 = coordinate mode (freq_hz == 0) */
@@ -66,5 +80,7 @@ void pwm_destroy(pwm *self);
 #define PWM_IOCTL_GET_DUTY_TICKS    0x24   /* arg = uint32_t* (current CCR) */
 #define PWM_IOCTL_ENABLE_CHANNEL    0x25   /* arg = NULL (CCER.CCxE = 1) */
 #define PWM_IOCTL_DISABLE_CHANNEL   0x26   /* arg = NULL (CCER.CCxE = 0) */
+#define PWM_IOCTL_GET_BDTR          0x27   /* arg = uint32_t* (raw BDTR; adv TIM) */
+#define PWM_IOCTL_GET_COMPLEMENTARY 0x28   /* arg = uint32_t* (bitmask of CCxNE) */
 
 #endif /* PWM_H */

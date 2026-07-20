@@ -13,6 +13,7 @@
 
 struct tim_hal_handle {
     TIM_TypeDef *tim;
+    int advanced;   /* 1 for TIM1/TIM8 (RCR + BDTR/complementary/break) */
 };
 
 tim_hal_handle_t *tim_hal_create(void *peripheral)
@@ -22,6 +23,9 @@ tim_hal_handle_t *tim_hal_create(void *peripheral)
     if (!h) return NULL;
     memset(h, 0, sizeof(*h));
     h->tim = (TIM_TypeDef *)peripheral;
+    /* Advanced TIMs (TIM1/TIM8 on F4) own RCR, BDTR and the complementary
+     * outputs. Detect by base address so the drivers can gate those features. */
+    h->advanced = (h->tim == TIM1 || h->tim == TIM8) ? 1 : 0;
     return h;
 }
 
@@ -245,4 +249,86 @@ uint32_t tim_hal_pwm_get_duty(tim_hal_handle_t *h, int ch)
 uint32_t tim_hal_pwm_period_ticks(tim_hal_handle_t *h)
 {
     return h ? (h->tim->ARR + 1U) : 0U;
+}
+
+/* ===========================================================================
+ * ADVANCED-TIMER features (TIM1 / TIM8). See tim_hal.h for the contract.
+ * Every BDTR/complementary/break accessor is a no-op on a GP TIM, so the
+ * drivers can call them unconditionally.
+ * =========================================================================== */
+
+int tim_hal_is_advanced(tim_hal_handle_t *h)
+{
+    return (h && h->advanced) ? 1 : 0;
+}
+
+int tim_hal_set_repetition(tim_hal_handle_t *h, uint32_t rep)
+{
+    if (!h || !h->advanced) return -1;     /* RCR only exists on TIM1/TIM8 */
+    if (rep > 255U) rep = 255U;
+    h->tim->RCR = rep;
+    return 0;
+}
+
+uint32_t tim_hal_get_repetition(tim_hal_handle_t *h)
+{
+    return (h && h->advanced) ? (h->tim->RCR & 0xFFU) : 0U;
+}
+
+void tim_hal_pwm_main_output_enable(tim_hal_handle_t *h, int on)
+{
+    if (!h || !h->advanced) return;        /* MOE only exists on TIM1/TIM8 */
+    if (on) h->tim->BDTR |=  TIM_BDTR_MOE;
+    else    h->tim->BDTR &= ~TIM_BDTR_MOE;
+}
+
+/* 4-zone DTG encoding (RM0090, TIMx_BDTR.DTG). Returns the 8-bit value to
+ * write to BDTR.DTG for a dead-time of dt_ticks timer clocks. */
+uint8_t tim_hal_pwm_encode_deadtime(uint32_t dt_ticks)
+{
+    if (dt_ticks <= 127U)        return (uint8_t)dt_ticks;                 /* zone 0 */
+    if (dt_ticks <= 254U)        return (uint8_t)(0x80U | ((dt_ticks / 2U) - 64U)); /* zone 1 */
+    if (dt_ticks <= 504U)        return (uint8_t)(0xC0U | ((dt_ticks / 8U) - 32U)); /* zone 2 */
+    /* zone 3 (clamp to the maximum representable dead-time) */
+    if (dt_ticks > 1008U) dt_ticks = 1008U;
+    return (uint8_t)(0xE0U | ((dt_ticks / 16U) - 32U));
+}
+
+void tim_hal_pwm_set_deadtime(tim_hal_handle_t *h, uint8_t dtg)
+{
+    if (!h || !h->advanced) return;
+    h->tim->BDTR = (h->tim->BDTR & ~0xFFU) | (uint32_t)dtg;   /* DTG is BDTR[7:0] */
+}
+
+void tim_hal_pwm_config_complementary(tim_hal_handle_t *h, int ch, int polarity_n)
+{
+    if (!h || !h->advanced || ch < 1 || ch > 4) return;
+    TIM_TypeDef *t = h->tim;
+    uint32_t shift = (uint32_t)(ch - 1) * 4U;   /* CCxNE = bit +2, CCxNP = bit +3 */
+    t->CCER &= ~(0xCUL << shift);               /* clear CCxNE + CCxNP */
+    t->CCER |=  (0x4UL << shift);               /* CCxNE = 1 (complementary on) */
+    if (polarity_n) t->CCER |= (0x8UL << shift); /* CCxNP = 1 (active-low) */
+}
+
+void tim_hal_pwm_set_break(tim_hal_handle_t *h, int enable, int polarity)
+{
+    if (!h || !h->advanced) return;
+    TIM_TypeDef *t = h->tim;
+    t->BDTR &= ~(TIM_BDTR_BKE | TIM_BDTR_BKP);
+    if (enable) {
+        t->BDTR |= TIM_BDTR_BKE;
+        if (polarity) t->BDTR |= TIM_BDTR_BKP;  /* 1 = break active-high */
+    }
+}
+
+uint32_t tim_hal_pwm_get_bdtr(tim_hal_handle_t *h)
+{
+    return (h && h->advanced) ? h->tim->BDTR : 0U;
+}
+
+int tim_hal_pwm_complementary_enabled(tim_hal_handle_t *h, int ch)
+{
+    if (!h || !h->advanced || ch < 1 || ch > 4) return 0;
+    uint32_t shift = (uint32_t)(ch - 1) * 4U;
+    return (h->tim->CCER & (0x4UL << shift)) ? 1 : 0;   /* CCxNE */
 }
