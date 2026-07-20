@@ -53,6 +53,7 @@ typedef enum {
     DEVICE_TYPE_PINMUX,       /* 5 — pin multiplexer / conflict arbitrator */
     DEVICE_TYPE_SYSTICK,      /* 6 — core timer, modeled as an EVENT device */
     DEVICE_TYPE_TIMER,        /* 7 — general-purpose TIM (periodic EVENT source) */
+    DEVICE_TYPE_PWM,          /* 8 — TIM capture/compare channel (CONTROL: PWM out) */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 

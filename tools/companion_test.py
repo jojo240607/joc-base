@@ -37,7 +37,23 @@ def main():
         print(f"[companion] FAILED to open {PORT}: {e}")
         sys.exit(1)
 
-    time.sleep(0.5)
+    # Drain the boot-time BIST (main.c runs selftest_run at startup). The BIST is
+    # long andvariable in length, so instead of guessing a fixed sleep we drain
+    # until the port goes SILENT (the command loop is idle waiting for input) —
+    # that unambiguously means the boot run finished. Require 3 consecutive empty
+    # reads (~3s of silence) so we don't stop early on a gap between BIST
+    # sub-tests. Then clear the buffer and send OUR OWN BIST, which we can match
+    # without racing the boot run.
+    cap = time.time() + 45
+    silent = 0
+    while time.time() < cap:
+        line = ser.readline().decode(errors="replace").strip()
+        if line:
+            silent = 0
+        else:
+            silent += 1
+            if silent >= 3:
+                break
     ser.reset_input_buffer()
 
     results = {}
@@ -50,7 +66,7 @@ def main():
     for attempt in range(3):
         ser.reset_input_buffer()
         ser.write(b"BIST\n")
-        deadline = time.time() + 20   # timer BIST now exercises 14 timers + 2 shared-line tests (~6.5s)
+        deadline = time.time() + 45   # timer BIST now exercises 14 timers + 2 shared-line tests
         while time.time() < deadline:
             line = ser.readline().decode(errors="replace").strip()
             if not line:

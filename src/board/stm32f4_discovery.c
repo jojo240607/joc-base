@@ -26,6 +26,7 @@
 #include "drv/temp_sensor.h"
 #include "drv/pinmux.h"
 #include "drv/timer.h"
+#include "drv/pwm.h"
 
 #include "temp_hal.h"
 
@@ -90,6 +91,11 @@ static const timer_config_t g_timer10 = { "timer10", (void *)TIM13, 84000000,  2
 static const timer_config_t g_timer11 = { "timer11", (void *)TIM3, 84000000, 20 }; /* TIM3,  APB1 84MHz, 20Hz, IRQ29 */
 static const timer_config_t g_timer12 = { "timer12", (void *)TIM4, 84000000, 20 }; /* TIM4,  APB1 84MHz, 20Hz, IRQ30 */
 static const timer_config_t g_timer13 = { "timer13", (void *)TIM5, 84000000, 20 }; /* TIM5,  APB1 84MHz, 20Hz, IRQ50 */
+/* PWM demo: pwm0 is CH1 of TIM3, COORDINATING with timer11 (which owns TIM3's
+ * period + counter as a 20 Hz TICK source). pwm0 only configures the channel
+ * and duty on the SAME TIM3, so one peripheral emits BOTH a periodic event AND
+ * a PWM waveform — this is the timer<->pwm "配合". Output pin PA6 (AF2). */
+static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 0, 1, "TIM3_CH1_PA6" };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -119,6 +125,7 @@ static const board_node_t g_nodes[] = {
     { timer_create,       &g_timer11 },
     { timer_create,       &g_timer12 },
     { timer_create,       &g_timer13 },
+    { pwm_create,         &g_pwm0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

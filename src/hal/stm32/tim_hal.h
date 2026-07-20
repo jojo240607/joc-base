@@ -46,4 +46,44 @@ void tim_hal_clear_uif(tim_hal_handle_t *h);
  * on the same line doesn't spuriously trigger their handler. */
 int tim_hal_uif_pending(tim_hal_handle_t *h);           /* clear TIM_SR_UIF */
 
+/* ===========================================================================
+ * PWM CHANNEL support — the SAME TIM peripheral, used as a waveform generator.
+ *
+ * A GP TIM is BOTH an overflow EVENT source (tim_hal_config, used by drv/timer)
+ * AND a multi-channel PWM generator (below). The two facets share one silicon
+ * state (PSC/ARR/CNT), so a single TIM can drive BOTH a periodic TICK (timer
+ * driver) AND PWM outputs (pwm driver) at once — that is the "coordination"
+ * between the two drivers. To keep ownership clean:
+ *   - the PERIOD (PSC/ARR) and the counter start/stop are owned by whichever
+ *     driver configured them (normally the timer driver in "coordinate" mode);
+ *   - the PWM driver only touches CCMR/CCER/CCR (channel mode, polarity, duty)
+ *     and the output pin AF. It never reprograms PSC/ARR or stops the counter.
+ * All register knowledge stays here, so drv/pwm never sees TIM_TypeDef.
+ * =========================================================================== */
+
+/* Compute PSC/ARR for a target PWM frequency and program them (up-count, edge
+ * aligned). Returns the period in timer ticks (ARR+1), or 0 on bad args. Safe to
+ * call while the counter is already running (e.g. a sibling timer driver owns
+ * it) — it only reloads PSC/ARR. In "coordinate" mode the pwm driver SKIPS this
+ * and reuses the timer driver's period instead. */
+uint32_t tim_hal_pwm_set_period(tim_hal_handle_t *h, uint32_t timer_clk_hz,
+                                uint32_t freq_hz);
+
+/* Configure one channel (1..4) as a PWM output. mode: 1 = PWM mode 1,
+ * 2 = PWM mode 2 (output high while CNT < CCR, vs the inverse). polarity:
+ * 0 = active-high, 1 = active-low. Enables preload (OCxPE) and the channel
+ * output (CCER.CCxE). Does NOT set the duty — call tim_hal_pwm_set_duty. */
+void tim_hal_pwm_config_channel(tim_hal_handle_t *h, int ch, int mode, int polarity);
+
+/* Set the duty as a raw compare value in timer ticks (0 .. period_ticks). */
+void tim_hal_pwm_set_duty(tim_hal_handle_t *h, int ch, uint32_t duty_ticks);
+
+/* Enable/disable ONLY the channel output (CCER.CCxE), leaving the counter and
+ * the other channels untouched. on=0 also leaves the pin floating-safe. */
+void tim_hal_pwm_channel_enable(tim_hal_handle_t *h, int ch, int on);
+
+/* Readback helpers (used by the driver/selftest to verify register state). */
+uint32_t tim_hal_pwm_get_duty(tim_hal_handle_t *h, int ch);  /* current CCRx */
+uint32_t tim_hal_pwm_period_ticks(tim_hal_handle_t *h);      /* ARR + 1 */
+
 #endif /* TIM_HAL_H */

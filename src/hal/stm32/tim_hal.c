@@ -148,3 +148,101 @@ int tim_hal_uif_pending(tim_hal_handle_t *h)
 {
     return (h && (h->tim->SR & TIM_SR_UIF)) ? 1 : 0;
 }
+
+/* ===========================================================================
+ * PWM CHANNEL support — see tim_hal.h for the ownership/coordination contract.
+ * =========================================================================== */
+
+uint32_t tim_hal_pwm_set_period(tim_hal_handle_t *h, uint32_t timer_clk_hz,
+                                uint32_t freq_hz)
+{
+    if (!h || freq_hz == 0 || timer_clk_hz < freq_hz) return 0;
+    TIM_TypeDef *t = h->tim;
+
+    /* Same PSC/ARR math as tim_hal_config: period = (PSC+1)*(ARR+1) clocks. */
+    uint64_t total = (uint64_t)timer_clk_hz / (uint64_t)freq_hz;
+    if (total == 0) total = 1;
+    uint32_t presc = (uint32_t)((total - 1) / 65536UL);
+    uint32_t arr   = (uint32_t)(total / (uint64_t)(presc + 1));  /* = ARR + 1 */
+    if (arr == 0) arr = 1;
+
+    t->PSC = presc;
+    t->ARR = arr - 1U;
+    t->EGR = TIM_EGR_UG;        /* load PSC/ARR into the active shadow registers */
+    t->SR  = 0;                 /* clear UIF raised by the UG above */
+    return arr;                 /* period in ticks = ARR + 1 */
+}
+
+static volatile uint32_t *pwm_ccr(tim_hal_handle_t *h, int ch)
+{
+    TIM_TypeDef *t = h->tim;
+    switch (ch) {
+        case 1: return &t->CCR1;
+        case 2: return &t->CCR2;
+        case 3: return &t->CCR3;
+        case 4: return &t->CCR4;
+        default: return NULL;
+    }
+}
+
+void tim_hal_pwm_config_channel(tim_hal_handle_t *h, int ch, int mode, int polarity)
+{
+    if (!h || ch < 1 || ch > 4) return;
+    TIM_TypeDef *t = h->tim;
+    uint32_t ocm = (mode == 2) ? 0x7UL : 0x6UL;   /* OCxM: 110=PWM1, 111=PWM2 */
+
+    if (ch <= 2) {
+        /* CCMR1: CC1S/CC2S=00 (output), OCxPE=1 (preload), OCxM=pwm mode */
+        if (ch == 1) {
+            t->CCMR1 = (t->CCMR1 & ~0x00FFUL) |
+                       (0x6UL << 4) | (ocm << 4);   /* OC1PE | OC1M */
+            t->CCMR1 &= ~0x0003UL;                  /* CC1S = 00 (output) */
+        } else {
+            t->CCMR1 = (t->CCMR1 & ~0xFF00UL) |
+                       (0x6UL << 12) | (ocm << 12); /* OC2PE | OC2M */
+            t->CCMR1 &= ~0x0300UL;                  /* CC2S = 00 (output) */
+        }
+    } else {
+        if (ch == 3) {
+            t->CCMR2 = (t->CCMR2 & ~0x00FFUL) |
+                       (0x6UL << 4) | (ocm << 4);   /* OC3PE | OC3M */
+            t->CCMR2 &= ~0x0003UL;                  /* CC3S = 00 (output) */
+        } else {
+            t->CCMR2 = (t->CCMR2 & ~0xFF00UL) |
+                       (0x6UL << 12) | (ocm << 12); /* OC4PE | OC4M */
+            t->CCMR2 &= ~0x0300UL;                  /* CC4S = 00 (output) */
+        }
+    }
+
+    /* CCER: enable output (CCxE) and set polarity (CCxP). */
+    uint32_t shift = (uint32_t)(ch - 1) * 4U;
+    t->CCER &= ~(0x3UL << shift);                  /* clear CCxE + CCxP */
+    t->CCER |= (0x1UL << shift);                   /* CCxE = 1 (output on) */
+    if (polarity) t->CCER |= (0x2UL << shift);     /* CCxP = 1 (active-low) */
+}
+
+void tim_hal_pwm_set_duty(tim_hal_handle_t *h, int ch, uint32_t duty_ticks)
+{
+    volatile uint32_t *ccr = pwm_ccr(h, ch);
+    if (ccr) *ccr = duty_ticks;
+}
+
+void tim_hal_pwm_channel_enable(tim_hal_handle_t *h, int ch, int on)
+{
+    if (!h || ch < 1 || ch > 4) return;
+    TIM_TypeDef *t = h->tim;
+    uint32_t shift = (uint32_t)(ch - 1) * 4U;
+    if (on) t->CCER |=  (0x1UL << shift);          /* CCxE = 1 */
+    else    t->CCER &= ~(0x1UL << shift);          /* CCxE = 0 (float) */
+}
+
+uint32_t tim_hal_pwm_get_duty(tim_hal_handle_t *h, int ch)
+{
+    volatile uint32_t *ccr = pwm_ccr(h, ch);
+    return ccr ? *ccr : 0U;
+}
+
+uint32_t tim_hal_pwm_period_ticks(tim_hal_handle_t *h)
+{
+    return h ? (h->tim->ARR + 1U) : 0U;
+}

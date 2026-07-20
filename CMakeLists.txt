@@ -30,6 +30,7 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/pinmux.c
     src/drv/systick.c
     src/drv/timer.c
+    src/drv/pwm.c
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
     src/irq/irq_manager.c   # centralized interrupt manager (registry + dump)

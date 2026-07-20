@@ -22,6 +22,7 @@ struct selftestVtable {
     int (*test_io)(selftest *self);     /* unified sync/async transfer API */
     int (*test_mode)(selftest *self);   /* POLL/IRQ engine switching + ADC IRQ read */
     int (*test_timer)(selftest *self);  /* general-purpose TIM periodic EVENT */
+    int (*test_pwm)(selftest *self);    /* TIM compare channel as PWM output */
 };
 
 struct _selftest {

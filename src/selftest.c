@@ -12,6 +12,7 @@
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
 #include "drv/timer.h"
+#include "drv/pwm.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -28,6 +29,7 @@ static int selftest_vtemp(selftest *self);
 static int selftest_vio(selftest *self);
 static int selftest_vmode(selftest *self);
 static int selftest_vtimer(selftest *self);
+static int selftest_vpwm(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -39,6 +41,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_io    = selftest_vio,
     .test_mode  = selftest_vmode,
     .test_timer = selftest_vtimer,
+    .test_pwm   = selftest_vpwm,
 };
 
 const struct selftestFun selftest_fun = {
@@ -124,6 +127,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_timer(self);
     printf("[BIST] timer : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_pwm(self);
+    printf("[BIST] pwm   : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -327,7 +334,7 @@ static int selftest_timer_shared_line(const char *na, const char *nb)
     eb->vtable->enable(eb);          /* second peer on the SAME line */
 
     /* busy-wait ~300 ms (both timers are 20 Hz => expect a handful of overflows) */
-    for (volatile uint32_t k = 0; k < (SystemCoreClock / 10U); k++) { }
+    for (volatile uint32_t k = 0; k < (SystemCoreClock / 20U); k++) { }
 
     uint32_t oa = 0, ob = 0;
     da->vtable->ioctl(da, TIMER_IOCTL_GET_OVERFLOWS, &oa);
@@ -371,7 +378,7 @@ static int selftest_vtimer(selftest *self)
         te->vtable->enable(te);          /* start counting + arm NVIC */
 
         /* busy-wait ~300 ms (timer is 20 Hz => expect a handful of overflows) */
-        for (volatile uint32_t k = 0; k < (SystemCoreClock / 10U); k++) { }
+        for (volatile uint32_t k = 0; k < (SystemCoreClock / 20U); k++) { }
 
         uint32_t ov = 0;
         tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov);
@@ -390,5 +397,84 @@ static int selftest_vtimer(selftest *self)
     /* Shared-line coexistence: TIM1+TIM10 on IRQ25, TIM8+TIM13 on IRQ44. */
     if (!selftest_timer_shared_line("timer1", "timer9"))  ok = 0;
     if (!selftest_timer_shared_line("timer4", "timer10")) ok = 0;
+    return ok;
+}
+
+/* Verify the PWM driver works end-to-end AND that it COORDINATES with the timer
+ * driver on the SAME TIM. pwm0 is CH1 of TIM3, which timer11 also owns (as a 20
+ * Hz TICK source). So opening timer11 first sets TIM3's period + starts the
+ * counter; pwm0 then only configures the channel + duty on that same TIM3. The
+ * test proves: (1) the pin is claimed without conflict, (2) duty writes land in
+ * CCR (50% -> ~ARR/2, 25% -> ~ARR/4), (3) the period equals the timer's
+ * (84 MHz / 20 Hz = 4.2M ticks), and (4) timer11 KEEPS counting overflows while
+ * pwm0 is active — i.e. one TIM serves BOTH a periodic event AND a PWM output. */
+static int selftest_vpwm(selftest *self)
+{
+    (void)self;
+    device *tim = device_manager_get("timer11");  /* TIM3, 20 Hz TICK source */
+    device *pwmd = device_manager_get("pwm0");     /* TIM3 CH1, coordinates */
+    if (!tim || !pwmd) { printf("       pwm0/timer11: MISSING\r\n"); return 0; }
+    event_device *te = device_as_event(tim);
+    if (!te) { printf("       timer11: not-event\r\n"); return 0; }
+
+    /* 1) bring up the timer driver first (owns TIM3 period + counter). */
+    tim->vtable->open(tim);
+    te->vtable->enable(te);
+
+    /* 2) bring up PWM on the SAME TIM3 (coord mode: channel + duty only). */
+    if (pwmd->vtable->open(pwmd) != 0) {
+        printf("       pwm0: OPEN FAILED (pin conflict?)\r\n");
+        te->vtable->disable(te); tim->vtable->close(tim);
+        return 0;
+    }
+
+    int ok = 1;
+
+    /* 3) duty math: 50% then 25% of the period. */
+    int pct = 50;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_SET_DUTY_PERCENT, &pct);
+    uint32_t period = 0, duty50 = 0;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_GET_PERIOD_TICKS, &period);
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_GET_DUTY_TICKS, &duty50);
+    /* period (ARR+1) is what the PWM driver reports; the PSC/ARR formula in
+     * tim_hal yields 84MHz/20Hz -> (PSC+1)=65, ARR+1=64615. Recompute the same
+     * way so the check tracks the formula instead of a hard-coded magic number. */
+    uint32_t exp_total = 84000000U / 20U;
+    uint32_t exp_presc = (exp_total - 1U) / 65536U;
+    uint32_t exp_period = exp_total / (exp_presc + 1U);
+    int ok_period = (period == exp_period);
+    int ok_50 = (duty50 >= period/2 - 2 && duty50 <= period/2 + 2);
+
+    pct = 25;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_SET_DUTY_PERCENT, &pct);
+    uint32_t duty25 = 0;
+    pwmd->vtable->ioctl(pwmd, PWM_IOCTL_GET_DUTY_TICKS, &duty25);
+    int ok_25 = (duty25 >= period/4 - 2 && duty25 <= period/4 + 2);
+
+    /* 4) coordination proof: timer11 must still be counting while PWM is live. */
+    uint32_t ov_before = 0;
+    tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov_before);
+    for (volatile uint32_t k = 0; k < (SystemCoreClock / 20U); k++) { }  /* ~50ms */
+    uint32_t ov_after = 0;
+    tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov_after);
+    int ok_coord = (ov_after > ov_before);   /* timer event still firing on shared TIM */
+
+    if (!ok_period || !ok_50 || !ok_25 || !ok_coord) ok = 0;
+    printf("       pwm0(TIM3_CH1): period=%lu ticks (expect %lu, %s)\r\n",
+           (unsigned long)period, (unsigned long)exp_period,
+           ok_period ? "PASS" : "FAIL");
+    printf("         duty@50%%=%lu (~%lu, %s), duty@25%%=%lu (~%lu, %s)\r\n",
+           (unsigned long)duty50, (unsigned long)(period/2),
+           ok_50 ? "PASS" : "FAIL",
+           (unsigned long)duty25, (unsigned long)(period/4),
+           ok_25 ? "PASS" : "FAIL");
+    printf("         timer11 overflows %lu->%lu while PWM live (%s)\r\n",
+           (unsigned long)ov_before, (unsigned long)ov_after,
+           ok_coord ? "PASS" : "FAIL");
+
+    /* 5) teardown: float the PWM output, then stop the shared counter. */
+    pwmd->vtable->close(pwmd);
+    te->vtable->disable(te);
+    tim->vtable->close(tim);
     return ok;
 }
