@@ -25,6 +25,7 @@
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
 #include "drv/pinmux.h"
+#include "drv/timer.h"
 
 #include "temp_hal.h"
 
@@ -70,6 +71,7 @@ static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1,
 static const gpio_config_t g_led   = { "led",   "GPIOD_12", 1 }; /* D12, output */
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
+static const timer_config_t g_timer0 = { "timer0", (void *)TIM2, 84000000, 20 }; /* TIM2, 84MHz, 20Hz */
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -85,6 +87,7 @@ static const board_node_t g_nodes[] = {
     { gpio_pin_create,    &g_led },
     { adc_create,         &g_adc0 },
     { temp_sensor_create, &g_temp0 },
+    { timer_create,       &g_timer0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

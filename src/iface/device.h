@@ -52,6 +52,7 @@ typedef enum {
     DEVICE_TYPE_TEMP_SENSOR,  /* 4 */
     DEVICE_TYPE_PINMUX,       /* 5 — pin multiplexer / conflict arbitrator */
     DEVICE_TYPE_SYSTICK,      /* 6 — core timer, modeled as an EVENT device */
+    DEVICE_TYPE_TIMER,        /* 7 — general-purpose TIM (periodic EVENT source) */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 

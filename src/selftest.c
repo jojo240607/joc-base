@@ -11,6 +11,8 @@
 #include "drv/gpio_pin.h"
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
+#include "drv/timer.h"
+#include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
 #include "common/ringbuffer.h"     /* ringbuffer_run_selftest (common utility class) */
@@ -25,6 +27,7 @@ static int selftest_vadc(selftest *self);
 static int selftest_vtemp(selftest *self);
 static int selftest_vio(selftest *self);
 static int selftest_vmode(selftest *self);
+static int selftest_vtimer(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -35,6 +38,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_temp  = selftest_vtemp,
     .test_io    = selftest_vio,
     .test_mode  = selftest_vmode,
+    .test_timer = selftest_vtimer,
 };
 
 const struct selftestFun selftest_fun = {
@@ -116,6 +120,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_mode(self);
     printf("[BIST] mode  : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_timer(self);
+    printf("[BIST] timer : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -273,5 +281,35 @@ static int selftest_vmode(selftest *self)
 
     printf("       adc irq read=%lu, uart mode switch %s\r\n",
            (unsigned long)adc_irq, ok ? "ok" : "FAIL");
+    return ok;
+}
+
+/* Verify the general-purpose TIM driver works end-to-end as a periodic EVENT
+ * source: open timer0, enable it (start counting + arm NVIC), busy-wait a few
+ * hundred ms, then confirm the overflow ISR actually fired (overflows > 0).
+ * timer0 is configured at 20 Hz, so a ~300 ms wait should yield several
+ * overflows. No external wiring; the ISR increments a counter we read back. */
+static int selftest_vtimer(selftest *self)
+{
+    (void)self;
+    device *tim = device_manager_get("timer0");
+    if (!tim) return 0;
+    event_device *te = device_as_event(tim);
+    if (!te) return 0;
+
+    tim->vtable->open(tim);
+    te->vtable->enable(te);          /* start counting + arm NVIC */
+
+    /* busy-wait ~300 ms (timer is 20 Hz => expect a handful of overflows) */
+    for (volatile uint32_t i = 0; i < (SystemCoreClock / 10U); i++) { }
+
+    uint32_t ov = 0;
+    tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov);
+    te->vtable->disable(te);
+    tim->vtable->close(tim);
+
+    int ok = (ov >= 2U);
+    printf("       timer0 overflows=%lu (expect >=2) %s\r\n",
+           (unsigned long)ov, ok ? "" : "[FAIL]");
     return ok;
 }

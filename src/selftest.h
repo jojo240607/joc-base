@@ -21,6 +21,7 @@ struct selftestVtable {
     int (*test_temp)(selftest *self);
     int (*test_io)(selftest *self);     /* unified sync/async transfer API */
     int (*test_mode)(selftest *self);   /* POLL/IRQ engine switching + ADC IRQ read */
+    int (*test_timer)(selftest *self);  /* general-purpose TIM periodic EVENT */
 };
 
 struct _selftest {
