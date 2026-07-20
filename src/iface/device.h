@@ -55,6 +55,7 @@ typedef enum {
     DEVICE_TYPE_TIMER,        /* 7 — general-purpose TIM (periodic EVENT source) */
     DEVICE_TYPE_PWM,          /* 8 — TIM capture/compare channel (CONTROL: PWM out) */
     DEVICE_TYPE_EXTI,         /* 9 — GPIO pin external interrupt (EVENT) */
+    DEVICE_TYPE_I2C,          /* 10 — I2C master (CONTROL: bus scan + xfer) */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 

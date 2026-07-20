@@ -28,6 +28,7 @@
 #include "drv/timer.h"
 #include "drv/pwm.h"
 #include "drv/exti.h"
+#include "drv/i2c.h"
 
 #include "temp_hal.h"
 
@@ -114,6 +115,12 @@ static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM8, 168000000, 0, 1,
 static const exti_config_t g_exti0 = { "exti0", "GPIOE_5", EXTI_EDGE_RISING, 2 };
 static const exti_config_t g_exti1 = { "exti1", "GPIOE_6", EXTI_EDGE_RISING, 2 };
 static const exti_config_t g_exti2 = { "exti2", "GPIOE_0", EXTI_EDGE_RISING, 2 };
+/* I2C master demo: i2c0 is I2C1 on PB6(SCL)/PB7(SDA), 100 kHz. There is no I2C
+ * slave on the Discovery board, so this node exists to prove the driver + HAL
+ * configure the CORRECT F4 I2C registers and that the polling state machine runs
+ * (and bus-scans) without hanging. PCLK1 = 42 MHz (APB1). */
+static const i2c_config_t g_i2c0 = { "i2c0", (void *)I2C1, 42000000, 100000,
+                                     "I2C1_SCL_PB6", "I2C1_SDA_PB7" };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -148,6 +155,7 @@ static const board_node_t g_nodes[] = {
     { exti_create,        &g_exti0 },
     { exti_create,        &g_exti1 },
     { exti_create,        &g_exti2 },
+    { i2c_create,         &g_i2c0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

@@ -76,7 +76,7 @@ int stream_device_default_transfer_async(stream_device *self, io_xfer_t *xfer)
     return self->vtable->submit(self, xfer);     /* start; returns immediately */
 }
 
-/* --- embedded RX ring buffer helpers (see stream_device.h) --- */
+/* --- embedded RX ring buffer helpers (see stream_device.h) --- */ 
 
 void stream_device_init_ringbuffer(stream_device *self, uint8_t *buf, size_t size)
 {
