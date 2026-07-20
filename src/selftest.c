@@ -15,6 +15,7 @@
 #include "drv/pwm.h"
 #include "drv/exti.h"
 #include "drv/i2c.h"
+#include "drv/spi.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -36,6 +37,7 @@ static int selftest_vexti(selftest *self);
 static int selftest_vadvtimer(selftest *self);
 static int selftest_vadvpwm(selftest *self);
 static int selftest_vi2c(selftest *self);
+static int selftest_vspi(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -52,6 +54,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_adv_timer = selftest_vadvtimer,
     .test_adv_pwm   = selftest_vadvpwm,
     .test_i2c       = selftest_vi2c,
+    .test_spi       = selftest_vspi,
 };
 
 const struct selftestFun selftest_fun = {
@@ -157,6 +160,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_i2c(self);
     printf("[BIST] i2c    : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_spi(self);
+    printf("[BIST] spi    : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -575,6 +582,58 @@ static int selftest_vi2c(selftest *self)
     return ok;
 }
 
+/* Verify the SPI master driver WITHOUT any slave hardware (no SPI device on the
+ * Discovery board). We prove the driver works by:
+ *   (1) register readback: after open(), CR1 must have SPE, MSTR, and BR set for
+ *       ~1 MHz SCK (SPI1 on APB2=84 MHz => BR=5 => CR1 bits 5:3 = 101);
+ *   (2) a single full-duplex byte transfer: the TXE/RXNE polling loop completes
+ *       without timeout (proves the state machine runs and doesn't hang);
+ *   (3) BSY flag clears after the transfer. */
+static int selftest_vspi(selftest *self)
+{
+    (void)self;
+    device *spid = device_manager_get("spi0");
+    if (!spid) { printf("       spi0: MISSING\r\n"); return 0; }
+
+    if (spid->vtable->open(spid) != 0) {
+        printf("       spi0: OPEN FAILED (pin conflict?)\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+
+    /* (1) register readback: SPE=1, MSTR=1, BR=6 (bits 5:3 = 110 = 0x30).
+     * With PCLK=84 MHz and target=1 MHz: BR=6 gives 84/128=656 kHz (the highest
+     * rate ≤ 1 MHz). BR=5 would give 84/64=1.3125 MHz which exceeds the target. */
+    uint32_t cr1 = 0;
+    spid->vtable->ioctl(spid, SPI_IOCTL_GET_CR1, &cr1);
+    int ok_spe  = (cr1 & SPI_CR1_SPE) ? 1 : 0;
+    int ok_mstr = (cr1 & SPI_CR1_MSTR) ? 1 : 0;
+    int ok_br   = ((cr1 & SPI_CR1_BR) == (6U << 3)) ? 1 : 0;  /* BR=6 */
+    if (!ok_spe || !ok_mstr || !ok_br) ok = 0;
+    printf("       spi0(SPI1,PA5/6/7): SPE=%s MSTR=%s BR=0x%lX(0x30? %s)\r\n",
+           ok_spe ? "on" : "OFF", ok_mstr ? "on" : "OFF",
+           (unsigned long)(cr1 & SPI_CR1_BR), ok_br ? "PASS" : "FAIL");
+
+    /* (2) full-duplex byte transfer: send 0xA5, receive whatever (floating). */
+    uint8_t tx = 0xA5, rx = 0;
+    spi_xfer_t xfer = { .tx_buf = &tx, .rx_buf = &rx, .len = 1 };
+    int xfer_ok = (spid->vtable->ioctl(spid, SPI_IOCTL_XFER, &xfer) == 0);
+    if (!xfer_ok) ok = 0;
+    printf("       xfer 1 byte: tx=0x%02X rx=0x%02X (%s)\r\n",
+           (unsigned)tx, (unsigned)rx, xfer_ok ? "PASS" : "FAIL");
+
+    /* (3) BSY must be clear after transfer. */
+    int bsy = 1;
+    spid->vtable->ioctl(spid, SPI_IOCTL_GET_BSY, &bsy);
+    int ok_bsy = (bsy == 0);
+    if (!ok_bsy) ok = 0;
+    printf("       BSY after xfer=%s (%s)\r\n", bsy ? "set" : "clear",
+           ok_bsy ? "PASS" : "FAIL");
+
+    spid->vtable->close(spid);
+    return ok;
+}
 /* Verify the external-interrupt driver end-to-end WITHOUT a physical button:
  * we SOFTWARE-TRIGGER each line (EXTI->SWIER) so the ISR fires, then confirm
  * the per-device interrupt count and the subscribed callback both incremented.

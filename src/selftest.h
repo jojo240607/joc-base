@@ -27,6 +27,7 @@ struct selftestVtable {
     int (*test_adv_timer)(selftest *self); /* advanced TIM: repetition counter (RCR) */
     int (*test_adv_pwm)(selftest *self);   /* advanced TIM PWM: MOE/dead-time/comp */
     int (*test_i2c)(selftest *self);       /* I2C master: config readback + bus scan */
+    int (*test_spi)(selftest *self);       /* SPI master: config readback + xfer */
 };
 
 struct _selftest {

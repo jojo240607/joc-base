@@ -29,6 +29,7 @@
 #include "drv/pwm.h"
 #include "drv/exti.h"
 #include "drv/i2c.h"
+#include "drv/spi.h"
 
 #include "temp_hal.h"
 
@@ -121,6 +122,13 @@ static const exti_config_t g_exti2 = { "exti2", "GPIOE_0", EXTI_EDGE_RISING, 2 }
  * (and bus-scans) without hanging. PCLK1 = 42 MHz (APB1). */
 static const i2c_config_t g_i2c0 = { "i2c0", (void *)I2C1, 42000000, 100000,
                                      "I2C1_SCL_PB6", "I2C1_SDA_PB7" };
+/* SPI master demo: spi0 is SPI1 on PA5(SCK)/PA6(MISO)/PA7(MOSI), ~1 MHz SCK.
+ * The Arduino header exposes these pins but no SPI device is connected, so this
+ * node proves the driver + HAL configure the SPI correctly and that the polling
+ * state machine runs without hanging. PCLK2 = 84 MHz (APB2). */
+static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
+                                     "SPI1_SCK_PA5", "SPI1_MISO_PA6",
+                                     "SPI1_MOSI_PA7" };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -156,6 +164,7 @@ static const board_node_t g_nodes[] = {
     { exti_create,        &g_exti1 },
     { exti_create,        &g_exti2 },
     { i2c_create,         &g_i2c0 },
+    { spi_create,         &g_spi0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */
