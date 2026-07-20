@@ -32,13 +32,28 @@ void tim_hal_destroy(tim_hal_handle_t *h)
     free(h);
 }
 
-/* TIM2..TIM5 all hang off APB1. Enable the matching RCC clock bit. */
+/* APB1 timers: TIM2..TIM7 and TIM12..TIM14 (timer clock = 2xAPB1 = 84 MHz on
+ * this board). APB2 timers: TIM1, TIM8..TIM11 (timer clock = 2xAPB2 = 168 MHz).
+ * Enable the matching RCC clock bit for each. (TIM10/TIM13 are intentionally
+ * mapped here too, but are NOT instantiated on the board yet — they share an
+ * IRQ line with TIM1_UP / TIM8_UP, which the single-handler-per-IRQ irq_manager
+ * can't host simultaneously. That shared-line problem is deferred.) */
 static void tim_hal_clock_on(TIM_TypeDef *t)
 {
     if (t == TIM2)      RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
     else if (t == TIM3) RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
     else if (t == TIM4) RCC->APB1ENR |= RCC_APB1ENR_TIM4EN;
     else if (t == TIM5) RCC->APB1ENR |= RCC_APB1ENR_TIM5EN;
+    else if (t == TIM6) RCC->APB1ENR |= RCC_APB1ENR_TIM6EN;
+    else if (t == TIM7) RCC->APB1ENR |= RCC_APB1ENR_TIM7EN;
+    else if (t == TIM12) RCC->APB1ENR |= RCC_APB1ENR_TIM12EN;
+    else if (t == TIM13) RCC->APB1ENR |= RCC_APB1ENR_TIM13EN;
+    else if (t == TIM14) RCC->APB1ENR |= RCC_APB1ENR_TIM14EN;
+    else if (t == TIM1)  RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
+    else if (t == TIM8)  RCC->APB2ENR |= RCC_APB2ENR_TIM8EN;
+    else if (t == TIM9)  RCC->APB2ENR |= RCC_APB2ENR_TIM9EN;
+    else if (t == TIM10) RCC->APB2ENR |= RCC_APB2ENR_TIM10EN;
+    else if (t == TIM11) RCC->APB2ENR |= RCC_APB2ENR_TIM11EN;
 }
 
 void tim_hal_enable_clock(tim_hal_handle_t *h)
@@ -90,10 +105,27 @@ irq_id_t tim_hal_irq_id(tim_hal_handle_t *h)
 {
     if (!h) return -1;
     TIM_TypeDef *t = h->tim;
-    if (t == TIM2) return (irq_id_t)TIM2_IRQn;
-    if (t == TIM3) return (irq_id_t)TIM3_IRQn;
-    if (t == TIM4) return (irq_id_t)TIM4_IRQn;
-    if (t == TIM5) return (irq_id_t)TIM5_IRQn;
+    /* We only ever arm the UPDATE interrupt (DIER UIE), so each timer maps to
+     * the IRQ line its update/global interrupt lives on:
+     *   TIM1_UP/TIM10 share 25, TIM8_UP/TIM13 share 44, TIM1_BRK/TIM9 share 24,
+     *   TIM1_TRG_COM/TIM11 share 26, TIM8_BRK/TIM12 share 43, TIM8_TRG_COM/TIM14
+     *   share 45. The board only instantiates the lines that do NOT collide
+     *   (TIM1, TIM8, TIM9, TIM11, TIM12, TIM14, TIM6, TIM7); TIM10/TIM13 are
+     *   deferred until the irq_manager can host two handlers on one line. */
+    if (t == TIM1)  return (irq_id_t)TIM1_UP_TIM10_IRQn;
+    if (t == TIM8)  return (irq_id_t)TIM8_UP_TIM13_IRQn;
+    if (t == TIM9)  return (irq_id_t)TIM1_BRK_TIM9_IRQn;
+    if (t == TIM10) return (irq_id_t)TIM1_UP_TIM10_IRQn;
+    if (t == TIM11) return (irq_id_t)TIM1_TRG_COM_TIM11_IRQn;
+    if (t == TIM12) return (irq_id_t)TIM8_BRK_TIM12_IRQn;
+    if (t == TIM13) return (irq_id_t)TIM8_UP_TIM13_IRQn;
+    if (t == TIM14) return (irq_id_t)TIM8_TRG_COM_TIM14_IRQn;
+    if (t == TIM2)  return (irq_id_t)TIM2_IRQn;
+    if (t == TIM3)  return (irq_id_t)TIM3_IRQn;
+    if (t == TIM4)  return (irq_id_t)TIM4_IRQn;
+    if (t == TIM5)  return (irq_id_t)TIM5_IRQn;
+    if (t == TIM6)  return (irq_id_t)TIM6_DAC_IRQn;
+    if (t == TIM7)  return (irq_id_t)TIM7_IRQn;
     return -1;
 }
 

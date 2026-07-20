@@ -50,7 +50,7 @@ def main():
     for attempt in range(3):
         ser.reset_input_buffer()
         ser.write(b"BIST\n")
-        deadline = time.time() + 4
+        deadline = time.time() + 12   # timer BIST now exercises 9 timers (~3.7s)
         while time.time() < deadline:
             line = ser.readline().decode(errors="replace").strip()
             if not line:

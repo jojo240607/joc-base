@@ -71,7 +71,15 @@ static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1,
 static const gpio_config_t g_led   = { "led",   "GPIOD_12", 1 }; /* D12, output */
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
-static const timer_config_t g_timer0 = { "timer0", (void *)TIM2, 84000000, 20 }; /* TIM2, 84MHz, 20Hz */
+static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20 }; /* TIM2,  APB1 84MHz, 20Hz, IRQ28 */
+static const timer_config_t g_timer1 = { "timer1", (void *)TIM1,  168000000, 20 }; /* TIM1,  APB2 168MHz, 20Hz, IRQ25(TIM1_UP) */
+static const timer_config_t g_timer2 = { "timer2", (void *)TIM6,  84000000, 20 }; /* TIM6,  APB1 84MHz, 20Hz, IRQ54 */
+static const timer_config_t g_timer3 = { "timer3", (void *)TIM7,  84000000, 20 }; /* TIM7,  APB1 84MHz, 20Hz, IRQ55 */
+static const timer_config_t g_timer4 = { "timer4", (void *)TIM8,  168000000, 20 }; /* TIM8,  APB2 168MHz, 20Hz, IRQ44(TIM8_UP) */
+static const timer_config_t g_timer5 = { "timer5", (void *)TIM9,  168000000, 20 }; /* TIM9,  APB2 168MHz, 20Hz, IRQ24 */
+static const timer_config_t g_timer6 = { "timer6", (void *)TIM11, 168000000, 20 }; /* TIM11, APB2 168MHz, 20Hz, IRQ26 */
+static const timer_config_t g_timer7 = { "timer7", (void *)TIM12, 84000000, 20 }; /* TIM12, APB1 84MHz, 20Hz, IRQ43 */
+static const timer_config_t g_timer8 = { "timer8", (void *)TIM14, 84000000, 20 }; /* TIM14, APB1 84MHz, 20Hz, IRQ45 */
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -88,6 +96,14 @@ static const board_node_t g_nodes[] = {
     { adc_create,         &g_adc0 },
     { temp_sensor_create, &g_temp0 },
     { timer_create,       &g_timer0 },
+    { timer_create,       &g_timer1 },
+    { timer_create,       &g_timer2 },
+    { timer_create,       &g_timer3 },
+    { timer_create,       &g_timer4 },
+    { timer_create,       &g_timer5 },
+    { timer_create,       &g_timer6 },
+    { timer_create,       &g_timer7 },
+    { timer_create,       &g_timer8 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

@@ -285,11 +285,12 @@ static int selftest_vmode(selftest *self)
 }
 
 /* Verify the general-purpose TIM driver works end-to-end as a periodic EVENT
- * source: open timer0, register a TICK callback, enable it (start counting +
- * arm NVIC), busy-wait a few hundred ms, then confirm BOTH that the overflow
- * ISR actually fired (overflows > 0) AND that the registered callback was
- * invoked (cb_count > 0). timer0 is configured at 20 Hz, so a ~300 ms wait
- * should yield several overflows/callbacks. No external wiring. */
+ * source for EVERY instantiated timer (timer0..timer8 = TIM2/1/6/7/8/9/11/12/14).
+ * For each: register a TICK callback, open, enable (start counting + arm NVIC),
+ * busy-wait ~300 ms, then confirm BOTH that the overflow ISR fired (overflows)
+ * AND that the registered callback was invoked (cb_count). All nine timers sit
+ * on DISTINCT IRQ lines, so they never collide in the single-handler irq_manager.
+ * TIM10/TIM13 are deliberately excluded — they share a line with TIM1_UP/TIM8_UP. */
 static volatile uint32_t g_timer_cb_count;   /* bumped from ISR context */
 static void selftest_timer_cb(void *ctx, device_event_type_t ev, void *ev_data)
 {
@@ -299,30 +300,37 @@ static void selftest_timer_cb(void *ctx, device_event_type_t ev, void *ev_data)
 static int selftest_vtimer(selftest *self)
 {
     (void)self;
-    device *tim = device_manager_get("timer0");
-    if (!tim) return 0;
-    event_device *te = device_as_event(tim);
-    if (!te) return 0;
+    static const char *timers[] = {
+        "timer0", "timer1", "timer2", "timer3", "timer4",
+        "timer5", "timer6", "timer7", "timer8"
+    };
+    int ok = 1;
+    for (unsigned i = 0; i < sizeof(timers) / sizeof(timers[0]); i++) {
+        device *tim = device_manager_get(timers[i]);
+        if (!tim) { ok = 0; printf("       %s: MISSING\r\n", timers[i]); continue; }
+        event_device *te = device_as_event(tim);
+        if (!te)  { ok = 0; printf("       %s: not-event\r\n", timers[i]); continue; }
 
-    g_timer_cb_count = 0;
-    te->vtable->set_event_callback(te, DEVICE_EVENT_TICK, selftest_timer_cb, NULL);
-    tim->vtable->open(tim);
-    te->vtable->enable(te);          /* start counting + arm NVIC */
+        g_timer_cb_count = 0;
+        te->vtable->set_event_callback(te, DEVICE_EVENT_TICK, selftest_timer_cb, NULL);
+        tim->vtable->open(tim);
+        te->vtable->enable(te);          /* start counting + arm NVIC */
 
-    /* busy-wait ~300 ms (timer is 20 Hz => expect a handful of overflows) */
-    for (volatile uint32_t i = 0; i < (SystemCoreClock / 10U); i++) { }
+        /* busy-wait ~300 ms (timer is 20 Hz => expect a handful of overflows) */
+        for (volatile uint32_t k = 0; k < (SystemCoreClock / 10U); k++) { }
 
-    uint32_t ov = 0;
-    tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov);
-    te->vtable->disable(te);
-    te->vtable->clear_event_callback(te, DEVICE_EVENT_TICK);
-    tim->vtable->close(tim);
+        uint32_t ov = 0;
+        tim->vtable->ioctl(tim, TIMER_IOCTL_GET_OVERFLOWS, &ov);
+        te->vtable->disable(te);
+        te->vtable->clear_event_callback(te, DEVICE_EVENT_TICK);
+        tim->vtable->close(tim);
 
-    int ok_isr   = (ov >= 2U);
-    int ok_cb    = (g_timer_cb_count >= 2U);
-    int ok       = ok_isr && ok_cb;
-    printf("       timer0 overflows=%lu (ISR %s), cb_count=%lu (callback %s)\r\n",
-           (unsigned long)ov, ok_isr ? "PASS" : "FAIL",
-           (unsigned long)g_timer_cb_count, ok_cb ? "PASS" : "FAIL");
+        int ok_isr = (ov >= 2U);
+        int ok_cb  = (g_timer_cb_count >= 2U);
+        if (!ok_isr || !ok_cb) ok = 0;
+        printf("       %s: overflows=%lu (ISR %s), cb=%lu (cb %s)\r\n",
+               timers[i], (unsigned long)ov, ok_isr ? "PASS" : "FAIL",
+               (unsigned long)g_timer_cb_count, ok_cb ? "PASS" : "FAIL");
+    }
     return ok;
 }
