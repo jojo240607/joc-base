@@ -1,46 +1,48 @@
 #ifndef SDIO_H
 #define SDIO_H
 
-#include "iface/control_device.h"
+#include "iface/stream_device.h"
+#include "iface/device.h"
 #include "sdio_hal.h"
 #include "pinmux_hal.h"
 #include <stdint.h>
 
 /*
- * SDIO driver — a CONTROL device wrapping the STM32 SDIO peripheral.
+ * SDIO driver — a STREAM device wrapping the STM32 SDIO host peripheral.
  *
- * Supports SD card initialization and block read/write in POLL mode.
- * The bus is 4-bit wide by default; fallback to 1-bit for compatibility.
+ * The driver configures the SDIO bus (pins, clock, power, bus width) and
+ * implements the SD protocol (card init, single/multi-block read/write).
+ * It is STREAM because it moves a continuous stream of data over the bus.
  *
- * Card detection and data transfer are ioctl-driven. For a BLOCK device
- * abstraction, these will be extended later.
+ * SD card state and protocol logic live here (like I2C slave protocol
+ * lives in the I2C driver). A future BLOCK device abstraction can be
+ * layered on top by consuming the SDIO device through device_manager.
  */
 typedef struct _sdio sdio;
 
 typedef struct {
     const char *name;
-    void *peripheral;         /* SDIO base */
-    const char *ck_signal;    /* SDIO_CK */
-    const char *cmd_signal;   /* SDIO_CMD */
-    const char *d0_signal;    /* SDIO_D0 */
-    const char *d1_signal;    /* SDIO_D1 */
-    const char *d2_signal;    /* SDIO_D2 */
-    const char *d3_signal;    /* SDIO_D3 */
+    void *peripheral;
+    const char *ck_signal;
+    const char *cmd_signal;
+    const char *d0_signal;
+    const char *d1_signal;
+    const char *d2_signal;
+    const char *d3_signal;
 } sdio_config_t;
 
-/* SD card state (tracked by the driver) */
 typedef struct {
-    uint16_t rca;             /* relative card address */
-    uint8_t  csd[16];         /* CSD register (128-bit) */
-    uint8_t  cid[16];         /* CID register (128-bit) */
-    uint32_t block_len;       /* block length in bytes (default 512) */
-    uint32_t card_size;       /* total size in blocks */
+    uint16_t rca;
+    uint8_t  csd[16];
+    uint8_t  cid[16];
+    uint32_t block_len;
+    uint32_t card_size;       /* in 512-byte blocks */
     int      card_type;       /* 0=none, 1=SDSC, 2=SDHC/SDXC */
-    int      ready;           /* 1 = card initialized */
+    int      ready;
 } sdio_card_info_t;
 
 struct _sdio {
-    control_device parent;
+    stream_device parent;
     sdio_hal_handle_t *hal;
     sdio_card_info_t card;
     pinmux_port_t ck_port, cmd_port, d0_port, d1_port, d2_port, d3_port;
@@ -51,19 +53,19 @@ struct _sdio {
 device *sdio_create(const void *config);
 void sdio_destroy(sdio *self);
 
-/* ioctl commands */
-#define SDIO_IOCTL_INIT        0x50   /* arg = NULL — init card, fill card info */
+/* ioctl commands (BLOCK ops for SD card protocol) */
+#define SDIO_IOCTL_INIT        0x50
 #define SDIO_IOCTL_READ_BLOCK  0x51   /* arg = sdio_blk_t* */
-#define SDIO_IOCTL_WRITE_BLOCK 0x52   /* arg = sdio_blk_t* */
+#define SDIO_IOCTL_WRITE_BLOCK 0x52
 #define SDIO_IOCTL_GET_INFO    0x53   /* arg = sdio_card_info_t* */
-#define SDIO_IOCTL_GET_POWER   0x54   /* arg = uint32_t* */
-#define SDIO_IOCTL_GET_CLKCR   0x55   /* arg = uint32_t* */
+#define SDIO_IOCTL_GET_POWER   0x54
+#define SDIO_IOCTL_GET_CLKCR   0x55
 
 typedef struct {
-    uint32_t block_addr;   /* block address (LBA for SDHC, byte/512 for SDSC) */
-    uint8_t *buf;          /* data buffer */
-    uint32_t count;        /* block count */
-    int      result;       /* OUT: 0 = success */
+    uint32_t block_addr;
+    uint8_t *buf;
+    uint32_t count;
+    int      result;
 } sdio_blk_t;
 
 #endif /* SDIO_H */
