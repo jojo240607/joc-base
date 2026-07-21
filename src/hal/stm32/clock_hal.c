@@ -10,9 +10,10 @@ void clock_hal_configure(void)
     RCC->CR |= RCC_CR_HSEON;
     while ((RCC->CR & RCC_CR_HSERDY) == 0) { }
 
-    /* Flash latency: 5 WS @ 3.3 V, I/D caches ON, prefetch OFF (test: ART
-     * prefetch may cause boot hang on non-128-bit-aligned firmware sizes). */
-    FLASH->ACR = FLASH_ACR_ICEN | FLASH_ACR_DCEN | FLASH_ACR_LATENCY_5WS;
+    /* Flash latency: 5 WS @ 3.3 V, enable prefetch + I/D caches.
+     * The linker script pads to 16-byte boundary (.flash_pad), so the
+     * ART prefetch never reads a partial 128-bit row at the end of flash. */
+    FLASH->ACR = FLASH_ACR_PRFTEN | FLASH_ACR_ICEN | FLASH_ACR_DCEN | FLASH_ACR_LATENCY_5WS;
 
     /* PLL: M=8 -> 1 MHz, N=336 -> 336 MHz, P=2 -> 168 MHz, Q=7 -> 48 MHz, SRC=HSE */
     RCC->PLLCFGR = (8U   << RCC_PLLCFGR_PLLM_Pos)
