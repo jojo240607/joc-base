@@ -200,3 +200,36 @@ uint32_t i2c_hal_get_cr1(i2c_hal_handle_t *h)
     { return h ? h->reg->CR1 : 0UL; }
 int i2c_hal_is_busy(i2c_hal_handle_t *h)
     { return h ? ((h->reg->SR2 & I2C_SR2_BUSY) ? 1 : 0) : 0; }
+
+/* --- Interrupt-mode helpers --- */
+irq_id_t i2c_hal_ev_irq_id(i2c_hal_handle_t *h)
+{
+    if (!h) return -1;
+    void *p = (void *)h->reg;
+    if      (p == (void *)I2C1_BASE) return (irq_id_t)I2C1_EV_IRQn;
+    else if (p == (void *)I2C2_BASE) return (irq_id_t)I2C2_EV_IRQn;
+    else if (p == (void *)I2C3_BASE) return (irq_id_t)I2C3_EV_IRQn;
+    return -1;
+}
+irq_id_t i2c_hal_er_irq_id(i2c_hal_handle_t *h)
+{
+    if (!h) return -1;
+    void *p = (void *)h->reg;
+    if      (p == (void *)I2C1_BASE) return (irq_id_t)I2C1_ER_IRQn;
+    else if (p == (void *)I2C2_BASE) return (irq_id_t)I2C2_ER_IRQn;
+    else if (p == (void *)I2C3_BASE) return (irq_id_t)I2C3_ER_IRQn;
+    return -1;
+}
+void i2c_hal_enable_ev_irq(i2c_hal_handle_t *h)   { if (h) h->reg->CR2 |= I2C_CR2_ITEVTEN; }
+void i2c_hal_disable_ev_irq(i2c_hal_handle_t *h)  { if (h) h->reg->CR2 &= ~I2C_CR2_ITEVTEN; }
+void i2c_hal_enable_er_irq(i2c_hal_handle_t *h)   { if (h) h->reg->CR2 |= I2C_CR2_ITERREN; }
+void i2c_hal_disable_er_irq(i2c_hal_handle_t *h)  { if (h) h->reg->CR2 &= ~I2C_CR2_ITERREN; }
+uint32_t i2c_hal_read_sr1(i2c_hal_handle_t *h)    { return h ? h->reg->SR1 : 0UL; }
+uint32_t i2c_hal_read_sr2(i2c_hal_handle_t *h)    { return h ? h->reg->SR2 : 0UL; }
+void i2c_hal_write_dr(i2c_hal_handle_t *h, uint8_t data) { if (h) h->reg->DR = data; }
+uint8_t i2c_hal_read_dr(i2c_hal_handle_t *h)      { return h ? (uint8_t)h->reg->DR : 0U; }
+void i2c_hal_set_start(i2c_hal_handle_t *h)       { if (h) h->reg->CR1 |= I2C_CR1_START; }
+void i2c_hal_set_stop(i2c_hal_handle_t *h)        { if (h) h->reg->CR1 |= I2C_CR1_STOP; }
+void i2c_hal_set_ack(i2c_hal_handle_t *h, int on) { if (h) { if (on) h->reg->CR1 |= I2C_CR1_ACK; else h->reg->CR1 &= ~I2C_CR1_ACK; } }
+void i2c_hal_set_pos(i2c_hal_handle_t *h, int on) { if (h) { if (on) h->reg->CR1 |= I2C_CR1_POS; else h->reg->CR1 &= ~I2C_CR1_POS; } }
+void i2c_hal_clear_sr1_af(i2c_hal_handle_t *h)    { if (h) { (void)h->reg->SR1; h->reg->CR1 |= I2C_CR1_STOP; } }

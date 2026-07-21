@@ -537,46 +537,33 @@ static int selftest_vi2c(selftest *self)
 
     int ok = 1;
 
-    /* (1) register readback: verify the F1-style configuration.
-     *     CR1.PE must be set, CCR must = PCLK1/(2*speed) = 210 for 100 kHz,
-     *     CR2.FREQ must = PCLK1 in MHz = 42.
-     *     This proves the HAL programmed the CORRECT F1 registers. */
+    /* (1) register readback. */
     uint32_t ccr = 0, cr1 = 0, freq = 0;
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_GET_CCR, &ccr);
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_GET_CR2_FREQ, &freq);
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_GET_CR1, &cr1);
     int ok_pe   = (cr1 & 0x1U) ? 1 : 0;
-    int ok_ccr  = (ccr == 210UL);                     /* 42MHz / (2*100kHz) */
-    int ok_freq = (freq == 42UL);                     /* PCLK1 in MHz */
+    int ok_ccr  = (ccr == 210UL);
+    int ok_freq = (freq == 42UL);
     if (!ok_pe || !ok_ccr || !ok_freq) ok = 0;
     printf("       i2c0(I2C1,PB6/PB7): PE=%s CCR=%lu(210? %s) FREQ=%lu(42? %s)\r\n",
            ok_pe ? "on" : "OFF", (unsigned long)ccr, ok_ccr ? "PASS" : "FAIL",
            (unsigned long)freq, ok_freq ? "PASS" : "FAIL");
 
-    /* (2) single probe to a plausible address (0x50 = common EEPROM) -> NACK. */
+    /* (2) POLL mode probe + bus scan (default mode after open). */
     i2c_xfer_t probe = { .addr = 0x50, .buf = NULL, .len = 0, .result = 0 };
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_MASTER_WRITE, &probe);
-    int ok_nack = (probe.result == -1);               /* expect NACK (no device) */
-    if (!ok_nack) ok = 0;
-    printf("       probe addr=0x50 -> %s (expect NACK, %s)\r\n",
-           probe.result == 0 ? "ACK" : "NACK", ok_nack ? "PASS" : "FAIL");
+    int ok_poll_nack = (probe.result == -1);
+    if (!ok_poll_nack) ok = 0;
+    printf("       POLL probe addr=0x50 -> %s (%s)\r\n",
+           probe.result == 0 ? "ACK" : "NACK", ok_poll_nack ? "PASS" : "FAIL");
 
-    /* (3) full bus scan — must complete (no hang) and find nothing.
-     * NOTE: bus-idle-after-scan is NOT checked because the Discovery board has
-     * no external pull-up resistors on PB6/PB7. Without them the internal 40k
-     * pull-ups cannot drive the lines high fast enough after a NACK, so the
-     * STOP condition may not be properly detected by the peripheral and BUSY
-     * stays set. The scan DID complete without hanging (proved below) and
-     * every probe returned the correct NACK — that is the real proof. */
     i2c_scan_t scan;
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_BUS_SCAN, &scan);
-    int ok_scan_done = (scan.found == 0);             /* no slave on the board */
-    int busy = 0;
-    i2cd->vtable->ioctl(i2cd, I2C_IOCTL_GET_BUSY, &busy);
-    if (!ok_scan_done) ok = 0;
-    printf("       bus scan: found=%u (expect 0, %s); bus busy after scan=%s\r\n",
-           (unsigned)scan.found, ok_scan_done ? "PASS" : "FAIL",
-           busy ? "yes (no ext pull-ups)" : "no");
+    int ok_scan = (scan.found == 0);
+    if (!ok_scan) ok = 0;
+    printf("       POLL bus scan: found=%u (expect 0, %s)\r\n",
+           (unsigned)scan.found, ok_scan ? "PASS" : "FAIL");
 
     i2cd->vtable->close(i2cd);
     return ok;
