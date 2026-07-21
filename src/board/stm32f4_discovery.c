@@ -30,6 +30,7 @@
 #include "drv/exti.h"
 #include "drv/i2c.h"
 #include "drv/spi.h"
+#include "drv/sdio.h"
 
 #include "temp_hal.h"
 
@@ -122,13 +123,18 @@ static const exti_config_t g_exti2 = { "exti2", "GPIOE_0", EXTI_EDGE_RISING, 2 }
  * (and bus-scans) without hanging. PCLK1 = 42 MHz (APB1). */
 static const i2c_config_t g_i2c0 = { "i2c0", (void *)I2C1, 42000000, 100000,
                                      "I2C1_SCL_PB6", "I2C1_SDA_PB7" };
-/* SPI master demo: spi0 is SPI1 on PA5(SCK)/PA6(MISO)/PA7(MOSI), ~1 MHz SCK.
- * The Arduino header exposes these pins but no SPI device is connected, so this
- * node proves the driver + HAL configure the SPI correctly and that the polling
- * state machine runs without hanging. PCLK2 = 84 MHz (APB2). */
+/* SPI master demo: spi0 is SPI1 on PA5(SCK)/PA6(MISO)/PA7(MOSI), ~1 MHz SCK. */
 static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
                                      "SPI1_SCK_PA5", "SPI1_MISO_PA6",
                                      "SPI1_MOSI_PA7" };
+/* SDIO host: sdio0 on PC8-PC12(4-bit) + PD2(CMD), AF12. No SD card slot on the
+ * Discovery board — requires external SD card module wired to the expansion header.
+ * The node exists to verify the SDIO peripheral registers (clock, power, bus width)
+ * are configured correctly even without a card. */
+static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
+                                       "SDIO_CK_PC12", "SDIO_CMD_PD2",
+                                       "SDIO_D0_PC8", "SDIO_D1_PC9",
+                                       "SDIO_D2_PC10", "SDIO_D3_PC11" };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -165,6 +171,7 @@ static const board_node_t g_nodes[] = {
     { exti_create,        &g_exti2 },
     { i2c_create,         &g_i2c0 },
     { spi_create,         &g_spi0 },
+    { sdio_create,        &g_sdio0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

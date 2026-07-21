@@ -38,6 +38,7 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/exti.c
     src/drv/i2c.c
     src/drv/spi.c
+    src/drv/sdio.c
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
     src/irq/irq_manager.c   # centralized interrupt manager (registry + dump)
@@ -58,6 +59,7 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/exti_hal.c
     src/hal/stm32/i2c_hal.c
     src/hal/stm32/spi_hal.c
+    src/hal/stm32/sdio_hal.c
     src/selftest.c
 )
 
