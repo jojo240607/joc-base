@@ -584,11 +584,10 @@ static int selftest_vi2c(selftest *self)
 
 /* Verify the SPI master driver WITHOUT any slave hardware (no SPI device on the
  * Discovery board). We prove the driver works by:
- *   (1) register readback: after open(), CR1 must have SPE, MSTR, and BR set for
- *       ~1 MHz SCK (SPI1 on APB2=84 MHz => BR=5 => CR1 bits 5:3 = 101);
- *   (2) a single full-duplex byte transfer: the TXE/RXNE polling loop completes
- *       without timeout (proves the state machine runs and doesn't hang);
- *   (3) BSY flag clears after the transfer. */
+ *   (1) register readback: CR1 must have SPE, MSTR, and BR set for ~656 kHz;
+ *   (2) full-duplex byte transfer in POLL mode (proves the busy-wait engine);
+ *   (3) full-duplex byte transfer in IRQ mode (proves the RXNE ISR + semaphore);
+ *   (4) BSY flag clears after both transfers. */
 static int selftest_vspi(selftest *self)
 {
     (void)self;
@@ -602,9 +601,7 @@ static int selftest_vspi(selftest *self)
 
     int ok = 1;
 
-    /* (1) register readback: SPE=1, MSTR=1, BR=6 (bits 5:3 = 110 = 0x30).
-     * With PCLK=84 MHz and target=1 MHz: BR=6 gives 84/128=656 kHz (the highest
-     * rate ≤ 1 MHz). BR=5 would give 84/64=1.3125 MHz which exceeds the target. */
+    /* (1) register readback. */
     uint32_t cr1 = 0;
     spid->vtable->ioctl(spid, SPI_IOCTL_GET_CR1, &cr1);
     int ok_spe  = (cr1 & SPI_CR1_SPE) ? 1 : 0;
@@ -615,21 +612,40 @@ static int selftest_vspi(selftest *self)
            ok_spe ? "on" : "OFF", ok_mstr ? "on" : "OFF",
            (unsigned long)(cr1 & SPI_CR1_BR), ok_br ? "PASS" : "FAIL");
 
-    /* (2) full-duplex byte transfer: send 0xA5, receive whatever (floating). */
-    uint8_t tx = 0xA5, rx = 0;
-    spi_xfer_t xfer = { .tx_buf = &tx, .rx_buf = &rx, .len = 1 };
-    int xfer_ok = (spid->vtable->ioctl(spid, SPI_IOCTL_XFER, &xfer) == 0);
-    if (!xfer_ok) ok = 0;
-    printf("       xfer 1 byte: tx=0x%02X rx=0x%02X (%s)\r\n",
-           (unsigned)tx, (unsigned)rx, xfer_ok ? "PASS" : "FAIL");
-
-    /* (3) BSY must be clear after transfer. */
+    /* (2) POLL mode: default after open. */
+    uint8_t tx = 0xA5, rx_poll = 0;
+    spi_xfer_t xfer = { .tx_buf = &tx, .rx_buf = &rx_poll, .len = 1 };
+    int poll_ok = (spid->vtable->ioctl(spid, SPI_IOCTL_XFER, &xfer) == 0);
+    if (!poll_ok) ok = 0;
     int bsy = 1;
     spid->vtable->ioctl(spid, SPI_IOCTL_GET_BSY, &bsy);
-    int ok_bsy = (bsy == 0);
-    if (!ok_bsy) ok = 0;
-    printf("       BSY after xfer=%s (%s)\r\n", bsy ? "set" : "clear",
-           ok_bsy ? "PASS" : "FAIL");
+    int poll_bsy = (bsy == 0);
+    if (!poll_bsy) ok = 0;
+    printf("       POLL xfer 1B: tx=0x%02X rx=0x%02X xfer=%s BSY=%s\r\n",
+           (unsigned)tx, (unsigned)rx_poll,
+           poll_ok ? "PASS" : "FAIL", poll_bsy ? "clear" : "SET");
+
+    /* (3) IRQ mode: switch, transfer, switch back. */
+    stream_xfer_mode_t irq_mode = STREAM_MODE_IRQ;
+    spid->vtable->ioctl(spid, STREAM_IOCTL_SET_MODE, &irq_mode);
+    stream_xfer_mode_t got = STREAM_MODE_POLL;
+    spid->vtable->ioctl(spid, STREAM_IOCTL_GET_MODE, &got);
+    int mode_irq_ok = (got == STREAM_MODE_IRQ);
+
+    uint8_t rx_irq = 0;
+    spi_xfer_t xfer_irq = { .tx_buf = &tx, .rx_buf = &rx_irq, .len = 1 };
+    int irq_xfer_ok = (spid->vtable->ioctl(spid, SPI_IOCTL_XFER, &xfer_irq) == 0);
+    spid->vtable->ioctl(spid, SPI_IOCTL_GET_BSY, &bsy);
+    int irq_bsy = (bsy == 0);
+    if (!mode_irq_ok || !irq_xfer_ok || !irq_bsy) ok = 0;
+    printf("       IRQ  xfer 1B: mode=%s tx=0x%02X rx=0x%02X xfer=%s BSY=%s\r\n",
+           mode_irq_ok ? "PASS" : "FAIL",
+           (unsigned)tx, (unsigned)rx_irq,
+           irq_xfer_ok ? "PASS" : "FAIL", irq_bsy ? "clear" : "SET");
+
+    /* restore POLL mode */
+    stream_xfer_mode_t poll_mode = STREAM_MODE_POLL;
+    spid->vtable->ioctl(spid, STREAM_IOCTL_SET_MODE, &poll_mode);
 
     spid->vtable->close(spid);
     return ok;
