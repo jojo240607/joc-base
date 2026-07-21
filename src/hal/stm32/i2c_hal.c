@@ -233,3 +233,5 @@ void i2c_hal_set_stop(i2c_hal_handle_t *h)        { if (h) h->reg->CR1 |= I2C_CR
 void i2c_hal_set_ack(i2c_hal_handle_t *h, int on) { if (h) { if (on) h->reg->CR1 |= I2C_CR1_ACK; else h->reg->CR1 &= ~I2C_CR1_ACK; } }
 void i2c_hal_set_pos(i2c_hal_handle_t *h, int on) { if (h) { if (on) h->reg->CR1 |= I2C_CR1_POS; else h->reg->CR1 &= ~I2C_CR1_POS; } }
 void i2c_hal_clear_sr1_af(i2c_hal_handle_t *h)    { if (h) { (void)h->reg->SR1; h->reg->CR1 |= I2C_CR1_STOP; } }
+void i2c_hal_nvic_enable(int irq)                  { if (irq >= 0) NVIC_EnableIRQ((IRQn_Type)irq); }
+void i2c_hal_nvic_disable(int irq)                 { if (irq >= 0) NVIC_DisableIRQ((IRQn_Type)irq); }

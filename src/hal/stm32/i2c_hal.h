@@ -59,6 +59,8 @@ void     i2c_hal_set_stop(i2c_hal_handle_t *h);
 void     i2c_hal_set_ack(i2c_hal_handle_t *h, int on);
 void     i2c_hal_set_pos(i2c_hal_handle_t *h, int on);
 void     i2c_hal_clear_sr1_af(i2c_hal_handle_t *h);
+void     i2c_hal_nvic_enable(int irq);    /* raw NVIC ISER write (bypasses irq.c) */
+void     i2c_hal_nvic_disable(int irq);   /* raw NVIC ICER write */
 
 /* readback helpers for self-test verification (F1 registers) */
 uint32_t i2c_hal_get_ccr(i2c_hal_handle_t *h);
