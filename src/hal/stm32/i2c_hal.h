@@ -44,6 +44,12 @@ int i2c_hal_master_read(i2c_hal_handle_t *h, uint16_t addr,
                         uint8_t *buf, uint16_t len);
 
 /* --- Interrupt mode helpers --- */
+
+/* I2C ISR callbacks (implemented in i2c_hal.c to keep the state machine
+ * out of i2c.c — avoids the section-layout-shift boot hang). ctx is an
+ * `i2c *` (struct _i2c from drv/i2c.h). */
+void     i2c_hal_ev_isr(void *ctx);
+void     i2c_hal_er_isr(void *ctx);
 irq_id_t i2c_hal_ev_irq_id(i2c_hal_handle_t *h);
 irq_id_t i2c_hal_er_irq_id(i2c_hal_handle_t *h);
 void     i2c_hal_enable_ev_irq(i2c_hal_handle_t *h);

@@ -235,3 +235,85 @@ void i2c_hal_set_pos(i2c_hal_handle_t *h, int on) { if (h) { if (on) h->reg->CR1
 void i2c_hal_clear_sr1_af(i2c_hal_handle_t *h)    { if (h) { (void)h->reg->SR1; h->reg->CR1 |= I2C_CR1_STOP; } }
 void i2c_hal_nvic_enable(int irq)                  { if (irq >= 0) NVIC_EnableIRQ((IRQn_Type)irq); }
 void i2c_hal_nvic_disable(int irq)                 { if (irq >= 0) NVIC_DisableIRQ((IRQn_Type)irq); }
+
+/* =========================================================================
+ * I2C ISR state machine — placed in i2c_hal.c to keep its .text section
+ * separate from i2c.c (prevents layout-shift boot hang).
+ * ========================================================================= */
+#include "osal/osal.h"     /* osal_sem_give — completion notification */
+#include "drv/i2c.h"       /* i2c struct for ISR context */
+
+#define I2CS_SB   (1U << 0)
+#define I2CS_ADDR (1U << 1)
+#define I2CS_BTF  (1U << 2)
+#define I2CS_RXNE (1U << 6)
+#define I2CS_TXE  (1U << 7)
+#define I2CS_AF   (1U << 10)
+
+#define I2C_S_IDLE 0
+#define I2C_S_SB   1
+#define I2C_S_ADDR 2
+#define I2C_S_DATA 3
+#define I2C_S_BTF  4
+#define I2C_S_DONE 5
+
+void i2c_hal_ev_isr(void *ctx)
+{
+    i2c *p = (i2c *)ctx;
+    uint32_t sr1 = i2c_hal_read_sr1(p->hal);
+    int is_write = (p->tx_buf != NULL);
+
+    if ((sr1 & I2CS_SB) && p->irq_state == I2C_S_SB) {
+        i2c_hal_write_dr(p->hal, (uint8_t)((p->addr << 1) | (is_write ? 0U : 1U)));
+        p->irq_state = I2C_S_ADDR; return;
+    }
+    if ((sr1 & I2CS_ADDR) && p->irq_state == I2C_S_ADDR) {
+        if (!is_write) {
+            uint16_t l = p->xfer_len;
+            if (l == 0) { (void)i2c_hal_read_sr2(p->hal); i2c_hal_set_stop(p->hal); p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return; }
+            if (l == 1) { i2c_hal_set_ack(p->hal, 0); i2c_hal_set_stop(p->hal); }
+            else if (l == 2) i2c_hal_set_pos(p->hal, 1);
+        }
+        (void)i2c_hal_read_sr2(p->hal);
+        p->xfer_pos = 0; p->irq_state = I2C_S_DATA; return;
+    }
+    if ((sr1 & I2CS_TXE) && is_write && p->irq_state == I2C_S_DATA) {
+        uint16_t pos = p->xfer_pos;
+        if (pos < p->xfer_len) { i2c_hal_write_dr(p->hal, p->tx_buf[pos]); p->xfer_pos = pos + 1; }
+        if (pos + 1 >= p->xfer_len) p->irq_state = I2C_S_BTF;
+        return;
+    }
+    if ((sr1 & I2CS_BTF) && p->irq_state == I2C_S_BTF) {
+        if (!is_write) {
+            if (p->xfer_len == 2) {
+                uint8_t b0 = i2c_hal_read_dr(p->hal), b1 = i2c_hal_read_dr(p->hal);
+                if (p->rx_buf) { p->rx_buf[0] = b0; p->rx_buf[1] = b1; }
+                i2c_hal_set_stop(p->hal); i2c_hal_set_pos(p->hal, 0);
+                p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return;
+            }
+            uint16_t pos = p->xfer_pos;
+            if (pos < p->xfer_len && p->rx_buf) p->rx_buf[pos] = i2c_hal_read_dr(p->hal);
+            p->xfer_pos = pos + 1; p->irq_state = I2C_S_DATA; return;
+        }
+        i2c_hal_set_stop(p->hal);
+        p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return;
+    }
+    if ((sr1 & I2CS_RXNE) && !is_write && p->irq_state == I2C_S_DATA) {
+        uint16_t pos = p->xfer_pos;
+        uint8_t d = i2c_hal_read_dr(p->hal);
+        if (pos < p->xfer_len && p->rx_buf) p->rx_buf[pos] = d;
+        pos++; p->xfer_pos = pos;
+        if (p->xfer_len == 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return; }
+        if (p->xfer_len >= 3 && pos >= p->xfer_len - 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return; }
+        if (p->xfer_len >= 3 && pos == p->xfer_len - 2) { i2c_hal_set_ack(p->hal, 0); p->irq_state = I2C_S_BTF; }
+        return;
+    }
+}
+void i2c_hal_er_isr(void *ctx)
+{
+    i2c *p = (i2c *)ctx;
+    if (i2c_hal_read_sr1(p->hal) & I2CS_AF) {
+        (void)i2c_hal_read_sr1(p->hal); i2c_hal_set_stop(p->hal);
+        p->irq_result = -1; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done);
+    }
+}

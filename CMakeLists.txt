@@ -11,6 +11,10 @@ set(MCU_DEFINE "STM32F407xx")
 set(HSE_VALUE 8000000)   # Discovery board external crystal = 8 MHz
 
 add_executable(${PROJECT_NAME}.elf
+    # startup MUST come early so its sections are at the base of .text.
+    # When placed last, any growth in .o files before it shifts startup
+    # sections, which causes a boot hang on this platform.
+    startup/startup_stm32f407xx.s
     src/main.c
     src/syscalls.c
     src/system_stm32f4xx.c
@@ -55,7 +59,6 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/i2c_hal.c
     src/hal/stm32/spi_hal.c
     src/selftest.c
-    startup/startup_stm32f407xx.s
 )
 
 target_include_directories(${PROJECT_NAME}.elf PRIVATE

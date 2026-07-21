@@ -2,7 +2,7 @@
 #include "devmgr/device_manager.h"
 #include "drv/pinmux.h"
 #include "pinmux_hal.h"
-#include "irq.h"
+#include "osal/osal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -17,8 +17,7 @@ static int  i2c_stream_write(stream_device *self, const void *buf, size_t len);
 static int  i2c_stream_flush(stream_device *self);
 static int  i2c_stream_read_frame(stream_device *self, void *b, size_t l, void *m);
 static int  i2c_stream_write_frame(stream_device *self, const void *b, size_t l, const void *m);
-static void i2c_ev_isr(void *ctx);
-static void i2c_er_isr(void *ctx);
+static int  i2c_do_xfer(i2c *p, uint16_t addr, const uint8_t *tx, uint8_t *rx, uint16_t len, int is_write);
 
 static const struct stream_deviceVtable i2c_stream_vtable = {
     .read = i2c_stream_read, .write = i2c_stream_write, .flush = i2c_stream_flush,
@@ -30,8 +29,6 @@ static const struct deviceVtable i2c_dev_vtable = {
     .open = i2c_dev_open, .close = i2c_dev_close,
     .read = i2c_dev_read, .write = i2c_dev_write, .ioctl = i2c_dev_ioctl,
 };
-static void i2c_ev_isr(void *ctx) { (void)ctx; }
-static void i2c_er_isr(void *ctx) { (void)ctx; }
 
 device *i2c_create(const void *config)
 {
@@ -74,8 +71,9 @@ static int i2c_dev_open(device *self)
     i2c_hal_config(p->hal, p->clk_hz, p->speed_hz);
     p->ev_irq = i2c_hal_ev_irq_id(p->hal);
     p->er_irq = i2c_hal_er_irq_id(p->hal);
-    if (p->ev_irq >= 0) irq_register(p->ev_irq, i2c_ev_isr, p);
-    if (p->er_irq >= 0) irq_register(p->er_irq, i2c_er_isr, p);
+    /* ISRs in i2c_hal.c — placement there keeps layout away from i2c.o */
+    if (p->ev_irq >= 0) irq_register(p->ev_irq, i2c_hal_ev_isr, p);
+    if (p->er_irq >= 0) irq_register(p->er_irq, i2c_hal_er_isr, p);
     return 0;
 }
 static int i2c_dev_close(device *self)
@@ -87,26 +85,52 @@ static int i2c_dev_close(device *self)
     if (pm) pm->fun->release_owner(pm, p->parent.parent.name);
     return 0;
 }
+static int i2c_dev_read(device *self, void *buf, size_t len) { return i2c_stream_read((stream_device *)self, buf, len); }
+static int i2c_dev_write(device *self, const void *buf, size_t len) { return i2c_stream_write((stream_device *)self, buf, len); }
 
-/* POLL-only: stream_read/write and ioctl all use i2c_hal_master_* directly */
+/* Transfer: POLL or IRQ */
+static int i2c_do_xfer(i2c *p, uint16_t addr, const uint8_t *tx, uint8_t *rx, uint16_t len, int is_write)
+{
+    if (p->parent.mode == STREAM_MODE_IRQ) {
+        p->addr = addr; p->tx_buf = tx; p->rx_buf = rx;
+        p->xfer_len = len; p->xfer_pos = 0;
+        p->irq_state = 1; /* I2C_S_SB */ p->irq_result = -1;
+        osal_sem_init(&p->xfer_done, 0);
+
+        i2c_hal_enable_ev_irq(p->hal);
+        i2c_hal_enable_er_irq(p->hal);
+        i2c_hal_nvic_enable(p->ev_irq);
+        i2c_hal_nvic_enable(p->er_irq);
+        i2c_hal_set_start(p->hal);
+
+        osal_sem_wait(&p->xfer_done);
+
+        i2c_hal_nvic_disable(p->ev_irq);
+        i2c_hal_nvic_disable(p->er_irq);
+        i2c_hal_disable_ev_irq(p->hal);
+        i2c_hal_disable_er_irq(p->hal);
+        return p->irq_result;
+    }
+    if (is_write) return i2c_hal_master_write(p->hal, addr, tx, len);
+    else          return i2c_hal_master_read(p->hal, addr, rx, len);
+}
+
 static int i2c_stream_read(stream_device *self, void *buf, size_t len)
-    { return i2c_hal_master_read(((i2c *)self)->hal, ((i2c *)self)->current_addr, (uint8_t *)buf, (uint16_t)len); }
+    { return i2c_do_xfer((i2c *)self, ((i2c *)self)->current_addr, NULL, (uint8_t *)buf, (uint16_t)len, 0); }
 static int i2c_stream_write(stream_device *self, const void *buf, size_t len)
-    { return i2c_hal_master_write(((i2c *)self)->hal, ((i2c *)self)->current_addr, (const uint8_t *)buf, (uint16_t)len); }
+    { return i2c_do_xfer((i2c *)self, ((i2c *)self)->current_addr, (const uint8_t *)buf, NULL, (uint16_t)len, 1); }
 static int i2c_stream_flush(stream_device *self) { (void)self; return 0; }
 static int i2c_stream_read_frame(stream_device *self, void *b, size_t l, void *m) { (void)self;(void)b;(void)l;(void)m; return -1; }
 static int i2c_stream_write_frame(stream_device *self, const void *b, size_t l, const void *m) { (void)self;(void)b;(void)l;(void)m; return -1; }
-static int i2c_dev_read(device *self, void *buf, size_t len) { return i2c_stream_read((stream_device *)self, buf, len); }
-static int i2c_dev_write(device *self, const void *buf, size_t len) { return i2c_stream_write((stream_device *)self, buf, len); }
 
 static int i2c_dev_ioctl(device *self, int cmd, void *arg)
 {
     i2c *p = (i2c *)self;
     switch (cmd) {
-    case I2C_IOCTL_MASTER_WRITE: { i2c_xfer_t *x = arg; if (!x) return -1; x->result = i2c_hal_master_write(p->hal, x->addr, x->buf, x->len); return x->result; }
-    case I2C_IOCTL_MASTER_READ:  { i2c_xfer_t *x = arg; if (!x) return -1; x->result = i2c_hal_master_read(p->hal, x->addr, x->buf, x->len); return x->result; }
+    case I2C_IOCTL_MASTER_WRITE: { i2c_xfer_t *x = arg; if (!x) return -1; x->result = i2c_do_xfer(p, x->addr, x->buf, NULL, x->len, 1); return x->result; }
+    case I2C_IOCTL_MASTER_READ:  { i2c_xfer_t *x = arg; if (!x) return -1; x->result = i2c_do_xfer(p, x->addr, NULL, x->buf, x->len, 0); return x->result; }
     case I2C_IOCTL_BUS_SCAN: { i2c_scan_t *s = arg; if (!s) return -1; s->found = 0; memset(s->acks, 0, 128);
-        for (int a = 0; a < 128; a++) { if (i2c_hal_master_write(p->hal, (uint16_t)a, NULL, 0) == 0) { s->acks[a] = 1; s->found++; } } return 0; }
+        for (int a = 0; a < 128; a++) { if (i2c_do_xfer(p, (uint16_t)a, NULL, NULL, 0, 1) == 0) { s->acks[a] = 1; s->found++; } } return 0; }
     case I2C_IOCTL_SET_SPEED: { if (!arg) return -1; p->speed_hz = *(uint32_t *)arg; i2c_hal_config(p->hal, p->clk_hz, p->speed_hz); return 0; }
     case I2C_IOCTL_SET_ADDR: { if (!arg) return -1; p->current_addr = *(uint16_t *)arg; return 0; }
     case I2C_IOCTL_GET_ADDR: { if (arg) *(uint16_t *)arg = p->current_addr; return 0; }
