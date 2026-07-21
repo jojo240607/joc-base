@@ -33,7 +33,7 @@ SECTIONS
     *(.eh_frame)
     KEEP (*(.init))
     KEEP (*(.fini))
-    . = ALIGN(4);
+    . = ALIGN(16);
     _etext = .;
   } >FLASH
 
@@ -83,11 +83,6 @@ SECTIONS
   /* Pad total FLASH footprint to 16-byte boundary (ART prefetch requires
    * 128-bit row alignment — without this, non-16-byte-aligned firmware
    * sizes hang at boot due to prefetch fetching partial rows). */
-  .flash_pad (NOLOAD) :
-  {
-    . = ALIGN(16);
-  } >FLASH
-
   _sidata = LOADADDR(.data);
 
   .data :
