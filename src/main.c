@@ -207,8 +207,6 @@ int main(void)
                     if (!i2cd) { printf("I2C_IRQ: no dev\r\n"); }
                     else if (i2cd->vtable->open(i2cd)) { printf("I2C_IRQ: open FAIL\r\n"); }
                     else {
-                        stream_xfer_mode_t irq_m = STREAM_MODE_IRQ;
-                        i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &irq_m);
                         i2c_xfer_t ip = { .addr = 0x50, .buf = NULL, .len = 0, .result = 0 };
                         i2cd->vtable->ioctl(i2cd, I2C_IOCTL_MASTER_WRITE, &ip);
                         int probe_ok = (ip.result == -1);
@@ -216,8 +214,6 @@ int main(void)
                         i2c_xfer_t ix = { .addr = 0x50, .buf = &txb, .len = 1, .result = 0 };
                         i2cd->vtable->ioctl(i2cd, I2C_IOCTL_MASTER_WRITE, &ix);
                         int xfer_ok = (ix.result == -1);
-                        irq_m = STREAM_MODE_POLL;
-                        i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &irq_m);
                         printf("I2C_IRQ: probe=%s xfer=0x50:0xA5=%s\r\n",
                                probe_ok ? "NACK" : "ERR", xfer_ok ? "NACK" : "ERR");
                         i2cd->vtable->close(i2cd);

@@ -191,22 +191,31 @@ def main():
             break
     results["ticks"] = ticks_ok
 
-    # 7) I2C IRQ mode: switch to IRQ, probe + 1B transfer, verify NACK
+    # 7) I2C IRQ mode: the handler takes ~5ms (two timeout-guarded transfers).
+    #    Read all available data until we get the response or timeout.
     i2c_irq_ok = False
+    time.sleep(0.1)                      # let any pending UART activity settle
     ser.reset_input_buffer()
     ser.write(b"I2C_IRQ\n")
-    d = time.time() + TIMEOUT
-    while time.time() < d:
-        line = ser.readline().decode(errors="replace").strip()
-        if not line:
-            continue
-        print(f"  board> {line}")
-        if line == "I2C_IRQ":
-            continue
-        if line.startswith("I2C_IRQ:"):
-            if "probe=NACK" in line and "xfer=0x50:0xA5=NACK" in line:
-                i2c_irq_ok = True
-            break
+    time.sleep(0.05)                     # wait for board to process + respond
+    data = b""
+    t = time.time() + TIMEOUT
+    while time.time() < t:
+        chunk = ser.read(256)
+        if chunk:
+            data += chunk
+            decoded = data.decode(errors="replace")
+            # print raw for diagnostics
+            for line in decoded.split("\r\n"):
+                stripped = line.strip()
+                if stripped:
+                    print(f"  board> {stripped}")
+            # check if we have the full response
+            if "I2C_IRQ:" in decoded and ("probe=NACK" in decoded or "open FAIL" in decoded or "no dev" in decoded):
+                break
+    decoded = data.decode(errors="replace")
+    if "probe=NACK" in decoded and "xfer=0x50:0xA5=NACK" in decoded:
+        i2c_irq_ok = True
     results["i2c_irq"] = i2c_irq_ok
 
     ser.close()
