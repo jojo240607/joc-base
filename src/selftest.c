@@ -512,18 +512,12 @@ static int selftest_vpwm(selftest *self)
     return ok;
 }
 
-/* Verify the I2C master driver WITHOUT any slave hardware — there is no I2C
- * device on the Discovery board, so we prove the driver works by:
- *   (1) register readback: after open(), CR1.PE must be set and TIMINGR must
- *       hold the 100 kHz value we programmed (0x00D2D5CD) — this proves the
- *       HAL configured the CORRECT F4 registers (not the F1-style layout);
- *   (2) a single PROBE write to a known address must return -1 (NACK), proving
- *       the START/address/STOP state machine actually runs;
- *   (3) a full BUS SCAN over all 128 7-bit addresses must complete and find
- *       ZERO devices (every probe NACKs/times out) — this is the real proof
- *       that the polling loop is hang-free: if any wait lacked a timeout the
- *       CPU would wedge here and the BIST would never print the result.
- * After the scan the bus must be idle (not left BUSY). */
+/* Verify the I2C STREAM master driver WITHOUT any slave hardware.
+ * Proves:
+ *   (1) register readback: PE=on CCR=210 FREQ=42 (F1 I2C config correct)
+ *   (2) addressed ioctl probe + bus scan (I2C_IOCTL_MASTER_WRITE)
+ *   (3) STREAM interface: set current_addr via I2C_IOCTL_SET_ADDR,
+ *       then stream_write() and stream_read() via base device vtable */
 static int selftest_vi2c(selftest *self)
 {
     (void)self;
@@ -550,20 +544,46 @@ static int selftest_vi2c(selftest *self)
            ok_pe ? "on" : "OFF", (unsigned long)ccr, ok_ccr ? "PASS" : "FAIL",
            (unsigned long)freq, ok_freq ? "PASS" : "FAIL");
 
-    /* (2) POLL mode probe + bus scan (default mode after open). */
+    /* (2) POLL addressed probe + bus scan */
     i2c_xfer_t probe = { .addr = 0x50, .buf = NULL, .len = 0, .result = 0 };
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_MASTER_WRITE, &probe);
-    int ok_poll_nack = (probe.result == -1);
-    if (!ok_poll_nack) ok = 0;
-    printf("       POLL probe addr=0x50 -> %s (%s)\r\n",
-           probe.result == 0 ? "ACK" : "NACK", ok_poll_nack ? "PASS" : "FAIL");
+    int ok_aprobe = (probe.result == -1);
+    if (!ok_aprobe) ok = 0;
+    printf("       addr wr 0x50 probe -> %s (%s)\r\n",
+           probe.result == 0 ? "ACK" : "NACK", ok_aprobe ? "PASS" : "FAIL");
 
     i2c_scan_t scan;
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_BUS_SCAN, &scan);
     int ok_scan = (scan.found == 0);
     if (!ok_scan) ok = 0;
-    printf("       POLL bus scan: found=%u (expect 0, %s)\r\n",
+    printf("       addr bus scan: found=%u (expect 0, %s)\r\n",
            (unsigned)scan.found, ok_scan ? "PASS" : "FAIL");
+
+    /* (3) STREAM interface: set current_addr and use base read/write */
+    uint16_t addr50 = 0x50;
+    i2cd->vtable->ioctl(i2cd, I2C_IOCTL_SET_ADDR, &addr50);
+    uint16_t got_addr = 0;
+    i2cd->vtable->ioctl(i2cd, I2C_IOCTL_GET_ADDR, &got_addr);
+    int ok_addr = (got_addr == 0x50);
+    if (!ok_addr) ok = 0;
+    printf("       STREAM set_addr=0x50 get=0x%02X (%s)\r\n",
+           (unsigned)got_addr, ok_addr ? "PASS" : "FAIL");
+
+    /* stream_write ("i2cd->vtable->write") with no slave → NACK */
+    uint8_t txb = 0xA5;
+    int wret = i2cd->vtable->write(i2cd, &txb, 1);
+    int ok_swr = (wret == -1);    /* NACK means -1 from HAL */
+    if (!ok_swr) ok = 0;
+    printf("       STREAM write 1B to 0x50 -> %d (%s)\r\n",
+           wret, ok_swr ? "PASS" : "FAIL");
+
+    /* stream_read with no slave → NACK */
+    uint8_t rxb = 0;
+    int rret = i2cd->vtable->read(i2cd, &rxb, 1);
+    int ok_srd = (rret == -1);
+    if (!ok_srd) ok = 0;
+    printf("       STREAM read  1B from 0x50 -> %d (%s)\r\n",
+           rret, ok_srd ? "PASS" : "FAIL");
 
     i2cd->vtable->close(i2cd);
     return ok;
