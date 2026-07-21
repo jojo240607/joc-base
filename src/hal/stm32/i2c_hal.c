@@ -240,7 +240,7 @@ void i2c_hal_nvic_disable(int irq)                 { if (irq >= 0) NVIC_DisableI
  * I2C ISR state machine — placed in i2c_hal.c to keep its .text section
  * separate from i2c.c (prevents layout-shift boot hang).
  * ========================================================================= */
-#include "osal/osal.h"     /* osal_sem_give — completion notification */
+
 #include "drv/i2c.h"       /* i2c struct for ISR context */
 
 #define I2CS_SB   (1U << 0)
@@ -270,7 +270,7 @@ void i2c_hal_ev_isr(void *ctx)
     if ((sr1 & I2CS_ADDR) && p->irq_state == I2C_S_ADDR) {
         if (!is_write) {
             uint16_t l = p->xfer_len;
-            if (l == 0) { (void)i2c_hal_read_sr2(p->hal); i2c_hal_set_stop(p->hal); p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return; }
+            if (l == 0) { (void)i2c_hal_read_sr2(p->hal); i2c_hal_set_stop(p->hal); p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return; }
             if (l == 1) { i2c_hal_set_ack(p->hal, 0); i2c_hal_set_stop(p->hal); }
             else if (l == 2) i2c_hal_set_pos(p->hal, 1);
         }
@@ -289,22 +289,22 @@ void i2c_hal_ev_isr(void *ctx)
                 uint8_t b0 = i2c_hal_read_dr(p->hal), b1 = i2c_hal_read_dr(p->hal);
                 if (p->rx_buf) { p->rx_buf[0] = b0; p->rx_buf[1] = b1; }
                 i2c_hal_set_stop(p->hal); i2c_hal_set_pos(p->hal, 0);
-                p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return;
+                p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return;
             }
             uint16_t pos = p->xfer_pos;
             if (pos < p->xfer_len && p->rx_buf) p->rx_buf[pos] = i2c_hal_read_dr(p->hal);
             p->xfer_pos = pos + 1; p->irq_state = I2C_S_DATA; return;
         }
         i2c_hal_set_stop(p->hal);
-        p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return;
+        p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return;
     }
     if ((sr1 & I2CS_RXNE) && !is_write && p->irq_state == I2C_S_DATA) {
         uint16_t pos = p->xfer_pos;
         uint8_t d = i2c_hal_read_dr(p->hal);
         if (pos < p->xfer_len && p->rx_buf) p->rx_buf[pos] = d;
         pos++; p->xfer_pos = pos;
-        if (p->xfer_len == 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return; }
-        if (p->xfer_len >= 3 && pos >= p->xfer_len - 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done); return; }
+        if (p->xfer_len == 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return; }
+        if (p->xfer_len >= 3 && pos >= p->xfer_len - 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return; }
         if (p->xfer_len >= 3 && pos == p->xfer_len - 2) { i2c_hal_set_ack(p->hal, 0); p->irq_state = I2C_S_BTF; }
         return;
     }
@@ -314,6 +314,6 @@ void i2c_hal_er_isr(void *ctx)
     i2c *p = (i2c *)ctx;
     if (i2c_hal_read_sr1(p->hal) & I2CS_AF) {
         (void)i2c_hal_read_sr1(p->hal); i2c_hal_set_stop(p->hal);
-        p->irq_result = -1; p->irq_state = I2C_S_DONE; osal_sem_give(&p->xfer_done);
+        p->irq_result = -1; p->irq_state = I2C_S_DONE; p->xfer_done = 1;
     }
 }

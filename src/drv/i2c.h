@@ -44,7 +44,7 @@ struct _i2c {
     uint8_t  scl_pin, sda_pin, scl_af, sda_af;
     int       ev_irq;
     int       er_irq;
-    osal_sem_t xfer_done;
+    volatile int xfer_done;      /* completion flag (IRQ mode) */
 
     /* IRQ transfer state */
     volatile uint8_t  irq_state;

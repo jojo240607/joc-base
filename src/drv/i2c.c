@@ -2,7 +2,6 @@
 #include "devmgr/device_manager.h"
 #include "drv/pinmux.h"
 #include "pinmux_hal.h"
-#include "osal/osal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -88,22 +87,25 @@ static int i2c_dev_close(device *self)
 static int i2c_dev_read(device *self, void *buf, size_t len) { return i2c_stream_read((stream_device *)self, buf, len); }
 static int i2c_dev_write(device *self, const void *buf, size_t len) { return i2c_stream_write((stream_device *)self, buf, len); }
 
-/* Transfer: POLL or IRQ */
+/* Transfer: POLL or IRQ (IRQ path has timeout to avoid hanging without pull-ups) */
 static int i2c_do_xfer(i2c *p, uint16_t addr, const uint8_t *tx, uint8_t *rx, uint16_t len, int is_write)
 {
     if (p->parent.mode == STREAM_MODE_IRQ) {
         p->addr = addr; p->tx_buf = tx; p->rx_buf = rx;
         p->xfer_len = len; p->xfer_pos = 0;
         p->irq_state = 1; /* I2C_S_SB */ p->irq_result = -1;
-        osal_sem_init(&p->xfer_done, 0);
 
         i2c_hal_enable_ev_irq(p->hal);
         i2c_hal_enable_er_irq(p->hal);
         i2c_hal_nvic_enable(p->ev_irq);
         i2c_hal_nvic_enable(p->er_irq);
+        p->xfer_done = 0;
         i2c_hal_set_start(p->hal);
 
-        osal_sem_wait(&p->xfer_done);
+        /* Timeout-guarded wait: Discovery has no I2C pull-ups → ISR won't fire.
+         * osal_sem_wait has no timeout, so we busy-wait on xfer_done directly. */
+        volatile uint32_t tmo = 200000U;
+        while (!p->xfer_done && tmo--) { }
 
         i2c_hal_nvic_disable(p->ev_irq);
         i2c_hal_nvic_disable(p->er_irq);
