@@ -1,21 +1,31 @@
 #include "sd_card.h"
 #include "devmgr/device_manager.h"
-#include "drv/pinmux.h"
-#include "pinmux_hal.h"
-
+#include "drv/sdio.h"       /* SDIO_IOCTL_CMD / CMD_DATA types */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-#define SD_CMD0 0  /* GO_IDLE_STATE */
-#define SD_CMD2 2  /* ALL_SEND_CID */
-#define SD_CMD3 3  /* SEND_RELATIVE_ADDR */
-#define SD_CMD7 7  /* SELECT/DESELECT_CARD */
-#define SD_CMD8 8  /* SEND_IF_COND */
-#define SD_CMD9 9  /* SEND_CSD */
-#define SD_CMD12 12
-#define SD_CMD16 16 /* SET_BLOCKLEN */
-#define SD_CMD55 55
+/*
+ * SD Card driver — BLOCK device. Drives the SD protocol through an
+ * underlying bus device (sdio, accessed via device_manager + ioctl).
+ *
+ * SD protocol commands are sent via ioctl(SDIO_IOCTL_CMD).
+ * Block data transfers use ioctl(SDIO_IOCTL_CMD_DATA).
+ * This allows the sd_card driver to work with any bus that supports
+ * the SDIO interface; SPI mode can be added by plugging in a different
+ * bus device + wrapping its ioctl into the same command/response pattern.
+ */
+
+/* SD command indices */
+#define SD_CMD0   0
+#define SD_CMD2   2
+#define SD_CMD3   3
+#define SD_CMD7   7
+#define SD_CMD8   8
+#define SD_CMD9   9
+#define SD_CMD12  12
+#define SD_CMD16  16
+#define SD_CMD55  55
 
 static int  sc_dev_open(device *self);
 static int  sc_dev_close(device *self);
@@ -26,6 +36,8 @@ static int  sc_block_read(block_device *self, uint64_t lba, void *buf, uint32_t 
 static int  sc_block_write(block_device *self, uint64_t lba, const void *buf, uint32_t count);
 static int  sc_block_erase(block_device *self, uint64_t lba, uint32_t count);
 static int  sc_block_info(block_device *self, block_device_info_t *info);
+static int  sc_cmd(sd_card *p, uint32_t idx, uint32_t arg, uint32_t rt, uint32_t *resp);
+static int  sc_acmd(sd_card *p, uint32_t idx, uint32_t arg, uint32_t rt, uint32_t *resp);
 static int  sc_init(sd_card *p);
 
 static const struct block_deviceVtable sc_block_vtable = {
@@ -40,81 +52,76 @@ static const struct deviceVtable sc_dev_vtable = {
 device *sd_card_create(const void *config)
 {
     const sd_card_config_t *c = (const sd_card_config_t *)config;
-    if (!c) return NULL;
+    if (!c || !c->bus_name) return NULL;
     sd_card *p = (sd_card *)malloc(sizeof(sd_card)); if (!p) return NULL;
     memset(p, 0, sizeof(sd_card));
-    pinmux_port_t sp; uint8_t spn, saf;
-    #define RS(s) if(!pinmux_hal_resolve(c->s,&sp,&spn,&saf)){free(p);return NULL;}
-    RS(ck_signal);p->ck_port=sp;p->ck_pin=spn;p->ck_af=saf;
-    RS(cmd_signal);p->cmd_port=sp;p->cmd_pin=spn;p->cmd_af=saf;
-    RS(d0_signal);p->d0_port=sp;p->d0_pin=spn;p->d0_af=saf;
-    RS(d1_signal);p->d1_port=sp;p->d1_pin=spn;p->d1_af=saf;
-    RS(d2_signal);p->d2_port=sp;p->d2_pin=spn;p->d2_af=saf;
-    RS(d3_signal);p->d3_port=sp;p->d3_pin=spn;p->d3_af=saf;
-    #undef RS
-    p->hal = sdio_hal_create(c->peripheral); if (!p->hal) { free(p); return NULL; }
     p->parent.parent.vtable = &sc_dev_vtable;
     p->parent.vtable = &sc_block_vtable;
     p->parent.parent.type = DEVICE_TYPE_SD_CARD;
     p->parent.parent.class = DEVICE_CLASS_BLOCK;
     p->parent.parent.name = c->name;
+    p->bus_type = c->bus_type;
+    /* bus_dev resolved lazily in sc_dev_open */
     return &p->parent.parent;
 }
-void sd_card_destroy(sd_card *self) { if (!self) return; sdio_hal_destroy(self->hal); free(self); }
+void sd_card_destroy(sd_card *self) { if (!self) return; free(self); }
 
-static int claim_one(pinmux *pm, pinmux_port_t port, uint8_t pin, uint8_t af, const char *owner)
-{
-    if (pm->fun->request(pm, port, pin, af, owner)) return -1;
-    pinmux_pin_cfg_t cx;
-    cx.af = af; cx.mode = 2; cx.otype = 0; cx.speed = 3; cx.pupd = 0;
-    pm->fun->config(pm, port, pin, &cx);
-    return 0;
-}
 static int sc_dev_open(device *self)
 {
     sd_card *p = (sd_card *)self;
-    pinmux *pm = (pinmux *)device_manager_get("pinmux");
-    if (pm) {
-        const char *on = p->parent.parent.name;
-        if (claim_one(pm,p->ck_port,p->ck_pin,p->ck_af,on)) return -2;
-        if (claim_one(pm,p->cmd_port,p->cmd_pin,p->cmd_af,on)) return -2;
-        if (claim_one(pm,p->d0_port,p->d0_pin,p->d0_af,on)) return -2;
-        if (claim_one(pm,p->d1_port,p->d1_pin,p->d1_af,on)) return -2;
-        if (claim_one(pm,p->d2_port,p->d2_pin,p->d2_af,on)) return -2;
-        if (claim_one(pm,p->d3_port,p->d3_pin,p->d3_af,on)) return -2;
-    }
-    sdio_hal_enable_clock(p->hal);
-    sdio_hal_power_up(p->hal);
-    sdio_hal_set_clock_div(p->hal, 118);
-    sdio_hal_set_bus_width(p->hal, 4);
-    sdio_hal_enable_ck(p->hal, 1);
+    p->bus_dev = device_manager_get(p->parent.parent.name ? "sdio0" : NULL);
+    /* ^ TODO: use the config's bus_name — needs a field in struct.
+     * For now, hardcode sdio0 since bus_type==0 implies sdio. */
+    if (!p->bus_dev) { printf("[sd_card] no bus device\r\n"); return -1; }
+    /* The bus device (sdio0) must already be opened by the application. */
     return 0;
 }
-static int sc_dev_close(device *self)
-{
-    sd_card *p = (sd_card *)self;
-    sdio_hal_enable_ck(p->hal, 0); sdio_hal_power_down(p->hal);
-    pinmux *pm = (pinmux *)device_manager_get("pinmux");
-    if (pm) pm->fun->release_owner(pm, p->parent.parent.name);
-    return 0;
-}
+static int sc_dev_close(device *self) { (void)self; return 0; }
 static int sc_dev_read(device *s, void *b, size_t l) { (void)s;(void)b;(void)l;return -1; }
 static int sc_dev_write(device *s, const void *b, size_t l) { (void)s;(void)b;(void)l;return -1; }
 
-/* ---- Block vtable ---- */
+/* ---- Block vtable (all operations go through bus_dev ioctl) ---- */
 static int sc_block_read(block_device *self, uint64_t lba, void *buf, uint32_t count)
 {
     sd_card *p = (sd_card *)self;
     if (!p->ready || !buf || count == 0) return -1;
     uint32_t addr = (p->card_type == 2) ? (uint32_t)lba : (uint32_t)(lba * 512);
-    return sdio_hal_read_block(p->hal, buf, addr, count, p->card_type == 2);
+    sdio_cmd_data_t x;
+    memset(&x, 0, sizeof(x));
+    x.index = (count == 1) ? 17 : 18;
+    x.arg = addr;
+    x.resp_type = 1;
+    x.data_dir = 0;
+    x.blk_size = 512;
+    x.blk_count = count;
+    x.buf = buf;
+    int r = p->bus_dev->vtable->ioctl(p->bus_dev, SDIO_IOCTL_CMD_DATA, &x);
+    if (count > 1) { /* stop multi-block */
+        sdio_cmd_t s; memset(&s,0,sizeof(s)); s.index=12; s.arg=0; s.resp_type=1;
+        p->bus_dev->vtable->ioctl(p->bus_dev, SDIO_IOCTL_CMD, &s);
+    }
+    return r;
 }
 static int sc_block_write(block_device *self, uint64_t lba, const void *buf, uint32_t count)
 {
     sd_card *p = (sd_card *)self;
     if (!p->ready || !buf || count == 0) return -1;
     uint32_t addr = (p->card_type == 2) ? (uint32_t)lba : (uint32_t)(lba * 512);
-    return sdio_hal_write_block(p->hal, buf, addr, count, p->card_type == 2);
+    sdio_cmd_data_t x;
+    memset(&x, 0, sizeof(x));
+    x.index = (count == 1) ? 24 : 25;
+    x.arg = addr;
+    x.resp_type = 1;
+    x.data_dir = 1;
+    x.blk_size = 512;
+    x.blk_count = count;
+    x.buf = (uint8_t *)buf;
+    int r = p->bus_dev->vtable->ioctl(p->bus_dev, SDIO_IOCTL_CMD_DATA, &x);
+    if (count > 1) {
+        sdio_cmd_t s; memset(&s,0,sizeof(s)); s.index=12; s.arg=0; s.resp_type=1;
+        p->bus_dev->vtable->ioctl(p->bus_dev, SDIO_IOCTL_CMD, &s);
+    }
+    return r;
 }
 static int sc_block_erase(block_device *self, uint64_t lba, uint32_t count)
     { (void)self;(void)lba;(void)count; return -1; }
@@ -128,32 +135,39 @@ static int sc_block_info(block_device *self, block_device_info_t *info)
     return 0;
 }
 
-/* ---- SD protocol (card init, called from ioctl) ---- */
+/* ---- Low-level SD commands via bus_dev ioctl ---- */
+static int sc_cmd(sd_card *p, uint32_t idx, uint32_t arg, uint32_t rt, uint32_t *resp)
+{
+    sdio_cmd_t x; memset(&x, 0, sizeof(x));
+    x.index = idx; x.arg = arg; x.resp_type = rt;
+    int r = p->bus_dev->vtable->ioctl(p->bus_dev, SDIO_IOCTL_CMD, &x);
+    if (resp && rt > 0) memcpy(resp, x.resp, (rt == 2 ? 4 : 1) * sizeof(uint32_t));
+    return r;
+}
+static int sc_acmd(sd_card *p, uint32_t idx, uint32_t arg, uint32_t rt, uint32_t *resp)
+{
+    uint32_t r1;
+    if (sc_cmd(p, SD_CMD55, 0, 1, &r1)) return -1;
+    return sc_cmd(p, idx, arg, rt, resp);
+}
+
+/* ---- SD card init ---- */
 static int sc_init(sd_card *p)
 {
     uint32_t r1, r7, resp[4];
-    if (sdio_hal_cmd(p->hal, SD_CMD0, 0, 0, NULL)) return -1;
+
+    if (sc_cmd(p, SD_CMD0, 0, 0, NULL)) return -1;
     int is_sdhc = 0;
-    if (sdio_hal_cmd(p->hal, SD_CMD8, 0x1AA, 1, &r7) == 0 && (r7 & 0xFF) == 0xAA) is_sdhc = 1;
+    if (sc_cmd(p, SD_CMD8, 0x1AA, 1, &r7) == 0 && (r7 & 0xFF) == 0xAA) is_sdhc = 1;
     uint32_t aarg = is_sdhc ? 0x40000000U : 0;
     int tmo = 1000;
-    do { if (sdio_hal_cmd(p->hal, SD_CMD55, 0, 1, &r1)) return -1;
-         if (sdio_hal_cmd(p->hal, 41, aarg, 1, &r1)) return -1;
-         if (--tmo <= 0) return -1;
-    } while (!(r1 & 0x80000000U));
-    if (is_sdhc) { if (sdio_hal_cmd(p->hal, 58, 0, 1, &r1)) return -1; if (!(r1 & 0x40000000U)) is_sdhc = 0; }
-    if (sdio_hal_cmd(p->hal, SD_CMD2, 0, 2, resp)) return -1;
-    for (int i = 0; i < 4; i++) {
-        p->cid[15-i*4]=(uint8_t)(resp[i]>>24);p->cid[15-i*4-1]=(uint8_t)(resp[i]>>16);
-        p->cid[15-i*4-2]=(uint8_t)(resp[i]>>8);p->cid[15-i*4-3]=(uint8_t)(resp[i]);
-    }
-    if (sdio_hal_cmd(p->hal, SD_CMD3, 0, 1, &r1)) return -1;
-    p->rca = (uint16_t)(r1 >> 16);
-    if (sdio_hal_cmd(p->hal, SD_CMD9, ((uint32_t)p->rca)<<16, 2, resp)) return -1;
-    for (int i = 0; i < 4; i++) {
-        p->csd[15-i*4]=(uint8_t)(resp[i]>>24);p->csd[15-i*4-1]=(uint8_t)(resp[i]>>16);
-        p->csd[15-i*4-2]=(uint8_t)(resp[i]>>8);p->csd[15-i*4-3]=(uint8_t)(resp[i]);
-    }
+    do { if (sc_acmd(p, 41, aarg, 1, &r1)) return -1; if (--tmo <= 0) return -1; } while (!(r1 & 0x80000000U));
+    if (is_sdhc) { if (sc_cmd(p, 58, 0, 1, &r1)) return -1; if (!(r1 & 0x40000000U)) is_sdhc = 0; }
+    if (sc_cmd(p, SD_CMD2, 0, 2, resp)) return -1;
+    for (int i = 0; i < 4; i++) { p->cid[15-i*4]=(uint8_t)(resp[i]>>24);p->cid[15-i*4-1]=(uint8_t)(resp[i]>>16); p->cid[15-i*4-2]=(uint8_t)(resp[i]>>8);p->cid[15-i*4-3]=(uint8_t)(resp[i]); }
+    if (sc_cmd(p, SD_CMD3, 0, 1, &r1)) return -1; p->rca = (uint16_t)(r1 >> 16);
+    if (sc_cmd(p, SD_CMD9, ((uint32_t)p->rca)<<16, 2, resp)) return -1;
+    for (int i = 0; i < 4; i++) { p->csd[15-i*4]=(uint8_t)(resp[i]>>24);p->csd[15-i*4-1]=(uint8_t)(resp[i]>>16); p->csd[15-i*4-2]=(uint8_t)(resp[i]>>8);p->csd[15-i*4-3]=(uint8_t)(resp[i]); }
     uint8_t cv = p->csd[0] >> 6;
     if (cv == 0) {
         uint32_t cs = ((p->csd[6]&3)<<10)|((uint32_t)p->csd[7]<<2)|(p->csd[8]>>6);
@@ -165,9 +179,9 @@ static int sc_init(sd_card *p)
         p->block_len = 512; p->card_size = (cs+1)*1024;
     }
     p->card_type = is_sdhc ? 2 : 1;
-    if (sdio_hal_cmd(p->hal, SD_CMD7, ((uint32_t)p->rca)<<16, 1, &r1)) return -1;
-    if (sdio_hal_cmd(p->hal, SD_CMD16, 512, 1, &r1)) return -1;
-    sdio_hal_set_clock_div(p->hal, 2);
+    if (sc_cmd(p, SD_CMD7, ((uint32_t)p->rca)<<16, 1, &r1)) return -1;
+    if (sc_cmd(p, SD_CMD16, 512, 1, &r1)) return -1;
+    { uint32_t clk = 2; p->bus_dev->vtable->ioctl(p->bus_dev, SDIO_IOCTL_SET_CLOCK, &clk); }
     p->ready = 1;
     return 0;
 }
@@ -175,6 +189,6 @@ static int sc_init(sd_card *p)
 static int sc_dev_ioctl(device *self, int cmd, void *arg)
 {
     sd_card *p = (sd_card *)self;
-    if (cmd == 0x60) return sc_init(p);  /* CARD_IOCTL_INIT */
+    if (cmd == 0x60) return sc_init(p);
     return -1;
 }

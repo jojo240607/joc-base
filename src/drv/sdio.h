@@ -38,16 +38,31 @@ device *sdio_create(const void *config);
 void sdio_destroy(sdio *self);
 
 /* ioctl */
-#define SDIO_IOCTL_CMD         0x50   /* arg = sdio_cmd_t* (raw command) */
-#define SDIO_IOCTL_SET_CLOCK   0x51   /* arg = uint32_t* (clkdiv) */
+#define SDIO_IOCTL_CMD         0x50   /* arg = sdio_cmd_t* (raw command, no data) */
+#define SDIO_IOCTL_CMD_DATA    0x51   /* arg = sdio_cmd_data_t* (command + data block) */
+#define SDIO_IOCTL_SET_CLOCK   0x52   /* arg = uint32_t* (clkdiv) */
 #define SDIO_IOCTL_GET_POWER   0x54
 #define SDIO_IOCTL_GET_CLKCR   0x55
 
+/* Raw command (no data phase) */
 typedef struct {
     uint32_t index;
     uint32_t arg;
     uint32_t resp_type;   /* 0=none, 1=short, 2=long */
     uint32_t resp[4];     /* OUT */
 } sdio_cmd_t;
+
+/* Command with data phase (block read/write) */
+typedef struct {
+    uint32_t index;       /* command index */
+    uint32_t arg;         /* command argument */
+    uint32_t resp_type;   /* 0=none, 1=short, 2=long */
+    uint32_t resp[4];     /* OUT */
+    uint32_t data_dir;    /* 0=read (card→host), 1=write (host→card) */
+    uint32_t blk_size;    /* block size in bytes (e.g. 512) */
+    uint32_t blk_count;   /* block count */
+    uint8_t *buf;         /* data buffer */
+    int      result;      /* OUT: 0 = success */
+} sdio_cmd_data_t;
 
 #endif /* SDIO_H */

@@ -31,6 +31,7 @@
 #include "drv/i2c.h"
 #include "drv/spi.h"
 #include "drv/sdio.h"
+#include "drv/sd_card.h"
 
 #include "temp_hal.h"
 
@@ -127,14 +128,13 @@ static const i2c_config_t g_i2c0 = { "i2c0", (void *)I2C1, 42000000, 100000,
 static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
                                      "SPI1_SCK_PA5", "SPI1_MISO_PA6",
                                      "SPI1_MOSI_PA7" };
-/* SDIO host: sdio0 on PC8-PC12(4-bit) + PD2(CMD), AF12. No SD card slot on the
- * Discovery board — requires external SD card module wired to the expansion header.
- * The node exists to verify the SDIO peripheral registers (clock, power, bus width)
- * are configured correctly even without a card. */
+/* SDIO host: sdio0 on PC8-PC12(4-bit) + PD2(CMD), AF12. */
 static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
                                        "SDIO_CK_PC12", "SDIO_CMD_PD2",
                                        "SDIO_D0_PC8", "SDIO_D1_PC9",
                                        "SDIO_D2_PC10", "SDIO_D3_PC11" };
+/* SD Card: uses sdio0 bus device (no direct pin/HAL access). */
+static const sd_card_config_t g_sd_card0 = { "sd_card0", "sdio0", 0 };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -172,6 +172,7 @@ static const board_node_t g_nodes[] = {
     { i2c_create,         &g_i2c0 },
     { spi_create,         &g_spi0 },
     { sdio_create,        &g_sdio0 },
+    { sd_card_create,     &g_sd_card0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

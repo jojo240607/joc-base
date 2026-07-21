@@ -107,6 +107,14 @@ static int sdio_dev_ioctl(device *self, int cmd, void *arg)
         sdio_cmd_t *x = arg; if (!x) return -1;
         return sdio_hal_cmd(p->hal, x->index, x->arg, x->resp_type, x->resp);
     }
+    case SDIO_IOCTL_CMD_DATA: {
+        sdio_cmd_data_t *x = arg; if (!x) return -1;
+        if (x->data_dir == 0)  /* read: card → host */
+            x->result = sdio_hal_read_block(p->hal, x->buf, x->arg, x->blk_count, 1);
+        else                    /* write: host → card */
+            x->result = sdio_hal_write_block(p->hal, x->buf, x->arg, x->blk_count, 1);
+        return x->result;
+    }
     case SDIO_IOCTL_SET_CLOCK: { if (!arg) return -1; sdio_hal_set_clock_div(p->hal, *(uint32_t*)arg); return 0; }
     case SDIO_IOCTL_GET_POWER: if (arg) *(uint32_t*)arg = sdio_hal_get_power(p->hal); return 0;
     case SDIO_IOCTL_GET_CLKCR: if (arg) *(uint32_t*)arg = sdio_hal_get_clkcr(p->hal); return 0;
