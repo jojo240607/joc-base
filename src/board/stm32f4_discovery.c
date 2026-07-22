@@ -36,6 +36,7 @@
 #include "drv/rtc.h"
 #include "drv/rng.h"
 #include "drv/crc.h"
+#include "drv/iwdg.h"
 
 #include "temp_hal.h"
 
@@ -153,6 +154,10 @@ static const rng_config_t g_rng0 = { "rng0", (void *)RNG };
  * no clock configuration beyond the AHB1 bus gate, so there is no pinmux
  * signal — only the peripheral base (CRC). */
 static const crc_config_t g_crc0 = { "crc0", (void *)CRC };
+/* IWDG: iwdg0 is the on-chip independent watchdog. It is clocked by the
+ * internal LSI oscillator, needs no external pins and no clock gate beyond LSI,
+ * so there is no pinmux signal — only the peripheral base (IWDG). */
+static const iwdg_config_t g_iwdg0 = { "iwdg0", (void *)IWDG };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -195,6 +200,7 @@ static const board_node_t g_nodes[] = {
     { rtc_create,         &g_rtc0 },
     { rng_create,         &g_rng0 },
     { crc_create,         &g_crc0 },
+    { iwdg_create,        &g_iwdg0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */
