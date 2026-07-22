@@ -35,6 +35,7 @@
 #include "drv/dac.h"
 #include "drv/rtc.h"
 #include "drv/rng.h"
+#include "drv/crc.h"
 
 #include "temp_hal.h"
 
@@ -148,6 +149,10 @@ static const rtc_config_t g_rtc0 = { "rtc0", (void *)RTC };
  * pins and no clock configuration beyond the AHB2 bus gate, so there is no
  * pinmux signal — only the peripheral base (RNG). */
 static const rng_config_t g_rng0 = { "rng0", (void *)RNG };
+/* CRC: crc0 is the on-chip CRC calculation unit. It needs no external pins and
+ * no clock configuration beyond the AHB1 bus gate, so there is no pinmux
+ * signal — only the peripheral base (CRC). */
+static const crc_config_t g_crc0 = { "crc0", (void *)CRC };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -189,6 +194,7 @@ static const board_node_t g_nodes[] = {
     { dac_create,         &g_dac0 },
     { rtc_create,         &g_rtc0 },
     { rng_create,         &g_rng0 },
+    { crc_create,         &g_crc0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

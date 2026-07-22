@@ -32,6 +32,7 @@ struct selftestVtable {
     int (*test_dac)(selftest *self);       /* DAC: value-path + channel enable */
     int (*test_rtc)(selftest *self);       /* RTC: calendar read/write + prescaler */
     int (*test_rng)(selftest *self);       /* RNG: entropy source + error status */
+    int (*test_crc)(selftest *self);       /* CRC: checksum engine correctness */
 };
 
 struct _selftest {

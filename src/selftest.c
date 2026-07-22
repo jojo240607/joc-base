@@ -20,6 +20,7 @@
 #include "drv/dac.h"
 #include "drv/rtc.h"
 #include "drv/rng.h"
+#include "drv/crc.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -46,6 +47,7 @@ static int selftest_vsdio(selftest *self);
 static int selftest_vdac(selftest *self);
 static int selftest_vrtc(selftest *self);
 static int selftest_vrng(selftest *self);
+static int selftest_vcrc(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -67,6 +69,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_dac       = selftest_vdac,
     .test_rtc       = selftest_vrtc,
     .test_rng       = selftest_vrng,
+    .test_crc       = selftest_vcrc,
 };
 
 const struct selftestFun selftest_fun = {
@@ -192,6 +195,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_rng(self);
     printf("[BIST] rng    : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_crc(self);
+    printf("[BIST] crc    : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -876,13 +883,59 @@ static int selftest_vrtc(selftest *self)
     return ok;
 }
 
-/* Verify the RNG driver WITHOUT any external wiring: the generator is fully
- * on-chip. We prove:
- *   (1) the device opens and the generator enables without error;
- *   (2) we can pull N 32-bit words, none of which trip the clock/seed error
- *       flags (RNG_SR.CEIS / RNG_SR.SEIS);
- *   (3) the words are not all identical — a real entropy source will not emit
- *       the same value N times in a row (a stuck generator would).
+/* Software reference: CRC-32/MPEG-2 (poly 0x04C11DB7, init 0xFFFFFFFF, MSB-first,
+ * no final XOR) — exactly the STM32F4 CRC unit's reset-default behaviour. The
+ * self-test compares the hardware result against this, so it validates the
+ * engine rather than just its stability. */
+static uint32_t selftest_sw_crc32_mpeg2(const uint32_t *buf, size_t nwords)
+{
+    uint32_t crc = 0xFFFFFFFFU;
+    for (size_t i = 0; i < nwords; i++) {
+        uint32_t word = buf[i];
+        for (int b = 31; b >= 0; b--) {
+            uint32_t bit = (word >> b) & 1U;
+            uint32_t inv = (crc >> 31) ^ bit;
+            crc = (crc << 1) ^ (inv ? 0x04C11DB7U : 0U);
+        }
+    }
+    return crc;
+}
+
+/* Verify the CRC driver WITHOUT any external wiring: the unit is fully on-chip.
+ * We feed a fixed 4-word message through the hardware (reset -> update x4 ->
+ * result) and compare the result against the software reference above. They
+ * must match exactly for the engine to be correct. */
+static int selftest_vcrc(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("crc0");
+    if (!d) { printf("       crc0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       crc0: OPEN FAILED\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+    const uint32_t msg[4] = { 0x12345678U, 0x23456789U, 0x3456789AU, 0x456789ABU };
+
+    /* hardware path */
+    d->vtable->ioctl(d, CRC_IOCTL_RESET, NULL);
+    for (int i = 0; i < 4; i++) d->vtable->ioctl(d, CRC_IOCTL_UPDATE, (void *)&msg[i]);
+    uint32_t hw = 0;
+    d->vtable->ioctl(d, CRC_IOCTL_RESULT, &hw);
+
+    /* reference path */
+    uint32_t sw = selftest_sw_crc32_mpeg2(msg, 4);
+
+    int ok_match = (hw == sw);
+    if (!ok_match) ok = 0;
+    printf("       crc0(CRC): hw=0x%08lX sw=0x%08lX %s\r\n",
+           (unsigned long)hw, (unsigned long)sw, ok_match ? "PASS" : "FAIL");
+
+    d->vtable->close(d);
+    return ok;
+}
+
 /* Verify the external-interrupt driver end-to-end WITHOUT a physical button:
  * we SOFTWARE-TRIGGER each line (EXTI->SWIER) so the ISR fires, then confirm
  * the per-device interrupt count and the subscribed callback both incremented.
