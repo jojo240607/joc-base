@@ -34,6 +34,7 @@
 #include "drv/sd_card.h"
 #include "drv/dac.h"
 #include "drv/rtc.h"
+#include "drv/rng.h"
 
 #include "temp_hal.h"
 
@@ -143,6 +144,10 @@ static const dac_config_t g_dac0 = { "dac0", (void *)DAC, 1, "DAC_OUT1" };
  * lives in the backup domain and needs no external pins, so there is no pinmux
  * signal — only the peripheral base (RTC). */
 static const rtc_config_t g_rtc0 = { "rtc0", (void *)RTC };
+/* RNG: rng0 is the on-chip true random number generator. It needs no external
+ * pins and no clock configuration beyond the AHB2 bus gate, so there is no
+ * pinmux signal — only the peripheral base (RNG). */
+static const rng_config_t g_rng0 = { "rng0", (void *)RNG };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -183,6 +188,7 @@ static const board_node_t g_nodes[] = {
     { sd_card_create,     &g_sd_card0 },
     { dac_create,         &g_dac0 },
     { rtc_create,         &g_rtc0 },
+    { rng_create,         &g_rng0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

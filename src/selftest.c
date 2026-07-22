@@ -19,6 +19,7 @@
 #include "drv/sdio.h"
 #include "drv/dac.h"
 #include "drv/rtc.h"
+#include "drv/rng.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -44,6 +45,7 @@ static int selftest_vspi(selftest *self);
 static int selftest_vsdio(selftest *self);
 static int selftest_vdac(selftest *self);
 static int selftest_vrtc(selftest *self);
+static int selftest_vrng(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -64,6 +66,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_sdio      = selftest_vsdio,
     .test_dac       = selftest_vdac,
     .test_rtc       = selftest_vrtc,
+    .test_rng       = selftest_vrng,
 };
 
 const struct selftestFun selftest_fun = {
@@ -185,6 +188,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_rtc(self);
     printf("[BIST] rtc    : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_rng(self);
+    printf("[BIST] rng    : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -755,6 +762,52 @@ static int selftest_vdac(selftest *self)
     return ok;
 }
 
+/* Verify the RNG driver WITHOUT any external wiring: the generator is fully
+ * on-chip. We prove:
+ *   (1) the device opens and the generator enables without error;
+ *   (2) we can pull N 32-bit words, none of which trip the clock/seed error
+ *       flags (RNG_SR.CEIS / RNG_SR.SEIS);
+ *   (3) the words are not all identical — a real entropy source will not emit
+ *       the same value N times in a row (a stuck generator would).
+ * A correct RNG trivially satisfies all three; the test is therefore a solid
+ * sanity check rather than a statistical-quality measure. */
+static int selftest_vrng(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("rng0");
+    if (!d) { printf("       rng0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       rng0: OPEN FAILED\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+    const int N = 8;
+    uint32_t v[8];
+    int err = 0;
+    for (int i = 0; i < N; i++) {
+        d->vtable->ioctl(d, RNG_IOCTL_GET_U32, &v[i]);
+        uint32_t sr = 0;
+        d->vtable->ioctl(d, RNG_IOCTL_GET_STATUS, &sr);
+        if (sr & (RNG_SR_CEIS | RNG_SR_SEIS)) err = 1;
+    }
+    if (err) ok = 0;
+
+    /* not all identical */
+    int all_same = 1;
+    for (int i = 1; i < N; i++) if (v[i] != v[0]) { all_same = 0; break; }
+    if (all_same) ok = 0;
+
+    printf("       rng0(RNG): ");
+    for (int i = 0; i < N; i++) printf("%08lX ", (unsigned long)v[i]);
+    printf("%s%s\r\n",
+           err ? "ERR " : "",
+           ok ? "PASS" : "FAIL");
+
+    d->vtable->close(d);
+    return ok;
+}
+
 /* Verify the RTC driver WITHOUT any external wiring: the RTC is clocked by the
  * internal LSI oscillator, so the test is fully self-contained. We prove:
  *   (1) the clock tree is up — RCC->BDCR has RTCEN set and RTCSEL == LSI;
@@ -823,6 +876,13 @@ static int selftest_vrtc(selftest *self)
     return ok;
 }
 
+/* Verify the RNG driver WITHOUT any external wiring: the generator is fully
+ * on-chip. We prove:
+ *   (1) the device opens and the generator enables without error;
+ *   (2) we can pull N 32-bit words, none of which trip the clock/seed error
+ *       flags (RNG_SR.CEIS / RNG_SR.SEIS);
+ *   (3) the words are not all identical — a real entropy source will not emit
+ *       the same value N times in a row (a stuck generator would).
 /* Verify the external-interrupt driver end-to-end WITHOUT a physical button:
  * we SOFTWARE-TRIGGER each line (EXTI->SWIER) so the ISR fires, then confirm
  * the per-device interrupt count and the subscribed callback both incremented.
