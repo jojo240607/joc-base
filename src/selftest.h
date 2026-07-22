@@ -30,6 +30,7 @@ struct selftestVtable {
     int (*test_spi)(selftest *self);       /* SPI master: config readback + xfer */
     int (*test_sdio)(selftest *self);      /* SDIO: register readback */
     int (*test_dac)(selftest *self);       /* DAC: value-path + channel enable */
+    int (*test_rtc)(selftest *self);       /* RTC: calendar read/write + prescaler */
 };
 
 struct _selftest {

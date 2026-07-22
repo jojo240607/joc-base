@@ -33,6 +33,7 @@
 #include "drv/sdio.h"
 #include "drv/sd_card.h"
 #include "drv/dac.h"
+#include "drv/rtc.h"
 
 #include "temp_hal.h"
 
@@ -138,6 +139,10 @@ static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
 static const sd_card_config_t g_sd_card0 = { "sd_card0", "sdio0", 0 };
 /* DAC: dac0 is DAC1 channel 1 on PA4 (DAC_OUT1), 12-bit analog output. */
 static const dac_config_t g_dac0 = { "dac0", (void *)DAC, 1, "DAC_OUT1" };
+/* RTC: rtc0 is the on-chip RTC, clocked by the internal LSI oscillator. The RTC
+ * lives in the backup domain and needs no external pins, so there is no pinmux
+ * signal — only the peripheral base (RTC). */
+static const rtc_config_t g_rtc0 = { "rtc0", (void *)RTC };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -177,6 +182,7 @@ static const board_node_t g_nodes[] = {
     { sdio_create,        &g_sdio0 },
     { sd_card_create,     &g_sd_card0 },
     { dac_create,         &g_dac0 },
+    { rtc_create,         &g_rtc0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

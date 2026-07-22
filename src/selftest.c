@@ -18,6 +18,7 @@
 #include "drv/spi.h"
 #include "drv/sdio.h"
 #include "drv/dac.h"
+#include "drv/rtc.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -42,6 +43,7 @@ static int selftest_vi2c(selftest *self);
 static int selftest_vspi(selftest *self);
 static int selftest_vsdio(selftest *self);
 static int selftest_vdac(selftest *self);
+static int selftest_vrtc(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -61,6 +63,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_spi       = selftest_vspi,
     .test_sdio      = selftest_vsdio,
     .test_dac       = selftest_vdac,
+    .test_rtc       = selftest_vrtc,
 };
 
 const struct selftestFun selftest_fun = {
@@ -178,6 +181,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_dac(self);
     printf("[BIST] dac    : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_rtc(self);
+    printf("[BIST] rtc    : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -743,6 +750,74 @@ static int selftest_vdac(selftest *self)
 
     printf("       dac0(DAC1_CH1,PA4): DOR readback %s, CR.EN1=%s\r\n",
            rb_ok ? "PASS" : "FAIL", ok_en ? "on" : "OFF");
+
+    d->vtable->close(d);
+    return ok;
+}
+
+/* Verify the RTC driver WITHOUT any external wiring: the RTC is clocked by the
+ * internal LSI oscillator, so the test is fully self-contained. We prove:
+ *   (1) the clock tree is up — RCC->BDCR has RTCEN set and RTCSEL == LSI;
+ *   (2) the prescaler is programmed for a 1 Hz tick (async=127, sync=255);
+ *   (3) the time path round-trips: set 12:34:56, read it back;
+ *   (4) the date path round-trips: set 2026-01-01, read it back.
+ * The writes go through init mode (WPR unlocked), so they exercise the real
+ * calendar-register programming and the RSF shadow-sync path. */
+static int selftest_vrtc(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("rtc0");
+    if (!d) { printf("       rtc0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       rtc0: OPEN FAILED\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+
+    /* (1) clock tree. */
+    uint32_t bdcr = 0;
+    d->vtable->ioctl(d, RTC_IOCTL_GET_BDCR, &bdcr);
+    int ok_en  = (bdcr & RCC_BDCR_RTCEN) != 0U;
+    int ok_src = ((bdcr & RCC_BDCR_RTCSEL) == RCC_BDCR_RTCSEL_1);  /* LSI */
+    if (!ok_en || !ok_src) ok = 0;
+    printf("       rtc0(RTC,LSI): RTCEN=%s RTCSEL=%s\r\n",
+           ok_en ? "on" : "OFF", ok_src ? "LSI" : "OTHER");
+
+    /* (2) prescaler readback. */
+    rtc_prer_t pr = { 0, 0 };
+    d->vtable->ioctl(d, RTC_IOCTL_GET_PRER, &pr);
+    int ok_pr = (pr.prediv_a == 127U && pr.prediv_s == 255U);
+    if (!ok_pr) ok = 0;
+    printf("       PRER async=%lu sync=%lu (expect 127/255, %s)\r\n",
+           (unsigned long)pr.prediv_a, (unsigned long)pr.prediv_s,
+           ok_pr ? "PASS" : "FAIL");
+
+    /* (3) time round-trip. */
+    rtc_time_t set = { 12, 34, 56 };
+    d->vtable->ioctl(d, RTC_IOCTL_SET_TIME, &set);
+    rtc_time_t got = { 0, 0, 0 };
+    d->vtable->ioctl(d, RTC_IOCTL_GET_TIME, &got);
+    int ok_time = (got.hour == 12 && got.min == 34 && got.sec == 56);
+    if (!ok_time) ok = 0;
+    printf("       set 12:34:56 -> get %02u:%02u:%02u (%s)\r\n",
+           (unsigned)got.hour, (unsigned)got.min, (unsigned)got.sec,
+           ok_time ? "PASS" : "FAIL");
+
+    /* (4) date round-trip. The date is written in its OWN init phase (see the
+     * driver), which is what makes it latch on this silicon. GET_RAW_DR just
+     * prints the raw register for diagnostics. */
+    rtc_date_t dset = { 2026, 1, 1, 4 };
+    d->vtable->ioctl(d, RTC_IOCTL_SET_DATE, &dset);
+    uint32_t raw_dr = 0;
+    d->vtable->ioctl(d, RTC_IOCTL_GET_RAW_DR, &raw_dr);
+    rtc_date_t dgot = { 0, 0, 0, 0 };
+    d->vtable->ioctl(d, RTC_IOCTL_GET_DATE, &dgot);
+    int ok_date = (dgot.year == 2026 && dgot.month == 1 && dgot.day == 1);
+    if (!ok_date) ok = 0;
+    printf("       set 2026-01-01 -> get %u-%02u-%02u (rawDR=0x%08lX, %s)\r\n",
+           (unsigned)dgot.year, (unsigned)dgot.month, (unsigned)dgot.day,
+           (unsigned long)raw_dr, ok_date ? "PASS" : "FAIL");
 
     d->vtable->close(d);
     return ok;
