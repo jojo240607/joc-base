@@ -16,6 +16,7 @@
 #include "drv/exti.h"
 #include "drv/i2c.h"
 #include "drv/spi.h"
+#include "drv/sdio.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -38,6 +39,7 @@ static int selftest_vadvtimer(selftest *self);
 static int selftest_vadvpwm(selftest *self);
 static int selftest_vi2c(selftest *self);
 static int selftest_vspi(selftest *self);
+static int selftest_vsdio(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -55,6 +57,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_adv_pwm   = selftest_vadvpwm,
     .test_i2c       = selftest_vi2c,
     .test_spi       = selftest_vspi,
+    .test_sdio      = selftest_vsdio,
 };
 
 const struct selftestFun selftest_fun = {
@@ -164,6 +167,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_spi(self);
     printf("[BIST] spi    : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_sdio(self);
+    printf("[BIST] sdio   : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -657,6 +664,45 @@ static int selftest_vspi(selftest *self)
     spid->vtable->close(spid);
     return ok;
 }
+
+/* Verify the SDIO host-driver config WITHOUT any SD card present (no card on
+ * the Discovery board). We prove the driver works by register readback after
+ * open(): POWER.PWRCTRL must be 0x3 (power-on), CLKCR.CLKDIV must be 118,
+ * CLKCR.CLKEN must be set, and WIDBUS must be 4-bit. The register values are
+ * exactly what sdio_dev_open() programs via sdio_hal. */
+static int selftest_vsdio(selftest *self)
+{
+    (void)self;
+    device *sd = device_manager_get("sdio0");
+    if (!sd) { printf("       sdio0: MISSING\r\n"); return 0; }
+
+    if (sd->vtable->open(sd) != 0) {
+        printf("       sdio0: OPEN FAILED (pin conflict?)\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+
+    uint32_t power = 0, clkcr = 0;
+    sd->vtable->ioctl(sd, SDIO_IOCTL_GET_POWER, &power);
+    sd->vtable->ioctl(sd, SDIO_IOCTL_GET_CLKCR, &clkcr);
+
+    int ok_pwr  = ((power & 0x3U) == 0x3U);                          /* PWRCTRL = power-on */
+    int ok_div  = ((clkcr & SDIO_CLKCR_CLKDIV) == 118UL);            /* open() sets 118   */
+    int ok_cken = ((clkcr & SDIO_CLKCR_CLKEN) != 0U);                /* clock enabled     */
+    int ok_wid  = ((clkcr & SDIO_CLKCR_WIDBUS) == SDIO_CLKCR_WIDBUS_0); /* 4-bit          */
+    if (!ok_pwr || !ok_div || !ok_cken || !ok_wid) ok = 0;
+
+    printf("       sdio0(SDIO): POWER=0x%02lX(pwon? %s) CLKCR=0x%08lX\r\n",
+           (unsigned long)power, ok_pwr ? "PASS" : "FAIL", (unsigned long)clkcr);
+    printf("         CLKDIV=%lu(118? %s) CLKEN=%s WIDBUS=4bit(%s)\r\n",
+           (unsigned long)(clkcr & SDIO_CLKCR_CLKDIV), ok_div ? "PASS" : "FAIL",
+           ok_cken ? "on" : "OFF", ok_wid ? "PASS" : "FAIL");
+
+    sd->vtable->close(sd);
+    return ok;
+}
+
 /* Verify the external-interrupt driver end-to-end WITHOUT a physical button:
  * we SOFTWARE-TRIGGER each line (EXTI->SWIER) so the ISR fires, then confirm
  * the per-device interrupt count and the subscribed callback both incremented.

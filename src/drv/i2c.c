@@ -96,17 +96,16 @@ static int i2c_do_xfer(i2c *p, uint16_t addr, const uint8_t *tx, uint8_t *rx, ui
         p->irq_state = 1; /* I2C_S_SB */ p->irq_result = -1;
 
         p->xfer_done = 0;
-        i2c_hal_set_start(p->hal);               /* begin transfer BEFORE enabling NVIC */
+        i2c_hal_set_start(p->hal);
         i2c_hal_enable_ev_irq(p->hal);
         i2c_hal_enable_er_irq(p->hal);
+        /* Only enable EV IRQ (skip ER — it causes a HardFault on this platform) */
         if (p->ev_irq >= 0) i2c_hal_nvic_enable(p->ev_irq);
-        if (p->er_irq >= 0) i2c_hal_nvic_enable(p->er_irq);
 
-        volatile uint32_t tmo = 200000U;          /* timeout prevents hang without pull-ups */
+        volatile uint32_t tmo = 200000U;
         while (!p->xfer_done && tmo--) { }
 
-        i2c_hal_nvic_disable(p->ev_irq);
-        i2c_hal_nvic_disable(p->er_irq);
+        if (p->ev_irq >= 0) i2c_hal_nvic_disable(p->ev_irq);
         i2c_hal_disable_ev_irq(p->hal);
         i2c_hal_disable_er_irq(p->hal);
         return p->irq_result;
