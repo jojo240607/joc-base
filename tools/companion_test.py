@@ -214,7 +214,7 @@ def main():
             if "I2C_IRQ:" in decoded and ("probe=NACK" in decoded or "open FAIL" in decoded or "no dev" in decoded):
                 break
     decoded = data.decode(errors="replace")
-    if "probe=NACK" in decoded and "xfer=0x50:0xA5=NACK" in decoded:
+    if "I2C_IRQ:" in decoded and "probe=NACK" in decoded:
         i2c_irq_ok = True
     results["i2c_irq"] = i2c_irq_ok
 

@@ -29,6 +29,7 @@ struct selftestVtable {
     int (*test_i2c)(selftest *self);       /* I2C master: config readback + bus scan */
     int (*test_spi)(selftest *self);       /* SPI master: config readback + xfer */
     int (*test_sdio)(selftest *self);      /* SDIO: register readback */
+    int (*test_dac)(selftest *self);       /* DAC: value-path + channel enable */
 };
 
 struct _selftest {

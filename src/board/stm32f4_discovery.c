@@ -32,6 +32,7 @@
 #include "drv/spi.h"
 #include "drv/sdio.h"
 #include "drv/sd_card.h"
+#include "drv/dac.h"
 
 #include "temp_hal.h"
 
@@ -130,11 +131,13 @@ static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
                                      "SPI1_MOSI_PA7" };
 /* SDIO host: sdio0 on PC8-PC12(4-bit) + PD2(CMD), AF12. */
 static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
-                                       "SDIO_CK_PC12", "SDIO_CMD_PD2",
-                                       "SDIO_D0_PC8", "SDIO_D1_PC9",
-                                       "SDIO_D2_PC10", "SDIO_D3_PC11" };
+                                     "SDIO_CK", "SDIO_CMD",
+                                     "SDIO_D0", "SDIO_D1",
+                                     "SDIO_D2", "SDIO_D3" };
 /* SD Card: uses sdio0 bus device (no direct pin/HAL access). */
 static const sd_card_config_t g_sd_card0 = { "sd_card0", "sdio0", 0 };
+/* DAC: dac0 is DAC1 channel 1 on PA4 (DAC_OUT1), 12-bit analog output. */
+static const dac_config_t g_dac0 = { "dac0", (void *)DAC, 1, "DAC_OUT1" };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -173,6 +176,7 @@ static const board_node_t g_nodes[] = {
     { spi_create,         &g_spi0 },
     { sdio_create,        &g_sdio0 },
     { sd_card_create,     &g_sd_card0 },
+    { dac_create,         &g_dac0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

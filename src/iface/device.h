@@ -59,6 +59,7 @@ typedef enum {
     DEVICE_TYPE_SPI,          /* 11 — SPI master (CONTROL: full-duplex xfer) */
     DEVICE_TYPE_SDIO,         /* 12 — SDIO host (STREAM: bus interface) */
     DEVICE_TYPE_SD_CARD,      /* 13 — SD card (BLOCK: sector storage) */
+    DEVICE_TYPE_DAC,          /* 14 — DAC (STREAM: analog output) */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 

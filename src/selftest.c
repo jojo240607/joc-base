@@ -17,6 +17,7 @@
 #include "drv/i2c.h"
 #include "drv/spi.h"
 #include "drv/sdio.h"
+#include "drv/dac.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -40,6 +41,7 @@ static int selftest_vadvpwm(selftest *self);
 static int selftest_vi2c(selftest *self);
 static int selftest_vspi(selftest *self);
 static int selftest_vsdio(selftest *self);
+static int selftest_vdac(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -58,6 +60,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_i2c       = selftest_vi2c,
     .test_spi       = selftest_vspi,
     .test_sdio      = selftest_vsdio,
+    .test_dac       = selftest_vdac,
 };
 
 const struct selftestFun selftest_fun = {
@@ -171,6 +174,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_sdio(self);
     printf("[BIST] sdio   : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_dac(self);
+    printf("[BIST] dac    : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -700,6 +707,44 @@ static int selftest_vsdio(selftest *self)
            ok_cken ? "on" : "OFF", ok_wid ? "PASS" : "FAIL");
 
     sd->vtable->close(sd);
+    return ok;
+}
+
+/* Verify the DAC driver WITHOUT any external measurement: we write several
+ * 12-bit values through ioctl and read back the DOR register the hardware
+ * latches, proving the value path (DHR->DOR) and the channel-enable bit. The
+ * analog voltage itself is not probed (no scope on the board); DOR readback is
+ * exactly what the silicon holds after a write with triggering disabled. */
+static int selftest_vdac(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("dac0");
+    if (!d) { printf("       dac0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       dac0: OPEN FAILED (pin conflict?)\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+    static const uint16_t vals[3] = { 0x000, 0x800, 0xFFF };
+    int rb_ok = 1;
+    for (int i = 0; i < 3; i++) {
+        uint16_t v = vals[i];
+        d->vtable->ioctl(d, DAC_IOCTL_SET_VALUE, &v);
+        uint16_t got = 0;
+        d->vtable->ioctl(d, DAC_IOCTL_GET_VALUE, &got);
+        if (got != vals[i]) rb_ok = 0;
+    }
+
+    uint32_t cr = 0;
+    d->vtable->ioctl(d, DAC_IOCTL_GET_CR, &cr);
+    int ok_en = ((cr & 0x1U) != 0U);   /* CR.EN1 (channel 1 enabled) */
+    if (!rb_ok || !ok_en) ok = 0;
+
+    printf("       dac0(DAC1_CH1,PA4): DOR readback %s, CR.EN1=%s\r\n",
+           rb_ok ? "PASS" : "FAIL", ok_en ? "on" : "OFF");
+
+    d->vtable->close(d);
     return ok;
 }
 
