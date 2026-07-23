@@ -38,6 +38,9 @@
 #include "drv/crc.h"
 #include "drv/iwdg.h"
 #include "drv/wwdg.h"
+#include "drv/flash.h"
+#include "drv/i2s.h"
+#include "drv/can.h"
 
 #include "temp_hal.h"
 
@@ -164,6 +167,47 @@ static const iwdg_config_t g_iwdg0 = { "iwdg0", (void *)IWDG };
  * base (WWDG). Unlike the IWDG it is NOT in the backup domain, so it does not
  * survive a reset. */
 static const wwdg_config_t g_wwdg0 = { "wwdg0", (void *)WWDG };
+/* FLASH: flash0 manages SECTOR 7 (0x08060000, 128 KB) — a SPARE sector that
+ * sits well above the ~57 KB firmware image (sectors 0-3), so the BIST can
+ * safely erase/program it without any risk of corrupting the running code. */
+static const flash_config_t g_flash0 = { "flash0", 7 };
+/* I2S: i2s0 is the I2S2 block (hosted inside SPI2, APB1), configured as a 48 kHz
+ * master transmitter (Philips standard, 16-bit). The three signals map to the
+ * SPI2 AF5 pads WS=PB12, CK=PB13, SD=PB15 — none of which the Discovery board
+ * wires to the CS43L22 codec, so this node ONLY exercises the on-chip I2S logic
+ * (PLLI2S clock + prescaler + data shift) with NO external codec attached. */
+static const i2s_config_t g_i2s0 = {
+    "i2s0", (void *)SPI2, 42000000, 48000,
+    "SPI2_NSS_PB12",   /* WS  (LRCLK) */
+    "SPI2_SCK_PB13",   /* CK  (bit clock) */
+    "SPI2_MOSI_PB15",  /* SD  (data out, TX) */
+    NULL,              /* extSD (RX) unused for a TX instance */
+    1, 1, 0            /* master, transmit, 16-bit */
+};
+/* CAN: can0 is the bxCAN controller (CAN1). The Discovery board wires PA11/PA12
+ * to the USB-OTG connector, so the default CAN1_RX (PA11) is held DOMINANT by
+ * board hardware and bxCAN can never count 11 recessive bits to leave init mode.
+ * We therefore route CAN1 to its alternate free pins PB9(TX)/PB8(RX), AF9 — on
+ * STM32F4 the CAN pins are selected purely by the GPIO AF matrix (no SYSCFG
+ * remap exists); PB8/PB9 are free here (I2C1 is on PB6/PB7). The node runs in
+ * LOOPBACK mode: the controller transmits its own frame internally and echoes it
+ * back into the receive FIFO (proving TX + RX data paths) with zero external
+ * hardware. SILENT must stay OFF — in silent mode bxCAN cannot START a
+ * transmission, so there would be nothing to loop back. With the RX pin (PB8)
+ * pulled up to a recessive idle the bus is idle-recessive, so the controller CAN
+ * leave init mode (INAK clears). ~656 kbps (42 MHz / (4*(1+11+4))). */
+static const can_config_t g_can0 = {
+    "can0", (void *)CAN1, 42000000,
+    4,                          /* prescaler */
+    1, 11, 4,                   /* sjw, bs1, bs2 */
+    "CAN1_TX_PB9", "CAN1_RX_PB8",
+    1, 0,                       /* loopback=1, silent=0: loopback-only is the self-test
+                                   mode — the controller echoes its own transmitted frame
+                                   into FIFO0. (silent=1 would block all transmission, so
+                                   the loopback would receive nothing.) */
+    0x123,                      /* default TX id for plain stream writes */
+    0                           /* remap flag unused on F4 (pins chosen via AF9) */
+};
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -208,6 +252,9 @@ static const board_node_t g_nodes[] = {
     { crc_create,         &g_crc0 },
     { iwdg_create,        &g_iwdg0 },
     { wwdg_create,        &g_wwdg0 },
+    { flash_create,       &g_flash0 },
+    { i2s_create,         &g_i2s0 },
+    { can_create,         &g_can0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

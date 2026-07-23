@@ -46,6 +46,9 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/crc.c
     src/drv/iwdg.c
     src/drv/wwdg.c
+    src/drv/flash.c
+    src/drv/i2s.c
+    src/drv/can.c
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
     src/irq/irq_manager.c   # centralized interrupt manager (registry + dump)
@@ -73,6 +76,9 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/crc_hal.c
     src/hal/stm32/iwdg_hal.c
     src/hal/stm32/wwdg_hal.c
+    src/hal/stm32/flash_hal.c
+    src/hal/stm32/i2s_hal.c
+    src/hal/stm32/can_hal.c
     src/selftest.c
 )
 

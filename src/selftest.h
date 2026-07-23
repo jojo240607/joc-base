@@ -35,6 +35,9 @@ struct selftestVtable {
     int (*test_crc)(selftest *self);       /* CRC: checksum engine correctness */
     int (*test_iwdg)(selftest *self);      /* IWDG: watchdog program/status path */
     int (*test_wwdg)(selftest *self);      /* WWDG: window watchdog program/readback */
+    int (*test_flash)(selftest *self);     /* internal FLASH: sector erase/program/read */
+    int (*test_i2s)(selftest *self);       /* I2S: PLLI2S clock + prescaler + TX path */
+    int (*test_can)(selftest *self);       /* CAN: bxCAN loopback TX/RX echo path */
 };
 
 struct _selftest {

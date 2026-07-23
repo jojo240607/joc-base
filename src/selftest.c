@@ -23,6 +23,10 @@
 #include "drv/crc.h"
 #include "drv/iwdg.h"
 #include "drv/wwdg.h"
+#include "drv/flash.h"
+#include "drv/i2s.h"
+#include "drv/can.h"
+#include "iface/block_device.h"   /* device_as_block downcast */
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -52,6 +56,9 @@ static int selftest_vrng(selftest *self);
 static int selftest_vcrc(selftest *self);
 static int selftest_viwdg(selftest *self);
 static int selftest_vwwdg(selftest *self);
+static int selftest_vflash(selftest *self);
+static int selftest_vi2s(selftest *self);
+static int selftest_vcan(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -76,6 +83,9 @@ static const struct selftestVtable selftest_vtable = {
     .test_crc       = selftest_vcrc,
     .test_iwdg      = selftest_viwdg,
     .test_wwdg      = selftest_vwwdg,
+    .test_flash     = selftest_vflash,
+    .test_i2s       = selftest_vi2s,
+    .test_can       = selftest_vcan,
 };
 
 const struct selftestFun selftest_fun = {
@@ -214,6 +224,20 @@ int selftest_run(selftest *self)
     r = self->vtable->test_wwdg(self);
     printf("[BIST] wwdg   : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
+
+    r = self->vtable->test_flash(self);
+    printf("[BIST] flash : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_i2s(self);
+    printf("[BIST] i2s   : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_can(self);
+    printf("[BIST] can   : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+
 
     /* ring buffer utility class (common/) — exercised standalone so the class
      * itself is proven independent of any driver. */
@@ -1041,6 +1065,249 @@ static int selftest_vwwdg(selftest *self)
            (unsigned long)cfr, (unsigned long)tb_set, (unsigned long)tb_get, ok_tb ? "PASS" : "FAIL",
            (unsigned long)win_set, (unsigned long)win_get, ok_win ? "PASS" : "FAIL",
            ok_all ? "PASS" : "FAIL");
+
+    d->vtable->close(d);
+    return ok;
+}
+
+/* Verify the internal FLASH driver WITHOUT risking the running firmware: flash0
+ * manages SPARE sector 7 (0x08060000, 128 KB), far above the ~57 KB image, so
+ * erasing/programming it can never corrupt the code. We prove the full data
+ * path:
+ *   (1) capacity report: block_size=4, block_count=sector_size/4;
+ *   (2) erase the sector -> reads back as 0xFFFFFFFF (erased state);
+ *   (3) program a known 4-word pattern at lba 0, read it back, compare;
+ *   (4) program a distinct word at a higher lba (lba 100) to prove addressing;
+ *   (5) re-erase to leave the spare sector clean.
+ * No watchdog is started, so the board can never be bricked. */
+static int selftest_vflash(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("flash0");
+    if (!d) { printf("       flash0: MISSING\r\n"); return 0; }
+    block_device *fb = device_as_block(d);
+    if (!fb) { printf("       flash0: not-block\r\n"); return 0; }
+
+    int ok = 1;
+
+    /* (1) capacity report. */
+    block_device_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (fb->vtable->get_info(fb, &info) != 0) ok = 0;
+    uint32_t sector = 7, base = 0;
+    d->vtable->ioctl(d, FLASH_IOCTL_GET_SECTOR, &sector);
+    d->vtable->ioctl(d, FLASH_IOCTL_GET_BASE, &base);
+    int ok_info = (info.block_size == 4U) && (info.block_count == info.total_bytes / 4U)
+                  && (info.total_bytes == 128UL * 1024UL);
+    if (!ok_info) ok = 0;
+    printf("       flash0(sector %lu @0x%08lX): %lu blocks x %luB = %lu B (%s)\r\n",
+           (unsigned long)sector, (unsigned long)base,
+           (unsigned long)info.block_count, (unsigned long)info.block_size,
+           (unsigned long)info.total_bytes, ok_info ? "PASS" : "FAIL");
+
+    /* (2) erase the spare sector. */
+    fb->vtable->erase(fb, 0, 1);
+
+    /* (3) erased reads back as 0xFFFFFFFF. */
+    uint32_t erased = 0;
+    fb->vtable->read(fb, 0, &erased, 1);
+    int ok_erased = (erased == 0xFFFFFFFFU);
+    if (!ok_erased) ok = 0;
+    printf("       after erase: word[0]=0x%08lX (expect 0xFFFFFFFF, %s)\r\n",
+           (unsigned long)erased, ok_erased ? "PASS" : "FAIL");
+
+    /* (4) program a known pattern at lba 0..3, read back, compare. */
+    const uint32_t pat[4] = { 0xDEADBEEFU, 0x12345678U, 0xA5A5A5A5U, 0x0F0F00F0U };
+    fb->vtable->write(fb, 0, pat, 4);
+    uint32_t got[4] = { 0 };
+    fb->vtable->read(fb, 0, got, 4);
+    int ok_pat = 1;
+    for (int i = 0; i < 4; i++) if (got[i] != pat[i]) ok_pat = 0;
+    if (!ok_pat) ok = 0;
+    printf("       program[0..3] readback: %08lX %08lX %08lX %08lX (%s)\r\n",
+           (unsigned long)got[0], (unsigned long)got[1],
+           (unsigned long)got[2], (unsigned long)got[3], ok_pat ? "PASS" : "FAIL");
+
+    /* (5) distinct word at a higher lba proves the addressing math. */
+    const uint32_t far = 0x55AA55AAU;
+    fb->vtable->write(fb, 100, &far, 1);
+    uint32_t far_got = 0;
+    fb->vtable->read(fb, 100, &far_got, 1);
+    int ok_far = (far_got == far);
+    if (!ok_far) ok = 0;
+    printf("       program[100]=0x%08lX readback=0x%08lX (%s)\r\n",
+           (unsigned long)far, (unsigned long)far_got, ok_far ? "PASS" : "FAIL");
+
+    /* (6) leave the spare sector erased/clean. */
+    fb->vtable->erase(fb, 0, 1);
+    uint32_t clean = 0;
+    fb->vtable->read(fb, 100, &clean, 1);
+    int ok_clean = (clean == 0xFFFFFFFFU);
+    if (!ok_clean) ok = 0;
+    printf("       re-erase: word[100]=0x%08lX (expect 0xFFFFFFFF, %s)\r\n",
+           (unsigned long)clean, ok_clean ? "PASS" : "FAIL");
+
+    return ok;
+}
+
+/* Verify the I2S driver WITHOUT any external codec (none on the Discovery board).
+ * The I2S lives inside the SPI2 peripheral; we configure it as a 48 kHz master
+ * transmitter and prove the WHOLE audio clock path:
+ *   (1) PLLI2S (RCC_PLLI2SCFGR) is programmed (N=258,R=3) and LOCKED (PLLI2SRDY);
+ *   (2) RCC_CFGR.I2SSRC selects PLLI2S as the I2S clock source;
+ *   (3) I2SCFGR has I2SMOD=1, I2SE=1, I2SCFG=master-TX, Philips std, 16-bit;
+ *   (4) I2SPR holds the prescaler our HAL computed for 48 kHz (round-trip);
+ *   (5) writing a burst of 16-bit samples SUCCEEDS — TXE only asserts when the
+ *       PLLI2S clock is actually running, so this proves the bit clock is live.
+ * No codec means no audible/measurable output, but every on-chip I2S register and
+ * the clock-generation logic are fully exercised. */
+static int selftest_vi2s(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("i2s0");
+    if (!d) { printf("       i2s0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       i2s0: OPEN FAILED (pin conflict?)\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+
+    /* (1)+(2) PLLI2S + clock source. */
+    uint32_t plli2s = 0, pll_rdy = 0, cfgr = 0;
+    d->vtable->ioctl(d, I2S_IOCTL_GET_PLLI2S, &plli2s);
+    d->vtable->ioctl(d, I2S_IOCTL_GET_PLL_RDY, &pll_rdy);
+    d->vtable->ioctl(d, I2S_IOCTL_GET_CFGR,    &cfgr);
+    uint32_t n = (plli2s >> 6) & 0x1FFU;     /* PLLI2SN (bits 6-14) */
+    uint32_t r = (plli2s >> 28) & 0x7U;      /* PLLI2SR (bits 28-30) */
+    int ok_pll = (n == 258U) && (r == 3U) && (pll_rdy == 1U);
+    int ok_src = ((cfgr & RCC_CFGR_I2SSRC) == 0U);   /* I2SSRC = PLLI2S */
+    if (!ok_pll || !ok_src) ok = 0;
+
+    /* (3) I2SCFGR. */
+    uint32_t i2scfgr = 0;
+    d->vtable->ioctl(d, I2S_IOCTL_GET_I2SCFGR, &i2scfgr);
+    int ok_i2smod = (i2scfgr & 0x0800U) ? 1 : 0;   /* I2SMOD */
+    int ok_i2se   = (i2scfgr & 0x0400U) ? 1 : 0;   /* I2SE */
+    int ok_cfg    = ((i2scfgr & 0x0300U) == 0x0200U); /* master TX */
+    int ok_std    = ((i2scfgr & 0x0030U) == 0x0000U); /* Philips */
+    int ok_dlen   = ((i2scfgr & 0x0007U) == 0x0000U);  /* 16-bit (DATLEN=0,CHLEN=0) */
+    if (!ok_i2smod || !ok_i2se || !ok_cfg || !ok_std || !ok_dlen) ok = 0;
+    printf("       I2SCFGR=0x%08lX I2SMOD=%s I2SE=%s masterTX=%s Philips=%s 16bit=%s\r\n",
+           (unsigned long)i2scfgr, ok_i2smod ? "yes" : "NO", ok_i2se ? "yes" : "NO",
+           ok_cfg ? "yes" : "NO", ok_std ? "yes" : "NO", ok_dlen ? "yes" : "NO");
+
+    /* (4) I2SPR prescaler round-trip: recompute what the HAL should have written
+     * for 48 kHz from the PLLI2S output, and compare with the register. */
+    uint32_t audio_hz = 0, i2s_clk = 0;
+    d->vtable->ioctl(d, I2S_IOCTL_GET_AUDIO_HZ, &audio_hz);
+    d->vtable->ioctl(d, I2S_IOCTL_GET_I2S_CLK,  &i2s_clk);
+    uint32_t packetlength = 16U;
+    uint32_t tmpreg = i2s_clk / (audio_hz * packetlength * 2U);
+    uint32_t eodd = (tmpreg & 1U) ? 1U : 0U;
+    uint32_t ediv = (tmpreg & 1U) ? (tmpreg - 1U) / 2U : tmpreg / 2U;
+    if (ediv < 2U) ediv = 2U;
+    uint32_t i2spr = 0;
+    d->vtable->ioctl(d, I2S_IOCTL_GET_I2SPR, &i2spr);
+    uint32_t got_div = i2spr & 0xFFU;
+    uint32_t got_odd = (i2spr >> 8) & 0x1U;
+    int ok_pr = (got_div == ediv) && (got_odd == eodd);
+    if (!ok_pr) ok = 0;
+    printf("       i2s_clk=%lu Hz, audio=%lu Hz -> I2SDIV=%lu(calc %lu) ODD=%lu(calc %lu) %s\r\n",
+           (unsigned long)i2s_clk, (unsigned long)audio_hz,
+           (unsigned long)got_div, (unsigned long)ediv,
+           (unsigned long)got_odd, (unsigned long)eodd, ok_pr ? "PASS" : "FAIL");
+
+    /* (5) TX path is alive: a burst of known samples must transmit (TXE must
+     * assert under the running PLLI2S clock). -1 would mean TXE never set. */
+    uint16_t snd[4] = { 0x1234, 0x5678, 0x9ABC, 0xDEF0 };
+    int wr = d->vtable->write(d, snd, sizeof(snd));
+    int ok_tx = (wr == (int)sizeof(snd));
+    if (!ok_tx) ok = 0;
+    printf("       write 4x16b samples -> %d bytes (expect %u, %s)\r\n",
+           wr, (unsigned)sizeof(snd), ok_tx ? "PASS" : "FAIL");
+
+    d->vtable->close(d);
+    return ok;
+}
+
+/* Verify the CAN (bxCAN) driver WITHOUT any transceiver (none on the Discovery
+ * board). The controller runs in SILENT+LOOPBACK mode, so a transmitted frame is
+ * looped back internally into the receive FIFO — proving the TX and RX data paths
+ * with zero external hardware. We prove:
+ *   (1) the controller left init mode (MCR.INRQ=0, MSR.INAK=0) — it is live;
+ *   (2) BTR selects loopback + silent and carries a sane bit-timing;
+ *   (3) filter bank 0 is ACTIVE (accept-all) so received frames reach FIFO0;
+ *   (4) a known frame (id=0x123, 2 data bytes) transmitted in loopback is
+ *       received back with the SAME id + data + dlc — the full TX/RX round-trip;
+ *   (5) the STREAM byte interface round-trips too: a 3-byte stream write is read
+ *       back as a 3-byte frame with the configured default TX id. */
+static int selftest_vcan(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("can0");
+    if (!d) { printf("       can0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       can0: OPEN FAILED\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+
+    /* (1) live: not stuck in init mode. */
+    uint32_t mcr = 0, msr = 0;
+    d->vtable->ioctl(d, CAN_IOCTL_GET_MCR, &mcr);
+    d->vtable->ioctl(d, CAN_IOCTL_GET_MSR, &msr);
+    int ok_live = ((mcr & 0x1U) == 0U) && ((msr & 0x1U) == 0U);   /* INRQ=0, INAK=0 */
+    if (!ok_live) ok = 0;
+    printf("       MCR=0x%08lX MSR=0x%08lX (init-exited %s)\r\n",
+           (unsigned long)mcr, (unsigned long)msr, ok_live ? "yes" : "NO");
+
+    /* (2) BTR: loopback set, and a non-zero prescaler + segments. */
+    uint32_t btr = 0;
+    d->vtable->ioctl(d, CAN_IOCTL_GET_BTR, &btr);
+    int ok_lbkm = (btr & (1UL << 30)) ? 1 : 0;   /* LBKM (loopback) */
+    int ok_timing = (((btr & 0x3FFU) != 0U) &&
+                     (((btr >> 16) & 0xFU) != 0U) &&
+                     (((btr >> 20) & 0x7U) != 0U));
+    if (!ok_lbkm || !ok_timing) ok = 0;
+    printf("       BTR=0x%08lX LBKM=%s timing=%s\r\n",
+           (unsigned long)btr, ok_lbkm ? "yes" : "NO", ok_timing ? "ok" : "BAD");
+
+    /* (3) filter bank 0 active (accept-all). */
+    uint32_t fa1r = 0;
+    d->vtable->ioctl(d, CAN_IOCTL_GET_FA1R, &fa1r);
+    int ok_filter = (fa1r & 0x1U) ? 1 : 0;       /* FACT0 */
+    if (!ok_filter) ok = 0;
+    printf("       FA1R=0x%08lX filter0-active=%s\r\n",
+           (unsigned long)fa1r, ok_filter ? "yes" : "NO");
+
+    /* (4) loopback TX/RX round-trip with a known frame. */
+    can_frame_t tx, rx;
+    memset(&tx, 0, sizeof(tx));
+    memset(&rx, 0, sizeof(rx));
+    tx.id = 0x123U; tx.dlc = 2; tx.data[0] = 0xAB; tx.data[1] = 0xCD;
+    int snd = d->vtable->ioctl(d, CAN_IOCTL_SEND_FRAME, &tx);
+    int rcv = d->vtable->ioctl(d, CAN_IOCTL_RECV_FRAME, &rx);
+    int ok_echo = (snd == 0) && (rcv == 0) &&
+                  (rx.id == 0x123U) && (rx.dlc == 2) &&
+                  (rx.data[0] == 0xAB) && (rx.data[1] == 0xCD);
+    if (!ok_echo) ok = 0;
+    printf("       loopback tx id=0x%03lX data=%02X%02X -> rx id=0x%03lX dlc=%u data=%02X%02X (%s)\r\n",
+           (unsigned long)tx.id, tx.data[0], tx.data[1],
+           (unsigned long)rx.id, (unsigned)rx.dlc, rx.data[0], rx.data[1],
+           ok_echo ? "PASS" : "FAIL");
+
+    /* (5) STREAM byte interface round-trip (default TX id = 0x123). */
+    uint8_t wbuf[3] = { 0x11, 0x22, 0x33 };
+    int wn = d->vtable->write(d, wbuf, sizeof(wbuf));
+    uint8_t rbuf[3] = { 0 };
+    int rn = d->vtable->read(d, rbuf, sizeof(rbuf));
+    int ok_stream = (wn == 3) && (rn == 3) &&
+                    (rbuf[0] == 0x11) && (rbuf[1] == 0x22) && (rbuf[2] == 0x33);
+    if (!ok_stream) ok = 0;
+    printf("       stream tx 3B {11,22,33} -> rx 3B {%02X,%02X,%02X} (%s)\r\n",
+           rbuf[0], rbuf[1], rbuf[2], ok_stream ? "PASS" : "FAIL");
 
     d->vtable->close(d);
     return ok;
