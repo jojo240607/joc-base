@@ -22,6 +22,7 @@
 #include "drv/rng.h"
 #include "drv/crc.h"
 #include "drv/iwdg.h"
+#include "drv/wwdg.h"
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
@@ -50,6 +51,7 @@ static int selftest_vrtc(selftest *self);
 static int selftest_vrng(selftest *self);
 static int selftest_vcrc(selftest *self);
 static int selftest_viwdg(selftest *self);
+static int selftest_vwwdg(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -73,6 +75,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_rng       = selftest_vrng,
     .test_crc       = selftest_vcrc,
     .test_iwdg      = selftest_viwdg,
+    .test_wwdg      = selftest_vwwdg,
 };
 
 const struct selftestFun selftest_fun = {
@@ -206,6 +209,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_iwdg(self);
     printf("[BIST] iwdg   : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_wwdg(self);
+    printf("[BIST] wwdg   : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     /* ring buffer utility class (common/) — exercised standalone so the class
@@ -988,6 +995,52 @@ static int selftest_viwdg(selftest *self)
     printf("       iwdg0(IWDG): program PR=0x%lx RLR=0x%lx -> SR=0x%lx (PVU/RVU set = %s) %s\r\n",
            (unsigned long)pr_set, (unsigned long)rl_set, (unsigned long)sr,
            now_pending ? "PASS" : "FAIL", ok_all ? "PASS" : "FAIL");
+
+    d->vtable->close(d);
+    return ok;
+}
+
+/* Verify the WWDG driver WITHOUT arming the counter (which would reset the
+ * board). The WWDG lives in APB1 (needs the WWDGEN clock gate) and its config
+ * register (CFR) is directly readable, so we can do a real program / readback
+ * round-trip: set a prescaler (WDGTB) + window into CFR through the unified
+ * device interface and confirm the hardware latched exactly those bits back.
+ * open() only gates the APB1 clock; WDGA (activate) is never issued, so no
+ * reset is possible. (Unlike the IWDG, the WWDG is not in the backup domain and
+ * would not survive a reset anyway.) */
+static int selftest_vwwdg(selftest *self)
+{
+    (void)self;
+    int ok = 1;
+
+    device *d = device_manager_get("wwdg0");
+    if (!d) { printf("       wwdg0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       wwdg0: OPEN FAILED\r\n");
+        return 0;
+    }
+
+    /* prescaler code 1 = /2, window 0x50 (valid range 0x40..0x7F) */
+    const uint32_t tb_set = 1U;
+    const uint32_t win_set = 0x50U;
+
+    d->vtable->ioctl(d, WWDG_IOCTL_SET_PRESCALER, (void *)&tb_set);
+    d->vtable->ioctl(d, WWDG_IOCTL_SET_WINDOW,    (void *)&win_set);
+
+    uint32_t cfr = 0;
+    d->vtable->ioctl(d, WWDG_IOCTL_GET_CONFIG, &cfr);
+
+    uint32_t tb_get  = (cfr >> 7) & 0x3U;
+    uint32_t win_get = cfr & 0x7FU;
+    int ok_tb  = (tb_get == tb_set);
+    int ok_win = (win_get == win_set);
+    if (!ok_tb || !ok_win) ok = 0;
+    int ok_all = ok_tb && ok_win;
+
+    printf("       wwdg0(WWDG): CFR=0x%lx WDGTB set=0x%lx get=0x%lx (%s), W set=0x%lx get=0x%lx (%s) %s\r\n",
+           (unsigned long)cfr, (unsigned long)tb_set, (unsigned long)tb_get, ok_tb ? "PASS" : "FAIL",
+           (unsigned long)win_set, (unsigned long)win_get, ok_win ? "PASS" : "FAIL",
+           ok_all ? "PASS" : "FAIL");
 
     d->vtable->close(d);
     return ok;

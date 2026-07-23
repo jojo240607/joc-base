@@ -34,6 +34,7 @@ struct selftestVtable {
     int (*test_rng)(selftest *self);       /* RNG: entropy source + error status */
     int (*test_crc)(selftest *self);       /* CRC: checksum engine correctness */
     int (*test_iwdg)(selftest *self);      /* IWDG: watchdog program/status path */
+    int (*test_wwdg)(selftest *self);      /* WWDG: window watchdog program/readback */
 };
 
 struct _selftest {

@@ -37,6 +37,7 @@
 #include "drv/rng.h"
 #include "drv/crc.h"
 #include "drv/iwdg.h"
+#include "drv/wwdg.h"
 
 #include "temp_hal.h"
 
@@ -158,6 +159,11 @@ static const crc_config_t g_crc0 = { "crc0", (void *)CRC };
  * internal LSI oscillator, needs no external pins and no clock gate beyond LSI,
  * so there is no pinmux signal — only the peripheral base (IWDG). */
 static const iwdg_config_t g_iwdg0 = { "iwdg0", (void *)IWDG };
+/* WWDG: wwdg0 is the on-chip window watchdog. It is clocked by PCLK1 (APB1) and
+ * needs no external pins, so there is no pinmux signal — only the peripheral
+ * base (WWDG). Unlike the IWDG it is NOT in the backup domain, so it does not
+ * survive a reset. */
+static const wwdg_config_t g_wwdg0 = { "wwdg0", (void *)WWDG };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -201,6 +207,7 @@ static const board_node_t g_nodes[] = {
     { rng_create,         &g_rng0 },
     { crc_create,         &g_crc0 },
     { iwdg_create,        &g_iwdg0 },
+    { wwdg_create,        &g_wwdg0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

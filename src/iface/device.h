@@ -64,6 +64,7 @@ typedef enum {
     DEVICE_TYPE_RNG,          /* 16 — RNG (CONTROL: true random number generator) */
     DEVICE_TYPE_CRC,          /* 17 — CRC (CONTROL: checksum engine) */
     DEVICE_TYPE_IWDG,         /* 18 — IWDG (CONTROL: independent watchdog) */
+    DEVICE_TYPE_WWDG,         /* 19 — WWDG (CONTROL: window watchdog) */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 
