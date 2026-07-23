@@ -38,6 +38,7 @@ struct selftestVtable {
     int (*test_flash)(selftest *self);     /* internal FLASH: sector erase/program/read */
     int (*test_i2s)(selftest *self);       /* I2S: PLLI2S clock + prescaler + TX path */
     int (*test_can)(selftest *self);       /* CAN: bxCAN loopback TX/RX echo path */
+    int (*test_usb)(selftest *self);       /* USB: OTG FS CDC core bring-up + ctrl self-test */
 };
 
 struct _selftest {

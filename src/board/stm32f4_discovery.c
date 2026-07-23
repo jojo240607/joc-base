@@ -40,6 +40,7 @@
 #include "drv/wwdg.h"
 #include "drv/flash.h"
 #include "drv/i2s.h"
+#include "drv/usb.h"
 #include "drv/can.h"
 
 #include "temp_hal.h"
@@ -209,6 +210,17 @@ static const can_config_t g_can0 = {
     0                           /* remap flag unused on F4 (pins chosen via AF9) */
 };
 
+/* USB: usb0 is the OTG FS device controller, wired to the Discovery's CN5
+ * USB-OTG micro-AB connector on PA11 (DM) / PA12 (DP), AF10. It presents a
+ * CDC-ACM Virtual COM Port to a host PC — PA11/PA12 are exactly the pins we
+ * steered CAN away from, because the Discovery hard-wires them to USB. The
+ * driver ignores VBUS sensing (NOVBUSSENS) so the device "connects" even when
+ * the board's VBUS detect is not populated. Full enumeration requires a host on
+ * CN5; the BIST validates the core bring-up + control protocol without one. */
+static const usb_config_t g_usb0 = {
+    "usb0", (void *)USB_OTG_FS, "USB_OTG_FS_DM", "USB_OTG_FS_DP", 0
+};
+
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
  * Each driver claims and configures its own pins through the pinmux at open()
@@ -255,6 +267,7 @@ static const board_node_t g_nodes[] = {
     { flash_create,       &g_flash0 },
     { i2s_create,         &g_i2s0 },
     { can_create,         &g_can0 },
+    { usb_create,         &g_usb0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

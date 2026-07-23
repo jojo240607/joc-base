@@ -114,7 +114,7 @@ int main(void)
     int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
     printf("[BIST] pinmux: %s\r\n", pmok ? "PASS" : "FAIL");
 
-    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ\r\n");
+    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE\r\n");
 
     /* 5. command loop (PC companion test exercises this) */
     char line[64];
@@ -227,6 +227,28 @@ int main(void)
                     int n = snprintf(out, sizeof(out), "TICKS %lu\r\n",
                                      (unsigned long)board_ticks());
                     d_uart->vtable->write(d_uart, out, (size_t)n);
+                }
+                else if (strcmp(line, "USBOPEN") == 0)
+                {
+                    /* Bring up the CDC device and LEAVE it connected so a real PC
+                     * host can enumerate it (VID_0483&PID_5740). The BIST opens then
+                     * closes usb0, which disconnects it — so for real enumeration the
+                     * device must stay open. Plug the CN5 cable into the PC first. */
+                    device *usbd = device_manager_get("usb0");
+                    if (!usbd) { d_uart->vtable->write(d_uart, "USBOPEN: no dev\r\n", 18); }
+                    else if (usbd->vtable->open(usbd)) {
+                        d_uart->vtable->write(d_uart, "USBOPEN: open FAIL\r\n", 20);
+                    } else {
+                        d_uart->vtable->write(d_uart,
+                            "USBOPEN: usb0 connected (plug CN5 into PC)\r\n", 43);
+                    }
+                }
+                else if (strcmp(line, "USBCLOSE") == 0)
+                {
+                    device *usbd = device_manager_get("usb0");
+                    if (!usbd) { d_uart->vtable->write(d_uart, "USBCLOSE: no dev\r\n", 19); }
+                    else { usbd->vtable->close(usbd);
+                           d_uart->vtable->write(d_uart, "USBCLOSE: usb0 off\r\n", 20); }
                 }
                 else if (strcmp(line, "IOXFER") == 0)
                 {

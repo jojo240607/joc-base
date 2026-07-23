@@ -68,6 +68,7 @@ typedef enum {
     DEVICE_TYPE_FLASH,         /* 20 — internal FLASH (BLOCK: sector storage) */
     DEVICE_TYPE_I2S,           /* 21 — I2S audio serial bus (STREAM: master TX/RX) */
     DEVICE_TYPE_CAN,           /* 22 — bxCAN controller (STREAM: frame TX/RX) */
+    DEVICE_TYPE_USB,           /* 23 — USB OTG FS device / CDC-ACM VCP (STREAM) */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 

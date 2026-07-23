@@ -26,6 +26,7 @@
 #include "drv/flash.h"
 #include "drv/i2s.h"
 #include "drv/can.h"
+#include "drv/usb.h"
 #include "iface/block_device.h"   /* device_as_block downcast */
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
@@ -59,6 +60,7 @@ static int selftest_vwwdg(selftest *self);
 static int selftest_vflash(selftest *self);
 static int selftest_vi2s(selftest *self);
 static int selftest_vcan(selftest *self);
+static int selftest_vusb(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -86,6 +88,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_flash     = selftest_vflash,
     .test_i2s       = selftest_vi2s,
     .test_can       = selftest_vcan,
+    .test_usb       = selftest_vusb,
 };
 
 const struct selftestFun selftest_fun = {
@@ -235,6 +238,10 @@ int selftest_run(selftest *self)
 
     r = self->vtable->test_can(self);
     printf("[BIST] can   : %s\r\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_usb(self);
+    printf("[BIST] usb   : %s\r\n", r ? "PASS" : "FAIL");
     pass &= r;
 
 
@@ -1308,6 +1315,50 @@ static int selftest_vcan(selftest *self)
     if (!ok_stream) ok = 0;
     printf("       stream tx 3B {11,22,33} -> rx 3B {%02X,%02X,%02X} (%s)\r\n",
            rbuf[0], rbuf[1], rbuf[2], ok_stream ? "PASS" : "FAIL");
+
+    d->vtable->close(d);
+    return ok;
+}
+
+/* Verify the USB CDC (OTG FS) driver WITHOUT a host on the CN5 connector.
+ * A full enumeration needs a PC, so the BIST validates the two things that are
+ * provable with no host:
+ *   (1) the OTG FS core came up in device mode — GCCFG must power the PHY
+ *       (PWRDWN) and, in our no-VBUS-sense config, ignore VBUS (NOVBUSSENS);
+ *       DSTS is printable as a core-state diagnostic.
+ *   (2) the control-protocol engine is correct — feed synthetic SETUP packets
+ *       and confirm the produced responses/side-effects via the host-free
+ *       RUN_CTRL_SELFTEST ioctl (GET_DESCRIPTOR / line coding / address latch). */
+static int selftest_vusb(selftest *self)
+{
+    (void)self;
+    device *d = device_manager_get("usb0");
+    if (!d) { printf("       usb0: MISSING\r\n"); return 0; }
+    if (d->vtable->open(d) != 0) {
+        printf("       usb0: OPEN FAILED (pin conflict?)\r\n");
+        return 0;
+    }
+
+    int ok = 1;
+
+    /* (1) core bring-up: GCCFG reflects a powered PHY + no-VBUS-sense connect. */
+    uint32_t gccfg = 0;
+    d->vtable->ioctl(d, USB_IOCTL_GET_GCCFG, &gccfg);
+    int ok_pwrdwn = (gccfg & USB_OTG_GCCFG_PWRDWN) ? 1 : 0;
+    int ok_novb   = (gccfg & USB_OTG_GCCFG_NOVBUSSENS) ? 1 : 0;
+    if (!ok_pwrdwn || !ok_novb) ok = 0;
+
+    uint32_t dsts = 0;
+    d->vtable->ioctl(d, USB_IOCTL_GET_DSTS, &dsts);
+    printf("       GCCFG=0x%08lX PWRDWN=%s NOVBUSSENS=%s DSTS=0x%08lX\r\n",
+           (unsigned long)gccfg, ok_pwrdwn ? "on" : "OFF",
+           ok_novb ? "set" : "NOT", (unsigned long)dsts);
+
+    /* (2) control-protocol self-test (host-free synthetic SETUP packets). */
+    int st = d->vtable->ioctl(d, USB_IOCTL_RUN_CTRL_SELFTEST, NULL);
+    int ok_ctrl = (st == 0);
+    if (!ok_ctrl) ok = 0;
+    printf("       ctrl self-test: %s\r\n", ok_ctrl ? "PASS" : "FAIL");
 
     d->vtable->close(d);
     return ok;
