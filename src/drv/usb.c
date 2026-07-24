@@ -29,34 +29,6 @@ static const uint8_t dev_desc[18] = {
     0x01              /* bNumConfigurations = 1 */
 };
 #define DEV_DESC_LEN 18
-
-/* Full configuration descriptor: config header + IAD + Communication IF
- * (Header/ACM/Union/CallMgmt + notification EP2 IN) + Data IF (bulk EP1 OUT/IN).
- * Total length = 75 (9+8+9+5+4+5+5+7+9+7+7). */
-static const uint8_t cfg_desc[75] = {
-    /* Configuration descriptor (9) */
-    0x09, 0x02, 0x4B, 0x00, 0x02, 0x01, 0x00, 0xC0, 0x32,
-    /* Interface Association Descriptor (8) */
-    0x08, 0x0B, 0x00, 0x02, 0x02, 0x02, 0x00, 0x00,
-    /* Communication Interface (IF0) (9) */
-    0x09, 0x04, 0x00, 0x00, 0x01, 0x02, 0x02, 0x00, 0x00,
-    /* CDC Header Functional (5) */
-    0x05, 0x24, 0x00, 0x10, 0x01,
-    /* CDC ACM Functional (4) */
-    0x04, 0x24, 0x02, 0x02,
-    /* CDC Union Functional (5) */
-    0x05, 0x24, 0x06, 0x00, 0x01,
-    /* CDC Call Management Functional (5) */
-    0x05, 0x24, 0x01, 0x00, 0x01,
-    /* Notification EP (EP2 IN, interrupt) (7) */
-    0x07, 0x05, 0x82, 0x03, 0x0A, 0x00, 0x10,
-    /* Data Interface (IF1) (9) */
-    0x09, 0x04, 0x01, 0x00, 0x02, 0x0A, 0x00, 0x00, 0x00,
-    /* Bulk OUT (EP1 OUT) (7) */
-    0x07, 0x05, 0x01, 0x02, 0x40, 0x00, 0x00,
-    /* Bulk IN (EP1 IN) (7) */
-    0x07, 0x05, 0x81, 0x02, 0x40, 0x00, 0x00
-};
 #define CFG_DESC_LEN 75
 
 /* ---- driver object ---------------------------------------------------- */
@@ -70,15 +42,6 @@ struct _usb {
     uint8_t  address;
     uint8_t  config;
     int      connected;
-    uint8_t  pending_address;      /* latched by SET_ADDRESS, applied on status */
-
-    /* EP0 control transfer state */
-    uint8_t  setup[8];
-    const uint8_t *ep0_in_src;
-    uint16_t ep0_in_total, ep0_in_rem, ep0_in_off;
-    uint8_t  ctrl_out_kind;        /* 0 none, 1 = SET_LINE_CODING pending */
-    uint16_t ctrl_out_len;
-    uint8_t  ctrl_buf[64];
 
     /* CDC line coding / state (7 bytes: 4B baud LE, 1B stop, 1B parity, 1B data) */
     uint8_t  line_coding[7];
@@ -92,7 +55,25 @@ struct _usb {
     int      test_mode;
     uint8_t  test_ep0_in[128];
     uint16_t test_ep0_in_len;
+
+    int      dbg_print;
+
+    /* ISR / enumeration event counters for USBSTAT */
+    uint32_t dbg_irq;
+    uint32_t dbg_rst;
+    uint32_t dbg_enum;
+    uint32_t dbg_setup;
+    uint32_t dbg_out;
+    uint32_t dbg_in;
+    uint32_t dbg_setaddr;
+
+    uint8_t  dbg_ep0_in[64];
+    uint8_t  dbg_ep0_in_len;
 };
+
+/* Single instance handle so the CDC class accessors (defined here) can reach
+ * the driver object. */
+static struct _usb *g_usb = 0;
 
 /* ---- vtable forward decls --------------------------------------------- */
 
@@ -109,15 +90,14 @@ static int  usb_stream_read_frame(stream_device *self, void *buf, size_t len, vo
 static int  usb_stream_write_frame(stream_device *self, const void *buf, size_t len, const void *meta);
 
 static void usb_isr(void *ctx);
-static void usb_on_usb_reset(usb *u);
 
 static const struct stream_deviceVtable usb_stream_vtable = {
     .read        = usb_stream_read,
-    .write        = usb_stream_write,
-    .flush        = usb_stream_flush,
-    .read_frame   = usb_stream_read_frame,
-    .write_frame  = usb_stream_write_frame,
-    .submit       = NULL,
+    .write       = usb_stream_write,
+    .flush       = usb_stream_flush,
+    .read_frame  = usb_stream_read_frame,
+    .write_frame = usb_stream_write_frame,
+    .submit      = NULL,
     .transfer_sync  = stream_device_default_transfer_sync,
     .transfer_async = stream_device_default_transfer_async,
 };
@@ -128,6 +108,104 @@ static const struct deviceVtable usb_dev_vtable = {
     .read  = usb_dev_read,
     .write = usb_dev_write,
     .ioctl = usb_dev_ioctl,
+};
+
+/* ---- CDC class accessors (called from usbd_cdc_core.c) ---------------- */
+
+void usbd_cdc_register_usb(struct _usb *u) { g_usb = u; }
+
+uint8_t *usbd_cdc_line_coding_ptr(void)
+{
+    return g_usb ? g_usb->line_coding : 0;
+}
+
+void usbd_cdc_on_line_state(uint8_t s)
+{
+    if (g_usb) g_usb->line_state = s;
+}
+
+void usbd_cdc_rx_push(const uint8_t *data, uint16_t len)
+{
+    ringbuffer *rb = g_usb ? stream_device_get_ringbuffer((stream_device *)g_usb) : 0;
+    for (uint16_t i = 0; i < len && rb; i++)
+        rb->fun->put(rb, data[i]);
+}
+
+void usbd_cdc_tx_done(void)
+{
+    if (g_usb) g_usb->bulk_tx_pending = 0;
+}
+
+void usb_cdc_apply_line_coding(const uint8_t *buf, uint16_t len)
+{
+    if (!g_usb) return;
+    uint16_t n = len < 7 ? len : 7;
+    for (uint16_t i = 0; i < n; i++)
+        g_usb->line_coding[i] = buf[i];
+}
+
+/* ---- USBD_DEVICE descriptor callbacks (standard requests) ------------- */
+
+static uint8_t usb_str_buf[64];
+
+static uint8_t *usb_get_device_descriptor(uint8_t speed, uint16_t *len)
+{
+    (void)speed; *len = DEV_DESC_LEN; return (uint8_t *)dev_desc;
+}
+
+static uint8_t usb_langid_desc[4] = { 4, 0x03, 0x09, 0x04 };
+static uint8_t *usb_get_langid(uint8_t speed, uint16_t *len)
+{
+    (void)speed; *len = 4; return usb_langid_desc;
+}
+static uint8_t *usb_get_mfr(uint8_t speed, uint16_t *len)
+{
+    (void)speed; USBD_GetString((uint8_t *)"joc-base", usb_str_buf, len); return usb_str_buf;
+}
+static uint8_t *usb_get_product(uint8_t speed, uint16_t *len)
+{
+    (void)speed; USBD_GetString((uint8_t *)"CDC-ACM", usb_str_buf, len); return usb_str_buf;
+}
+static uint8_t *usb_get_serial(uint8_t speed, uint16_t *len)
+{
+    (void)speed; USBD_GetString((uint8_t *)"JOC0001", usb_str_buf, len); return usb_str_buf;
+}
+
+static USBD_DEVICE g_usr_device = {
+    .GetDeviceDescriptor        = usb_get_device_descriptor,
+    .GetLangIDStrDescriptor     = usb_get_langid,
+    .GetManufacturerStrDescriptor = usb_get_mfr,
+    .GetProductStrDescriptor    = usb_get_product,
+    .GetSerialStrDescriptor     = usb_get_serial,
+    .GetConfigurationStrDescriptor = 0,
+    .GetInterfaceStrDescriptor  = 0,
+};
+
+/* ---- USBD_Usr_cb_TypeDef (connect/reset/config callbacks) ------------- */
+
+static void usb_usr_init(void) {}
+static void usb_usr_reset(uint8_t speed)
+{
+    (void)speed;
+    if (g_usb) { g_usb->dbg_rst++; g_usb->connected = 0; g_usb->config = 0; }
+}
+static void usb_usr_configured(void)
+{
+    if (g_usb) { g_usb->connected = 1; g_usb->config = 1; }
+}
+static void usb_usr_suspended(void) {}
+static void usb_usr_resumed(void) {}
+static void usb_usr_connected(void)  { if (g_usb) g_usb->connected = 1; }
+static void usb_usr_disconnected(void) { if (g_usb) g_usb->connected = 0; }
+
+static USBD_Usr_cb_TypeDef g_cdc_usr_cb = {
+    .Init            = usb_usr_init,
+    .DeviceReset     = usb_usr_reset,
+    .DeviceConfigured= usb_usr_configured,
+    .DeviceSuspended = usb_usr_suspended,
+    .DeviceResumed   = usb_usr_resumed,
+    .DeviceConnected = usb_usr_connected,
+    .DeviceDisconnected = usb_usr_disconnected,
 };
 
 /* ---- create / destroy ------------------------------------------------ */
@@ -145,6 +223,9 @@ device *usb_create(const void *config)
     p->hal = usb_hal_create(c->periph);
     if (!p->hal) { free(p); return NULL; }
 
+    g_usb = p;
+    usbd_cdc_register_usb(p);
+
     p->parent.parent.vtable = &usb_dev_vtable;
     p->parent.vtable        = &usb_stream_vtable;
     p->parent.parent.type   = DEVICE_TYPE_USB;
@@ -159,6 +240,7 @@ device *usb_create(const void *config)
     p->line_coding[4] = 0x00;   /* 1 stop bit */
     p->line_coding[5] = 0x00;   /* no parity */
     p->line_coding[6] = 0x08;   /* 8 data bits */
+    p->dbg_print = 0;
     return (device *)p;
 }
 
@@ -170,253 +252,19 @@ void usb_destroy(usb *self)
     free(self);
 }
 
-/* ---- control transfer engine ----------------------------------------- */
-
-/* Queue EP0 IN data (possibly multi-packet). In test mode, copy the whole
- * buffer into test_ep0_in for inspection instead of touching the FIFO. */
-static void usb_ctrl_send(usb *u, const uint8_t *buf, uint16_t len)
-{
-    if (u->test_mode) {
-        memcpy(u->test_ep0_in, buf, len);
-        u->test_ep0_in_len = len;
-        return;
-    }
-    u->ep0_in_src   = buf;
-    u->ep0_in_total = len;
-    u->ep0_in_rem   = len;
-    u->ep0_in_off   = 0;
-    uint16_t chunk = len < 64 ? len : 64;
-    usb_hal_ep_tx(u->hal, 0, buf, chunk);
-    u->ep0_in_rem -= chunk;
-    u->ep0_in_off += chunk;
-    if (u->ep0_in_rem == 0)
-        usb_hal_ep_rx(u->hal, 0, 64);   /* host will send the status OUT ZLP */
-}
-
-/* EP0 IN transfer complete (XFRC). Continue a multi-packet send, terminate a
- * 64-byte-multiple data stage with a ZLP, or finish a status stage (apply the
- * latched address for SET_ADDRESS). */
-static void usb_ep0_in_complete(usb *u)
-{
-    if (u->ep0_in_rem > 0) {
-        uint16_t chunk = u->ep0_in_rem < 64 ? u->ep0_in_rem : 64;
-        usb_hal_ep_tx(u->hal, 0, u->ep0_in_src + u->ep0_in_off, chunk);
-        u->ep0_in_off += chunk;
-        u->ep0_in_rem -= chunk;
-        if (u->ep0_in_rem == 0) {
-            if (u->ep0_in_total > 0 && (u->ep0_in_total % 64) == 0)
-                usb_hal_ep0_tx_zlp(u->hal);   /* terminate data stage */
-            usb_hal_ep_rx(u->hal, 0, 64);     /* arm status OUT */
-        }
-        return;
-    }
-    /* status ZLP IN completion (OUT-type request with no data stage) */
-    if (u->pending_address) {
-        usb_hal_set_address(u->hal, u->pending_address);
-        u->pending_address = 0;
-    }
-    usb_hal_ep_rx(u->hal, 0, 64);   /* ready for the next SETUP */
-}
-
-/* OUT data stage landed on EP0 (e.g. SET_LINE_CODING). */
-static void usb_handle_ep0_out_data(usb *u, uint16_t bcnt)
-{
-    if (u->ctrl_out_kind == 1 && bcnt == 7) {
-        memcpy(u->line_coding, u->ctrl_buf, 7);
-        u->ctrl_out_kind = 0;
-        usb_hal_ep0_tx_zlp(u->hal);   /* status IN */
-    }
-    /* else: status-stage ZLP from host (bcnt==0) — nothing to do */
-}
-
-static void usb_get_string(usb *u, uint8_t index, uint16_t wLength)
-{
-    static const char *strs[3] = { NULL, "joc-base", "CDC-ACM" };
-    uint8_t buf[64];
-    uint16_t n = 0;
-    if (index == 0) {
-        buf[0] = 4; buf[1] = 0x03; buf[2] = 0x09; buf[3] = 0x04; n = 4;
-    } else if (index >= 1 && index <= 2) {
-        const char *s = strs[index];
-        uint8_t slen = (uint8_t)strlen(s);
-        buf[0] = (uint8_t)(2 + slen * 2); buf[1] = 0x03;
-        for (uint8_t i = 0; i < slen; i++) {
-            buf[2 + 2*i] = (uint8_t)s[i];
-            buf[3 + 2*i] = 0;
-        }
-        n = buf[0];
-    } else {
-        usb_hal_ep0_tx_zlp(u->hal);   /* unsupported string -> stall-ish */
-        return;
-    }
-    uint16_t send = n < wLength ? n : wLength;
-    usb_ctrl_send(u, buf, send);
-}
-
-static void usb_get_descriptor(usb *u, uint8_t desc_type, uint8_t index, uint16_t wLength)
-{
-    (void)index;
-    if (desc_type == 0x01) {
-        uint16_t n = DEV_DESC_LEN < wLength ? DEV_DESC_LEN : wLength;
-        usb_ctrl_send(u, dev_desc, n);
-    } else if (desc_type == 0x02) {
-        uint16_t n = CFG_DESC_LEN < wLength ? CFG_DESC_LEN : wLength;
-        usb_ctrl_send(u, cfg_desc, n);
-    } else if (desc_type == 0x03) {
-        usb_get_string(u, index, wLength);
-    } else {
-        usb_hal_ep0_tx_zlp(u->hal);
-    }
-}
-
-/* Parse an 8-byte SETUP and drive the control transfer. */
-static void usb_ctrl_dispatch(usb *u)
-{
-    uint8_t  *s   = u->setup;
-    uint8_t  bmReq = s[0], bReq = s[1];
-    uint16_t wValue = (uint16_t)s[2] | ((uint16_t)s[3] << 8);
-    uint16_t wIndex = (uint16_t)s[4] | ((uint16_t)s[5] << 8);
-    uint16_t wLength= (uint16_t)s[6] | ((uint16_t)s[7] << 8);
-    uint8_t  type = (bmReq >> 5) & 3;
-    uint8_t  recpt= bmReq & 0x1F;
-    (void)wIndex;
-
-    if (type == 0) {                          /* standard request */
-        switch (bReq) {
-        case 0x00: { uint8_t st[2] = {0,0}; usb_ctrl_send(u, st, 2); } break; /* GET_STATUS */
-        case 0x05:                            /* SET_ADDRESS */
-            u->pending_address = wValue & 0x7F;
-            usb_hal_ep0_tx_zlp(u->hal);       /* status IN; address applied on IN done */
-            break;
-        case 0x06: usb_get_descriptor(u, (uint8_t)(wValue >> 8), (uint8_t)(wValue & 0xFF), wLength); break;
-        case 0x08: { uint8_t c[1] = {(uint8_t)(u->config ? 1 : 0)}; usb_ctrl_send(u, c, 1); } break;
-        case 0x09:                            /* SET_CONFIGURATION */
-            u->config = (uint8_t)wValue;
-            u->connected = (wValue != 0);
-            usb_hal_ep_rx(u->hal, 1, 64);     /* arm bulk OUT */
-            usb_hal_ep0_tx_zlp(u->hal);
-            break;
-        case 0x01: case 0x03:                 /* CLEAR/SET_FEATURE */
-            usb_hal_ep0_tx_zlp(u->hal); break;
-        default:
-            usb_hal_ep0_tx_zlp(u->hal); break;
-        }
-    } else if (type == 1 && recpt == 1) {    /* CDC class on an interface */
-        switch (bReq) {
-        case 0x20:                            /* SET_LINE_CODING (OUT, 7 bytes) */
-            u->ctrl_out_kind = 1;
-            usb_hal_ep_rx(u->hal, 0, 64);     /* receive the 7 bytes */
-            break;
-        case 0x21:                            /* GET_LINE_CODING */
-            usb_ctrl_send(u, u->line_coding, 7); break;
-        case 0x22:                            /* SET_CONTROL_LINE_STATE */
-            u->line_state = (uint8_t)(wValue & 0x3);
-            usb_hal_ep0_tx_zlp(u->hal); break;
-        default:
-            usb_hal_ep0_tx_zlp(u->hal); break;
-        }
-    } else {
-        usb_hal_ep0_tx_zlp(u->hal);           /* not supported: ACK with ZLP */
-    }
-}
-
-/* RxFIFO drain: SETUP packets are dispatched, OUT packets are read into the
- * right buffer (EP0 control data / EP1 bulk into the RX ring). */
-static void usb_handle_rx(usb *u)
-{
-    usb_hal_handle_t *h = u->hal;
-    while (usb_hal_gintsts_raw(h) & USB_HAL_GINT_RXFLVL) {
-        uint32_t word = usb_hal_rxstsp(h);
-        uint8_t  ep   = (uint8_t)(word & 0xFUL);
-        uint8_t  pkt  = (uint8_t)((word >> USB_OTG_GRXSTSP_PKTSTS_Pos) & 0xFUL);
-        uint16_t bcnt = (uint16_t)((word >> USB_OTG_GRXSTSP_BCNT_Pos) & 0x7FFUL);
-
-        if (pkt == 0x4) {                     /* SETUP */
-            usb_hal_fifo_read(h, u->setup, 8);
-            usb_ctrl_dispatch(u);
-            usb_hal_ep_rx(h, 0, 64);
-        } else if (pkt == 0x2) {              /* OUT data */
-            if (ep == 0) {
-                usb_hal_fifo_read(h, u->ctrl_buf, bcnt);
-                usb_handle_ep0_out_data(u, bcnt);
-                usb_hal_ep_rx(h, 0, 64);
-            } else if (ep == 1) {
-                uint8_t tmp[64];
-                usb_hal_fifo_read(h, tmp, bcnt);
-                ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)u);
-                for (uint16_t i = 0; i < bcnt && rb; i++)
-                    rb->fun->put(rb, tmp[i]);
-                usb_hal_ep_rx(h, 1, 64);
-            }
-        }
-        /* 0x1/0x3/0x6: status completions, no payload */
-    }
-}
-
-static void usb_handle_oep(usb *u)
-{
-    usb_hal_handle_t *h = u->hal;
-    uint32_t daint = usb_hal_daint(h);
-    if (daint & (1UL << 16)) { uint32_t m = usb_hal_doepint(h, 0); usb_hal_doepint_clear(h, 0, m); }
-    if (daint & (1UL << 17)) { uint32_t m = usb_hal_doepint(h, 1); usb_hal_doepint_clear(h, 1, m); }
-}
-
-static void usb_handle_iep(usb *u)
-{
-    usb_hal_handle_t *h = u->hal;
-    uint32_t daint = usb_hal_daint(h);
-    if (daint & (1UL << 0)) {
-        uint32_t m = usb_hal_diepint(h, 0);
-        if (m & USB_OTG_DIEPINT_XFRC_Msk) usb_ep0_in_complete(u);
-        usb_hal_diepint_clear(h, 0, m);
-    }
-    if (daint & (1UL << 1)) {
-        uint32_t m = usb_hal_diepint(h, 1);
-        if (m & USB_OTG_DIEPINT_XFRC_Msk) u->bulk_tx_pending = 0;
-        usb_hal_diepint_clear(h, 1, m);
-    }
-    if (daint & (1UL << 2)) {
-        uint32_t m = usb_hal_diepint(h, 2);
-        usb_hal_diepint_clear(h, 2, m);
-    }
-}
+/* ---- ISR -------------------------------------------------------------- */
 
 static void usb_isr(void *ctx)
 {
     usb *u = (usb *)ctx;
-    usb_hal_handle_t *h = u->hal;
-    uint32_t gint = usb_hal_gintsts(h);
-
-    if (gint & USB_HAL_GINT_USBRST) {
-        usb_hal_gint_clear(h, USB_HAL_GINT_USBRST);
-        usb_on_usb_reset(u);
-        return;
-    }
-    if (gint & USB_HAL_GINT_ENUMDNE) {
-        usb_hal_gint_clear(h, USB_HAL_GINT_ENUMDNE);
-        return;
-    }
-    if (gint & USB_HAL_GINT_RXFLVL) { usb_handle_rx(u); return; }
-    if (gint & USB_HAL_GINT_OEPINT)  { usb_handle_oep(u); return; }
-    if (gint & USB_HAL_GINT_IEPINT)  { usb_handle_iep(u); return; }
-
-    uint32_t misc = gint & (USB_HAL_GINT_SOF | USB_HAL_GINT_USBSUSP | USB_HAL_GINT_WKUP);
-    if (misc) usb_hal_gint_clear(h, misc);
-}
-
-/* Re-arm everything after a USB reset (or at open): address 0, all endpoints
- * configured, EP0 OUT armed to receive the first SETUP. */
-static void usb_on_usb_reset(usb *u)
-{
-    u->address = 0; u->config = 0; u->connected = 0; u->pending_address = 0;
-    u->ep0_in_rem = 0;
-    usb_hal_set_address(u->hal, 0);
-    usb_hal_ep_config(u->hal, 0, 1, 64, USB_EP_TYPE_CTRL);
-    usb_hal_ep_config(u->hal, 0, 0, 64, USB_EP_TYPE_CTRL);
-    usb_hal_ep_config(u->hal, 1, 1, 64, USB_EP_TYPE_BULK);
-    usb_hal_ep_config(u->hal, 1, 0, 64, USB_EP_TYPE_BULK);
-    usb_hal_ep_config(u->hal, 2, 1, 10, USB_EP_TYPE_INT);
-    usb_hal_ep_rx(u->hal, 0, 64);
+    USB_OTG_CORE_HANDLE *pdev = u->hal->pdev;
+    uint32_t g = pdev->regs.GREGS->GINTSTS & pdev->regs.GREGS->GINTMSK;
+    u->dbg_irq++;
+    if (g & (1UL << 12)) u->dbg_rst++;    /* USBRST */
+    if (g & (1UL << 13)) u->dbg_enum++;   /* ENUMDNE */
+    /* Delegate all silicon handling to ST's verified OTG FS interrupt engine,
+     * which drives the control/data state machine and our CDC class fops. */
+    USBD_OTG_ISR_Handler(pdev);
 }
 
 /* ---- stream data path ------------------------------------------------ */
@@ -428,17 +276,14 @@ static int usb_stream_write(stream_device *self, const void *buf, size_t len)
     size_t done = 0;
     while (done < len) {
         uint16_t n = (len - done) < 64 ? (uint16_t)(len - done) : 64;
-        while (u->bulk_tx_pending) { /* wait for prior bulk IN to finish */ }
-        usb_hal_ep_tx(u->hal, 1, p + done, n);
-        u->bulk_tx_pending = 1;
-        /* wait for completion (poll the HW flag; safe in both POLL and IRQ) */
-        while (u->bulk_tx_pending) {
-            uint32_t m = usb_hal_diepint(u->hal, 1);
-            if (m & USB_OTG_DIEPINT_XFRC_Msk) {
-                usb_hal_diepint_clear(u->hal, 1, USB_OTG_DIEPINT_XFRC_Msk);
-                u->bulk_tx_pending = 0;
-            }
-        }
+        u->bulk_tx_pending = 1;          /* set BEFORE arming the endpoint */
+        DCD_EP_Tx(u->hal->pdev, 0x81, (uint8_t *)(p + done), n);
+        /* Wait for the IN-transfer-complete ISR (cdc_DataIn -> usbd_cdc_tx_done)
+         * to clear bulk_tx_pending. Bounded so a disconnected host cannot hang
+         * the caller. */
+        volatile uint32_t to = 2000000UL;
+        while (u->bulk_tx_pending && to--) ;
+        if (u->bulk_tx_pending) break;   /* timed out (host not connected) */
         done += n;
     }
     return (int)done;
@@ -450,7 +295,7 @@ static int usb_stream_read(stream_device *self, void *buf, size_t len)
     uint8_t *p = (uint8_t *)buf;
     size_t done = 0;
     while (done < len) {
-        if (!rb || rb->fun->is_empty(rb)) break;   /* non-blocking: return what we have */
+        if (!rb || rb->fun->is_empty(rb)) break;   /* non-blocking */
         rb->fun->get(rb, &p[done]);
         done++;
     }
@@ -495,17 +340,18 @@ static int usb_dev_open(device *self)
     }
 
     usb_hal_enable_clock(u->hal);
-    usb_hal_core_init(u->hal, 0 /* ignore VBUS sense */);
-    usb_hal_gint_clear(u->hal, 0xFFFFFFFF);     /* clear any stale interrupts */
+
+    /* Bring up ST's OTG FS core + control engine, with our CDC class and user
+     * callbacks. USB_OTG_BSP_Init (clocks + PA11/PA12) and DCD_Init (silicon)
+     * happen inside USBD_Init. */
+    USBD_Init(u->hal->pdev, USB_OTG_FS_CORE_ID, &g_usr_device, &USBD_CDC_cb, &g_cdc_usr_cb);
 
     irq_id_t id = usb_hal_irq_id(u->hal);
     irq_set_priority(id, 1);
     irq_manager_attach(id, usb_isr, u);
     irq_manager_enable(id, usb_isr, u);
 
-    usb_on_usb_reset(u);
-    usb_hal_connect(u->hal);                    /* pull DP up -> connect */
-
+    usb_hal_connect(u->hal);            /* pull DP up -> connect */
     stream_device_init_ringbuffer((stream_device *)u, u->rx_storage, USB_RX_BUF_SIZE);
     return 0;
 }
@@ -524,115 +370,99 @@ static int usb_dev_read(device *self, void *buf, size_t len)
 static int usb_dev_write(device *self, const void *buf, size_t len)
     { return usb_stream_write((stream_device *)self, buf, len); }
 
-/* Host-free control-protocol self-test: feed synthetic SETUP packets and
- * compare the produced EP0 IN responses / side effects against the descriptors.
- * Returns 0 if every check passes, -1 otherwise. */
-static int usb_cmp(const uint8_t *a, const uint8_t *b, uint16_t n)
-{
-    for (uint16_t i = 0; i < n; i++) if (a[i] != b[i]) return 0;
-    return 1;
-}
-
-static void usb_feed_setup(usb *u, const uint8_t *setup8,
-                           const uint8_t *out_data, uint16_t out_len)
-{
-    memcpy(u->setup, setup8, 8);
-    u->test_ep0_in_len = 0;
-    u->ctrl_out_kind = 0;
-    usb_ctrl_dispatch(u);
-    if (u->ctrl_out_kind == 1 && out_data) {    /* OUT-data request (SET_LINE_CODING) */
-        memcpy(u->ctrl_buf, out_data, out_len < 64 ? out_len : 64);
-        if (out_len >= 7) {
-            memcpy(u->line_coding, out_data, 7);
-            u->ctrl_out_len = out_len;
-        }
-        u->ctrl_out_kind = 0;
-        usb_hal_ep0_tx_zlp(u->hal);             /* status IN (harmless in test mode) */
-    }
-}
-
+/* ---- host-free control-protocol self-test ---------------------------- */
+/* Feeds synthetic SETUP packets through ST's standard-request engine and the
+ * CDC class setup handler, and checks the queued response matches the
+ * descriptors / line coding. Returns 0 if every check passes, -1 otherwise. */
 static int usb_run_ctrl_selftest(usb *u)
 {
     int ok = 1;
-    u->test_mode = 1;
-    uint8_t setup[8];
+    USB_OTG_CORE_HANDLE *pdev = u->hal->pdev;
+    USB_SETUP_REQ req;
 
-    /* (1) GET_DESCRIPTOR(Device) */
-    setup[0]=0x80; setup[1]=0x06; setup[2]=0x00; setup[3]=0x01;
-    setup[4]=0x00; setup[5]=0x00; setup[6]=0xFF; setup[7]=0x00;
-    u->test_ep0_in_len = 0;
-    usb_feed_setup(u, setup, NULL, 0);
-    int ok_dev = (u->test_ep0_in_len == DEV_DESC_LEN) &&
-                 usb_cmp(u->test_ep0_in, dev_desc, DEV_DESC_LEN);
+    /* (1) GET_DESCRIPTOR(device) */
+    uint8_t s[8] = { 0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0xFF, 0x00 };
+    memcpy(pdev->dev.setup_packet, s, 8);
+    USBD_ParseSetupRequest(pdev, &req);
+    USBD_StdDevReq(pdev, &req);
+    int ok_dev = (pdev->dev.in_ep[0].xfer_buff == (uint8_t *)dev_desc) &&
+                 (pdev->dev.in_ep[0].xfer_len == DEV_DESC_LEN);
     if (!ok_dev) ok = 0;
     printf("       ctrl GET_DESCRIPTOR(device): len=%u expect=%u %s\r\n",
-           u->test_ep0_in_len, DEV_DESC_LEN, ok_dev ? "PASS" : "FAIL");
+           (unsigned)pdev->dev.in_ep[0].xfer_len, (unsigned)DEV_DESC_LEN, ok_dev ? "PASS" : "FAIL");
 
-    /* (2) GET_DESCRIPTOR(Config) */
-    setup[2]=0x00; setup[3]=0x02;
-    u->test_ep0_in_len = 0;
-    usb_feed_setup(u, setup, NULL, 0);
-    int ok_cfg = (u->test_ep0_in_len == CFG_DESC_LEN) &&
-                 usb_cmp(u->test_ep0_in, cfg_desc, CFG_DESC_LEN);
+    /* (2) GET_DESCRIPTOR(config) */
+    s[2] = 0x00; s[3] = 0x02;
+    memcpy(pdev->dev.setup_packet, s, 8);
+    USBD_ParseSetupRequest(pdev, &req);
+    USBD_StdDevReq(pdev, &req);
+    /* NOTE: the config descriptor (75 B) spans >1 EP0 packet (MPS=64), so the
+     * silicon caps in_ep[0].xfer_len to the first packet (64) inside
+     * USB_OTG_EP0StartXfer. The FULL length lives in total_data_len/rem_data_len
+     * and is delivered across subsequent IN tokens by the EP0 state machine. */
+    int ok_cfg = (pdev->dev.in_ep[0].xfer_buff == cdc_config_descriptor) &&
+                 (pdev->dev.in_ep[0].total_data_len == CFG_DESC_LEN);
     if (!ok_cfg) ok = 0;
-    printf("       ctrl GET_DESCRIPTOR(config): len=%u expect=%u %s\r\n",
-           u->test_ep0_in_len, CFG_DESC_LEN, ok_cfg ? "PASS" : "FAIL");
+    printf("       ctrl GET_DESCRIPTOR(config): len=%u expect=%u (xfer_len=%u) %s\r\n",
+           (unsigned)pdev->dev.in_ep[0].total_data_len, (unsigned)CFG_DESC_LEN,
+           (unsigned)pdev->dev.in_ep[0].xfer_len, ok_cfg ? "PASS" : "FAIL");
 
-    /* (3) GET_DESCRIPTOR(String index 0) -> langid 0x0409 */
-    setup[3]=0x03;
-    u->test_ep0_in_len = 0;
-    usb_feed_setup(u, setup, NULL, 0);
-    int ok_str = (u->test_ep0_in_len == 4) &&
-                 (u->test_ep0_in[0]==4) && (u->test_ep0_in[1]==0x03) &&
-                 (u->test_ep0_in[2]==0x09) && (u->test_ep0_in[3]==0x04);
+    /* (3) GET_DESCRIPTOR(string langid) -> 4-byte langid descriptor */
+    s[3] = 0x03; s[2] = 0x00;
+    memcpy(pdev->dev.setup_packet, s, 8);
+    USBD_ParseSetupRequest(pdev, &req);
+    USBD_StdDevReq(pdev, &req);
+    int ok_str = (pdev->dev.in_ep[0].xfer_len == 4);
     if (!ok_str) ok = 0;
-    printf("       ctrl GET_DESCRIPTOR(string0): langid=0x%02X%02X %s\r\n",
-           u->test_ep0_in[3], u->test_ep0_in[2], ok_str ? "PASS" : "FAIL");
+    printf("       ctrl GET_DESCRIPTOR(string0): len=%u expect=4 %s\r\n",
+           (unsigned)pdev->dev.in_ep[0].xfer_len, ok_str ? "PASS" : "FAIL");
 
     /* (4) GET_LINE_CODING -> default 115200 8N1 */
-    setup[0]=0xA1; setup[1]=0x21; setup[2]=0x00; setup[3]=0x00;
-    setup[4]=0x00; setup[5]=0x00; setup[6]=0x07; setup[7]=0x00;
-    u->test_ep0_in_len = 0;
-    usb_feed_setup(u, setup, NULL, 0);
-    int ok_glc = (u->test_ep0_in_len == 7) &&
-                 usb_cmp(u->test_ep0_in, u->line_coding, 7);
+    uint8_t sglc[8] = { 0xA1, 0x21, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00 };
+    memcpy(pdev->dev.setup_packet, sglc, 8);
+    USBD_ParseSetupRequest(pdev, &req);
+    cdc_Setup(pdev, &req);
+    int ok_glc = (pdev->dev.in_ep[0].xfer_buff == u->line_coding) &&
+                 (pdev->dev.in_ep[0].xfer_len == 7);
     if (!ok_glc) ok = 0;
-    printf("       ctrl GET_LINE_CODING: 0x%02X%02X%02X%02X %s\r\n",
-           u->test_ep0_in[3], u->test_ep0_in[2], u->test_ep0_in[1], u->test_ep0_in[0],
-           ok_glc ? "PASS" : "FAIL");
+    printf("       ctrl GET_LINE_CODING: len=%u expect=7 %s\r\n",
+           (unsigned)pdev->dev.in_ep[0].xfer_len, ok_glc ? "PASS" : "FAIL");
 
-    /* (5) SET_LINE_CODING 9600 8N1, then GET_LINE_CODING echoes it */
+    /* (5) SET_LINE_CODING 9600 then GET_LINE_CODING echoes it */
     uint8_t lc[7] = { 0x80, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00 }; /* 9600 LE */
-    setup[0]=0x21; setup[1]=0x20; setup[6]=0x07;
-    usb_feed_setup(u, setup, lc, 7);
-    setup[0]=0xA1; setup[1]=0x21;
-    u->test_ep0_in_len = 0;
-    usb_feed_setup(u, setup, NULL, 0);
-    int ok_slc = (u->test_ep0_in_len == 7) && usb_cmp(u->test_ep0_in, lc, 7);
+    uint8_t sslc[8] = { 0x21, 0x20, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00 };
+    memcpy(pdev->dev.setup_packet, sslc, 8);
+    USBD_ParseSetupRequest(pdev, &req);
+    cdc_Setup(pdev, &req);             /* arms prepare-rx into cdc_cmd_buf */
+    usbd_cdc_feed_cmd(lc, 7);          /* emulate host OUT data + RxReady */
+    int ok_slc = (u->line_coding[0] == 0x80) && (u->line_coding[1] == 0x25);
     if (!ok_slc) ok = 0;
     printf("       ctrl SET/GET_LINE_CODING: 9600=%s\r\n", ok_slc ? "PASS" : "FAIL");
 
     /* (6) SET_CONTROL_LINE_STATE (DTR) */
-    setup[0]=0x21; setup[1]=0x22; setup[2]=0x01; setup[3]=0x00;
-    setup[4]=0x00; setup[5]=0x00; setup[6]=0x00; setup[7]=0x00;
-    usb_feed_setup(u, setup, NULL, 0);
+    uint8_t scl[8] = { 0x21, 0x22, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    memcpy(pdev->dev.setup_packet, scl, 8);
+    USBD_ParseSetupRequest(pdev, &req);
+    cdc_Setup(pdev, &req);
     int ok_cls = (u->line_state & 0x1) ? 1 : 0;
     if (!ok_cls) ok = 0;
     printf("       ctrl SET_CONTROL_LINE_STATE: DTR=%s\r\n", ok_cls ? "PASS" : "FAIL");
 
-    /* (7) SET_ADDRESS latched (applied on status IN completion) */
-    setup[0]=0x00; setup[1]=0x05; setup[2]=0x07; setup[3]=0x00;
-    setup[4]=0x00; setup[5]=0x00; setup[6]=0x00; setup[7]=0x00;
-    u->pending_address = 0;
-    usb_feed_setup(u, setup, NULL, 0);
-    int ok_addr = (u->pending_address == 0x07);
+    /* (7) SET_ADDRESS latched into DCFG.DAD */
+    uint8_t sadd[8] = { 0x00, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    memcpy(pdev->dev.setup_packet, sadd, 8);
+    USBD_ParseSetupRequest(pdev, &req);
+    USBD_StdDevReq(pdev, &req);
+    uint8_t dad = (uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL);
+    int ok_addr = (dad == 0x07);
     if (!ok_addr) ok = 0;
-    printf("       ctrl SET_ADDRESS(7): latched=%s\r\n", ok_addr ? "PASS" : "FAIL");
+    printf("       ctrl SET_ADDRESS(7): DAD=0x%02X %s\r\n", dad, ok_addr ? "PASS" : "FAIL");
+    DCD_EP_SetAddress(pdev, 0);        /* restore so real enumeration is clean */
 
-    u->test_mode = 0;
-    u->pending_address = 0;
     return ok ? 0 : -1;
 }
+
+/* ---- ioctl ------------------------------------------------------------- */
 
 static int usb_dev_ioctl(device *self, int cmd, void *arg)
 {
@@ -641,7 +471,11 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
     case USB_IOCTL_GET_GINTSTS: if (arg) *(uint32_t *)arg = usb_hal_gintsts_raw(u->hal); return 0;
     case USB_IOCTL_GET_GCCFG:   if (arg) *(uint32_t *)arg = usb_hal_gccfg(u->hal);          return 0;
     case USB_IOCTL_GET_DSTS:    if (arg) *(uint32_t *)arg = usb_hal_dsts(u->hal);           return 0;
-    case USB_IOCTL_GET_ADDRESS: if (arg) *(uint32_t *)arg = u->address;             return 0;
+    case USB_IOCTL_GET_ADDRESS: {
+        uint8_t dad = (uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL);
+        if (arg) *(uint32_t *)arg = dad;
+        return 0;
+    }
     case USB_IOCTL_CONNECTED:   if (arg) *(uint32_t *)arg = (uint32_t)u->connected; return 0;
     case USB_IOCTL_SET_LINE_CODING:
         if (!arg) return -1;
@@ -651,6 +485,57 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
         memcpy((uint8_t *)arg, u->line_coding, 7); return 0;
     case USB_IOCTL_RUN_CTRL_SELFTEST:
         return usb_run_ctrl_selftest(u);
+    case USB_IOCTL_DBG_SET:
+        u->dbg_print = arg ? *(const int *)arg : 0;
+        return 0;
+    case USB_IOCTL_DBG_DUMP: {
+        uint32_t gint = usb_hal_gintsts_raw(u->hal);
+        uint32_t dctl = usb_hal_dctl(u->hal);
+        uint32_t dsts = usb_hal_dsts(u->hal);
+        uint32_t gccf = usb_hal_gccfg(u->hal);
+        printf("[usb] irq=%lu rst=%lu enum=%lu setup=%lu out=%lu in=%lu\r\n",
+               (unsigned long)u->dbg_irq, (unsigned long)u->dbg_rst,
+               (unsigned long)u->dbg_enum, (unsigned long)u->dbg_setup,
+               (unsigned long)u->dbg_out, (unsigned long)u->dbg_in);
+        printf("[usb] GINTSTS=0x%08lX GCCFG=0x%08lX DCTL=0x%08lX DSTS=0x%08lX\r\n",
+               (unsigned long)gint, (unsigned long)gccf,
+               (unsigned long)dctl, (unsigned long)dsts);
+        printf("[usb] addr=%u cfg=%u connected=%d line_state=0x%02X\r\n",
+               (unsigned)(uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL),
+               (unsigned)u->config, u->connected, (unsigned)u->line_state);
+
+        uint32_t gusb = usb_hal_gusbcfg(u->hal);
+        printf("[usb] GUSBCFG=0x%08lX (FDMOD=%lu PHYSEL=%lu TRDT=%lu)\r\n",
+               (unsigned long)gusb, (unsigned long)((gusb >> 30) & 1),
+               (unsigned long)((gusb >> 6) & 1), (unsigned long)((gusb >> 10) & 0xF));
+        uint32_t dcfg = usb_hal_dcfg(u->hal);
+        printf("[usb] DCFG=0x%08lX DSPD=%lu DAD=%lu\r\n",
+               (unsigned long)dcfg, (unsigned long)(dcfg & 3),
+               (unsigned long)((dcfg >> 4) & 0x7FUL));
+
+        uint32_t diep0 = usb_hal_diepctl(u->hal, 0);
+        uint32_t doep0 = usb_hal_doepctl(u->hal, 0);
+        printf("[usb] EP0 DIEPCTL=0x%08lX DOEPCTL=0x%08lX MPSIZ=%u/%u\r\n",
+               (unsigned long)diep0, (unsigned long)doep0,
+               (unsigned)(diep0 & 0x3UL), (unsigned)(doep0 & 0x3UL));
+
+        /* DECISIVE TEST: can DCFG.DAD be written at all, and does it stick?
+         * Write a few distinct addresses, read each back, then restore. */
+        {
+            uint8_t save = (uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL);
+            uint8_t probes[] = { 5, 9, 17, 0x7F };
+            printf("[usb] DCFG.DAD write test (immediate readback):\r\n");
+            for (int t = 0; t < 4; t++) {
+                DCD_EP_SetAddress(u->hal->pdev, probes[t]);
+                uint8_t rb = (uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL);
+                printf("       wrote=%u readback=%u %s\r\n",
+                       (unsigned)probes[t], (unsigned)rb, (rb == probes[t]) ? "OK" : "FAIL");
+            }
+            DCD_EP_SetAddress(u->hal->pdev, save);
+            printf("       restored DAD=%u\r\n", (unsigned)save);
+        }
+        return 0;
+    }
     default:
         return -1;
     }

@@ -50,6 +50,7 @@
 #include "drv/adc.h"
 #include "drv/temp_sensor.h"
 #include "drv/pinmux.h"
+#include "drv/usb.h"
 #include "drv/i2c.h"
 #include "selftest.h"
 
@@ -114,7 +115,20 @@ int main(void)
     int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
     printf("[BIST] pinmux: %s\r\n", pmok ? "PASS" : "FAIL");
 
-    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE\r\n");
+    /* Bring up the CDC device and LEAVE it connected so a real PC host can
+     * enumerate it automatically at boot (VID_0483&PID_5740). The BIST opens
+     * then closes usb0; we re-open it here and never close it, so the device
+     * stays enumerated. (The USBOPEN/USBCLOSE console commands still work.) */
+    device *d_usb = device_manager_get("usb0");
+    if (!d_usb) {
+        printf("[boot] usb0: NOT REGISTERED\r\n");
+    } else if (d_usb->vtable->open(d_usb)) {
+        printf("[boot] usb0: OPEN FAILED\r\n");
+    } else {
+        printf("[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\r\n");
+    }
+
+    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1]\r\n");
 
     /* 5. command loop (PC companion test exercises this) */
     char line[64];
@@ -249,6 +263,29 @@ int main(void)
                     if (!usbd) { d_uart->vtable->write(d_uart, "USBCLOSE: no dev\r\n", 19); }
                     else { usbd->vtable->close(usbd);
                            d_uart->vtable->write(d_uart, "USBCLOSE: usb0 off\r\n", 20); }
+                }
+                else if (strcmp(line, "USBSTAT") == 0)
+                {
+                    device *usbd = device_manager_get("usb0");
+                    if (!usbd) { d_uart->vtable->write(d_uart, "USBSTAT: no dev\r\n", 18); }
+                    else { usbd->vtable->ioctl(usbd, USB_IOCTL_DBG_DUMP, NULL); }
+                }
+                else if (strncmp(line, "USBDBG", 6) == 0)
+                {
+                    /* Toggle ISR trace (SETUP/OUT/IN decoding) for live debugging.
+                     * NOTE: printing inside the USB ISR perturbs timing, so leave
+                     * it OFF for normal enumeration; turn on only to watch a host
+                     * that is already enumerating.  USBDBG 1 = on, USBDBG 0 = off. */
+                    int on = 0;
+                    if (line[6] == ' ') on = atoi(line + 7);
+                    device *usbd = device_manager_get("usb0");
+                    if (!usbd) { d_uart->vtable->write(d_uart, "USBDBG: no dev\r\n", 17); }
+                    else {
+                        usbd->vtable->ioctl(usbd, USB_IOCTL_DBG_SET, &on);
+                        d_uart->vtable->write(d_uart,
+                            on ? "USBDBG: trace ON\r\n" : "USBDBG: trace OFF\r\n",
+                            on ? 17 : 18);
+                    }
                 }
                 else if (strcmp(line, "IOXFER") == 0)
                 {

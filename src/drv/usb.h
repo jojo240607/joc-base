@@ -36,6 +36,9 @@ typedef struct {
 #define USB_IOCTL_SET_LINE_CODING  0xD5   /* arg: uint8_t[7] */
 #define USB_IOCTL_GET_LINE_CODING  0xD6   /* arg: uint8_t[7] */
 #define USB_IOCTL_RUN_CTRL_SELFTEST 0xD7  /* arg: NULL; ret 0=pass, -1=fail */
+#define USB_IOCTL_DBG_DUMP         0xD8  /* arg: NULL; print ISR/enum counters */
+#define USB_IOCTL_DBG_SET          0xD9  /* arg: int* (0/1); toggle ISR trace */
+#define USB_IOCTL_SET_DAD_TEST     0xDA  /* arg: uint8_t* (addr); write DAD, print readback */
 
 #define USB_RX_BUF_SIZE  256
 

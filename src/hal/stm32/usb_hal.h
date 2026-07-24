@@ -3,89 +3,51 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "stm32f4xx.h"     /* USB_OTG_* register structs + bit masks (CMSIS) */
-#include "irq_hal.h"       /* irq_id_t */
+#include "usb_core.h"     /* ST: USB_OTG_CORE_HANDLE, USB_OTG_CORE_ID_TypeDef */
+#include "usb_dcd.h"      /* ST: DCD_* device-layer API */
+#include "usb_dcd_int.h"  /* ST: USBD_OTG_ISR_Handler, USBD_DCD_INT_fops */
+#include "usbd_core.h"    /* ST: USBD_Init, USBD_Class_cb_TypeDef, USBD_Usr_cb_TypeDef */
+#include "usbd_ioreq.h"   /* ST: USBD_Ctl* control IO helpers */
+#include "usbd_req.h"     /* ST: USBD_StdDevReq, USBD_ParseSetupRequest */
+#include "usbd_cdc_core.h"/* our CDC class + accessors */
+#include "irq_hal.h"      /* irq_id_t */
 
 /*
- * Hardware Abstraction Layer — STM32F4 OTG FS, DEVICE (peripheral) mode.
+ * Hardware Abstraction Layer — STM32F4 OTG FS, device mode.
  *
- * Register layout and bit positions come straight from the (trimmed) CMSIS
- * header stm32f407xx.h, so there are NO hand-computed shifts here — every
- * field is spelled with the USB_OTG_*_Pos / _Msk macros. The driver (drv/usb.c)
- * owns the CDC protocol; this HAL owns only the silicon: core reset, PHY/FIFO
- * setup, endpoint priming, FIFO word push/pop, and interrupt-status access.
+ * This layer WRAPS ST's verified OTG FS silicon + standard-request engine
+ * (the STM32_USB_OTG_Driver + USB_Device_Library copied into st_usb/). The
+ * driver (drv/usb.c) owns the CDC protocol and the OOP device interface; this
+ * HAL only holds the ST core handle and exposes a thin, project-friendly API
+ * (create/clock/connect/irq + register-level readbacks for diagnostics).
  *
- * Endpoint usage for the CDC function (see drv/usb.c):
+ * Endpoint usage for the CDC function:
  *   EP0  IN+OUT  control (enumerate)
  *   EP1  IN+OUT  CDC data bulk (the VCP byte stream)
  *   EP2  IN      CDC ACM notification (interrupt)
  */
 
-typedef enum {
-    USB_EP_TYPE_CTRL = 0,
-    USB_EP_TYPE_ISO  = 1,
-    USB_EP_TYPE_BULK = 2,
-    USB_EP_TYPE_INT  = 3
-} usb_ep_type_t;
-
-typedef struct usb_hal_handle usb_hal_handle_t;
+typedef struct usb_hal_handle {
+    USB_OTG_CORE_HANDLE *pdev;
+} usb_hal_handle_t;
 
 usb_hal_handle_t *usb_hal_create(void *peripheral);
 void usb_hal_destroy(usb_hal_handle_t *h);
+USB_OTG_CORE_HANDLE *usb_hal_pdev(usb_hal_handle_t *h);
+
 void usb_hal_enable_clock(usb_hal_handle_t *h);
-void usb_hal_delay_ms(uint32_t ms);
-
-/* Full device-mode core bring-up: force device mode, embedded FS PHY, soft
- * reset, FIFO sizing, interrupt masks, connect pull-up. Returns 0. */
-int  usb_hal_core_init(usb_hal_handle_t *h, int vbus_sense);
-
-/* Activate one endpoint (direction, max packet size, type). */
-int  usb_hal_ep_config(usb_hal_handle_t *h, uint8_t ep, int dir_in,
-                       uint16_t mps, usb_ep_type_t type);
-
-/* Prime an IN transfer: load `len` bytes into the TX FIFO and enable the EP. */
-int  usb_hal_ep_tx(usb_hal_handle_t *h, uint8_t ep, const void *buf, uint16_t len);
-
-/* Prime an OUT receive of up to `len` bytes. */
-int  usb_hal_ep_rx(usb_hal_handle_t *h, uint8_t ep, uint16_t len);
-
-/* Read `len` bytes already popped from the RxFIFO (call after RXFLVL). */
-void usb_hal_fifo_read(usb_hal_handle_t *h, void *buf, uint16_t len);
-
-/* EP0 status-stage helpers. */
-void usb_hal_ep0_tx_zlp(usb_hal_handle_t *h);
-void usb_hal_ep0_rx_zlp(usb_hal_handle_t *h);
-
-/* Interrupt status access (GINTSTS is write-1-to-clear for level/mask bits). */
-uint32_t usb_hal_gintsts(usb_hal_handle_t *h);
-uint32_t usb_hal_gintsts_raw(usb_hal_handle_t *h);   /* unmasked raw GINTSTS */
-uint32_t usb_hal_gccfg(usb_hal_handle_t *h);          /* GCCFG (PHY power/sense) */
-void     usb_hal_gint_clear(usb_hal_handle_t *h, uint32_t mask);
-uint32_t usb_hal_daint(usb_hal_handle_t *h);
-
-/* Pop and return one GRXSTSP word (RxFIFO status). */
-uint32_t usb_hal_rxstsp(usb_hal_handle_t *h);
-
-uint32_t usb_hal_doepint(usb_hal_handle_t *h, uint8_t ep);
-uint32_t usb_hal_diepint(usb_hal_handle_t *h, uint8_t ep);
-void     usb_hal_doepint_clear(usb_hal_handle_t *h, uint8_t ep, uint32_t mask);
-void     usb_hal_diepint_clear(usb_hal_handle_t *h, uint8_t ep, uint32_t mask);
-
 void usb_hal_connect(usb_hal_handle_t *h);
 void usb_hal_disconnect(usb_hal_handle_t *h);
-void usb_hal_set_address(usb_hal_handle_t *h, uint8_t addr);
-uint32_t usb_hal_dsts(usb_hal_handle_t *h);
-
 irq_id_t usb_hal_irq_id(usb_hal_handle_t *h);
 
-/* GINTSTS bit positions reused from the CMSIS header. */
-#define USB_HAL_GINT_RXFLVL   (1UL << 4)    /* receive FIFO non-empty (level)   */
-#define USB_HAL_GINT_SOF      (1UL << 3)
-#define USB_HAL_GINT_USBSUSP  (1UL << 11)
-#define USB_HAL_GINT_USBRST   (1UL << 12)   /* USB reset                        */
-#define USB_HAL_GINT_ENUMDNE  (1UL << 13)   /* enumeration done                 */
-#define USB_HAL_GINT_WKUP     (1UL << 15)
-#define USB_HAL_GINT_IEPINT   (1UL << 18)   /* IN endpoint interrupt            */
-#define USB_HAL_GINT_OEPINT   (1UL << 19)   /* OUT endpoint interrupt           */
+/* ---- diagnostic register readbacks (for USBSTAT) ---------------------- */
+uint32_t usb_hal_gintsts_raw(usb_hal_handle_t *h);
+uint32_t usb_hal_gccfg(usb_hal_handle_t *h);
+uint32_t usb_hal_dcfg(usb_hal_handle_t *h);
+uint32_t usb_hal_dsts(usb_hal_handle_t *h);
+uint32_t usb_hal_dctl(usb_hal_handle_t *h);
+uint32_t usb_hal_gusbcfg(usb_hal_handle_t *h);
+uint32_t usb_hal_diepctl(usb_hal_handle_t *h, uint8_t ep);
+uint32_t usb_hal_doepctl(usb_hal_handle_t *h, uint8_t ep);
 
 #endif /* USB_HAL_H */

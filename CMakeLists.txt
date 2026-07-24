@@ -81,6 +81,15 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/i2s_hal.c
     src/hal/stm32/can_hal.c
     src/hal/stm32/usb_hal.c
+    # ST USB OTG FS device library (silicon + control engine + CDC class) wrapped in our HAL
+    src/hal/stm32/st_usb/usb_core.c
+    src/hal/stm32/st_usb/usb_dcd.c
+    src/hal/stm32/st_usb/usb_dcd_int.c
+    src/hal/stm32/st_usb/usbd_core.c
+    src/hal/stm32/st_usb/usbd_req.c
+    src/hal/stm32/st_usb/usbd_ioreq.c
+    src/hal/stm32/st_usb/usb_bsp.c
+    src/hal/stm32/st_usb/usbd_cdc_core.c
     src/selftest.c
 )
 
@@ -95,6 +104,7 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/board
     src/hal
     src/hal/stm32
+    src/hal/stm32/st_usb
     src/irq
 )
 

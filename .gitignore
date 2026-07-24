@@ -4,3 +4,7 @@ build/
 *.bin
 *.hex
 *.elf
+# OpenOCD flash/debug output logs (regenerated on every flash)
+ocd.log
+ocd_flash.log
+*.cfg
