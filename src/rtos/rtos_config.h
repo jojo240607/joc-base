@@ -31,6 +31,9 @@
 #ifndef RTOS_PRIO_BLINK
   #define RTOS_PRIO_BLINK 8    /* 演示用高优先级任务 */
 #endif
+#ifndef RTOS_PRIO_BIST
+  #define RTOS_PRIO_BIST 24    /* 板级自测：低优先级后台任务(不阻塞控制台) */
+#endif
 
 /* 是否启用 MPU（固定区域 + 栈哨兵 + MemManage 恢复；任务保持特权故对现行任务透明）。
  * 默认开启：P2 阶段已验证 MPU 自测（越权捕获/恢复）与 BIST 共存无回归。 */

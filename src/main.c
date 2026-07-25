@@ -50,10 +50,13 @@ static void io_demo_cb(io_xfer_t *x)
 static uint8_t g_main_stack[8192] __attribute__((aligned(8)));
 static uint8_t g_blink_stack[1024] __attribute__((aligned(8)));
 static uint8_t g_idle_stack[512]  __attribute__((aligned(8)));
+static uint8_t g_bist_stack[3072] __attribute__((aligned(8)));  /* BIST 后台任务栈 */
 
 static volatile uint32_t g_heartbeat = 0;       /* blink 任务心跳计数 */
 static volatile int      g_rtos_demo_ready = 0; /* BIST 完成后才允许 blink 动 LED */
 static device *g_led = (device *)0;
+static device *g_console = NULL;                /* 当前命令控制台(UART 或 USB CDC) */
+static selftest *g_st = NULL;                   /* 共享自测句柄(BIST 命令 + bist 任务) */
 
 /* 高优先级演示任务：BIST 完成前只在等标志（不碰 LED，避免干扰 LED 自测），
  * 之后每 500ms 翻转 LED 并递增心跳计数，证明高优先级任务能抢占 main。 */
@@ -73,6 +76,31 @@ static void idle_task(void *arg)
 {
     (void)arg;
     for (;;) rtos_yield();
+}
+
+/* BIST 后台任务：在独立的【低优先级】任务里跑板级自测，避免其(已知会卡死的
+ * selftest_vtimer 等)阻塞 main 任务的 USB CDC / UART 控制台。任务挂起时主动让出
+ * CPU，不浪费；控制台始终在更高优先级上保持响应。BIST 修复后此任务自然跑完。
+ * 注意：BIST 子测试除 vusb 外不重复 open 设备，故与已打开的控制台设备无冲突；
+ * vusb 已加保护，不会再 close 掉正在用的控制台 USB。 */
+static void bist_task(void *arg)
+{
+    (void)arg;
+    device *d_clk  = device_manager_get("clk");
+    device *d_uart = device_manager_get("uart0");
+    device *d_led  = device_manager_get("led");
+    device *d_adc  = device_manager_get("adc0");
+    device *d_temp = device_manager_get("temp0");
+
+    g_st = selftest_create(d_clk, d_uart, d_led, d_adc, d_temp);
+    selftest_run(g_st);
+
+    /* pinmux conflict-detection self-test (exercises the new driver) */
+    device *d_pinmux = device_manager_get("pinmux");
+    int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
+    log_printf(app_log(), LOG_INFO, "main", "[BIST] pinmux: %s\n", pmok ? "PASS" : "FAIL");
+
+    for (;;) rtos_yield();   /* BIST 完成(或卡死在上面)；在此安静让出 */
 }
 
 /* 原裸机 main() 的全部逻辑，现作为 "main" 任务运行。 */
@@ -108,17 +136,9 @@ static void app_main_task(void *arg)
     log_printf(app_log(), LOG_INFO, "main", "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
                __DATE__, __TIME__);
 
-    /* on-board self-test (BIST) at boot. */
-    selftest *st = selftest_create(d_clk, d_uart, d_led, d_adc, d_temp);
-    selftest_run(st);
-
-    /* pinmux conflict-detection self-test (exercises the new driver) */
-    device *d_pinmux = device_manager_get("pinmux");
-    int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
-    log_printf(app_log(), LOG_INFO, "main", "[BIST] pinmux: %s\n", pmok ? "PASS" : "FAIL");
-
-    /* Bring up the CDC device and LEAVE it connected so a real PC host can
-     * enumerate it automatically at boot. */
+    /* Bring up the CDC device EARLY and leave it connected so a real PC host can
+     * enumerate it at boot — INDEPENDENT of the (deferred) BIST hang. The USB
+     * console then works even while BIST runs/hangs in its own background task. */
     device *d_usb = device_manager_get("usb0");
     if (!d_usb) {
         log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: NOT REGISTERED\n");
@@ -128,37 +148,41 @@ static void app_main_task(void *arg)
         log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\n");
     }
 
-    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSALL\n");
+    /* Spawn BIST in a low-priority background task so it can NEVER block the
+     * console. (BIST currently hangs in selftest_vtimer — deferred fix.) */
+    rtos_task_create("bist", bist_task, (void *)0, RTOS_PRIO_BIST, g_bist_stack, sizeof(g_bist_stack));
 
-    /* blink 任务此后可安全独占 LED（BIST 已结束） */
+    /* blink 任务此后可安全独占 LED（BIST 在后台跑，不阻塞） */
     g_led = d_led;
+    g_console = d_uart;        /* 默认控制台为 UART；USB CDC 收到命令时动态切换 */
     g_rtos_demo_ready = 1;
 
-    /* command loop (PC companion test exercises this) */
+    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSALL\n");
+
+    /* command loop (PC companion test exercises this). Console input is accepted
+     * from BOTH the debug UART and the USB CDC-ACM port; the command response is
+     * written back to whichever port issued the command (g_console). */
     char line[64];
     uint32_t idx = 0;
     while (1)
     {
-        /* --- USB CDC loopback echo --- */
-        if (d_usb) {
-            static uint8_t ub[64];
-            size_t tx_free = sizeof(ub);
-            d_usb->vtable->ioctl(d_usb, USB_IOCTL_TX_FREE, &tx_free);
-            size_t want = tx_free < sizeof(ub) ? tx_free : sizeof(ub);
-            int n = 0;
-            if (want) n = d_usb->vtable->read(d_usb, ub, want);
-            if (n > 0)
-                d_usb->vtable->write(d_usb, ub, (size_t)n);
-            d_usb->vtable->ioctl(d_usb, USB_IOCTL_TX_PUMP, NULL);
-            d_usb->vtable->ioctl(d_usb, USB_IOCTL_RX_REARM, NULL);
-        }
-
         char c = 0;
-        if (d_uart->vtable->read(d_uart, &c, 1) != 1) {
-            rtos_msleep(1);   /* 无输入：让出 1ms，使其它任务得以运行 */
+        int from_usb = 0;
+        if (d_uart->vtable->read(d_uart, &c, 1) == 1) {
+            g_console = d_uart;
+        } else if (d_usb && d_usb->vtable->read(d_usb, &c, 1) == 1) {
+            g_console = d_usb;        /* 命令来自 USB CDC -> 响应也走 USB */
+            from_usb = 1;
+        } else {
+            /* 无输入：保持 bulk-OUT 端点 armed（背压恢复），并让出 1ms */
+            if (d_usb) d_usb->vtable->ioctl(d_usb, USB_IOCTL_RX_REARM, NULL);
+            rtos_msleep(1);
             continue;
         }
-        uart_console_putc(c);
+
+        /* 本地回显到来源端口 */
+        if (from_usb) d_usb->vtable->write(d_usb, &c, 1);
+        else uart_console_putc(c);
 
         if (c == '\r' || c == '\n')
         {
@@ -169,19 +193,19 @@ static void app_main_task(void *arg)
 
                 if (strcmp(line, "PING") == 0)
                 {
-                    d_uart->vtable->write(d_uart, "PONG\r\n", 6);
+                    g_console->vtable->write(g_console, "PONG\r\n", 6);
                 }
                 else if (strncmp(line, "ECHO ", 5) == 0)
                 {
                     char out[64];
                     int n = snprintf(out, sizeof(out), "%s\r\n", line + 5);
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "BIST") == 0)
                 {
                     log_printf(app_log(), LOG_INFO, "main", "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
                                __DATE__, __TIME__);
-                    selftest_run(st);
+                    if (g_st) selftest_run(g_st);
                 }
                 else if (strncmp(line, "ADC", 3) == 0)
                 {
@@ -203,7 +227,7 @@ static void app_main_task(void *arg)
                                      "ADC CH%lu raw=%lu mV=%lu\r\n",
                                      (unsigned long)ch,
                                      (unsigned long)raw, (unsigned long)mv);
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "TEMP") == 0)
                 {
@@ -229,7 +253,7 @@ static void app_main_task(void *arg)
                                      (unsigned)cal1,
                                      (unsigned)cal2,
                                      (long)ip, (long)fp);
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "I2C_IRQ") == 0)
                 {
@@ -239,10 +263,10 @@ static void app_main_task(void *arg)
                     else {
                         stream_xfer_mode_t irq_m = STREAM_MODE_IRQ;
                         i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &irq_m);
-                        uart_console_putc('a'); uart_console_putc('\n');
+                        g_console->vtable->write(g_console, "a\n", 2);
                         i2c_xfer_t ip = { .addr = 0x50, .buf = NULL, .len = 0, .result = 0 };
                         int r = i2cd->vtable->ioctl(i2cd, I2C_IOCTL_MASTER_WRITE, &ip);
-                        uart_console_putc('b'); uart_console_putc('\n');
+                        g_console->vtable->write(g_console, "b\n", 2);
                         log_printf(app_log(), LOG_INFO, "main", "I2C_IRQ: result=%d probe=%s\n", r, ip.result == -1 ? "NACK" : "ERR");
                         irq_m = STREAM_MODE_POLL;
                         i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &irq_m);
@@ -254,7 +278,7 @@ static void app_main_task(void *arg)
                     char out[32];
                     int n = snprintf(out, sizeof(out), "TICKS %lu\r\n",
                                      (unsigned long)board_ticks());
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "RTOS") == 0)
                 {
@@ -264,7 +288,7 @@ static void app_main_task(void *arg)
                                      (unsigned long)rtos_tick_count(),
                                      (unsigned long)g_heartbeat,
                                      rtos_task_count());
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                     for (int i = 0; i < rtos_task_count(); i++) {
                         const char *ststr = "?";
                         switch (rtos_task_state(i)) {
@@ -277,7 +301,7 @@ static void app_main_task(void *arg)
                         n = snprintf(out, sizeof(out), "  %-6s prio=%2u %s\r\n",
                                      rtos_task_name(i) ? rtos_task_name(i) : "?",
                                      (unsigned)rtos_task_prio(i), ststr);
-                        d_uart->vtable->write(d_uart, out, (size_t)n);
+                        g_console->vtable->write(g_console, out, (size_t)n);
                     }
                 }
                 else if (strcmp(line, "RTOSIPC") == 0)
@@ -285,58 +309,58 @@ static void app_main_task(void *arg)
                     int ipcok = rtos_ipc_selftest();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSIPC %s\r\n", ipcok ? "PASS" : "FAIL");
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "RTOSMPU") == 0)
                 {
                     int mpuok = rtos_mpu_selftest();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSMPU %s\r\n", mpuok ? "PASS" : "FAIL");
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "RTOSSTRESS") == 0)
                 {
                     int sok = rtos_stress_selftest();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSSTRESS %s\r\n", sok ? "PASS" : "FAIL");
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "RTOSALL") == 0)
                 {
                     int allok = rtos_selftest_run_all();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSALL %s\r\n", allok ? "PASS" : "FAIL");
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "RTOSFPU") == 0)
                 {
                     int fok = rtos_fpu_selftest();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSFPU %s\r\n", fok ? "PASS" : "FAIL");
-                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "USBOPEN") == 0)
                 {
                     device *usbd = device_manager_get("usb0");
-                    if (!usbd) { d_uart->vtable->write(d_uart, "USBOPEN: no dev\r\n", 18); }
+                    if (!usbd) { g_console->vtable->write(g_console, "USBOPEN: no dev\r\n", 18); }
                     else if (usbd->vtable->open(usbd)) {
-                        d_uart->vtable->write(d_uart, "USBOPEN: open FAIL\r\n", 20);
+                        g_console->vtable->write(g_console, "USBOPEN: open FAIL\r\n", 20);
                     } else {
-                        d_uart->vtable->write(d_uart,
+                        g_console->vtable->write(g_console,
                             "USBOPEN: usb0 connected (plug CN5 into PC)\r\n", 43);
                     }
                 }
                 else if (strcmp(line, "USBCLOSE") == 0)
                 {
                     device *usbd = device_manager_get("usb0");
-                    if (!usbd) { d_uart->vtable->write(d_uart, "USBCLOSE: no dev\r\n", 19); }
+                    if (!usbd) { g_console->vtable->write(g_console, "USBCLOSE: no dev\r\n", 19); }
                     else { usbd->vtable->close(usbd);
-                           d_uart->vtable->write(d_uart, "USBCLOSE: usb0 off\r\n", 20); }
+                           g_console->vtable->write(g_console, "USBCLOSE: usb0 off\r\n", 20); }
                 }
                 else if (strcmp(line, "USBSTAT") == 0)
                 {
                     device *usbd = device_manager_get("usb0");
-                    if (!usbd) { d_uart->vtable->write(d_uart, "USBSTAT: no dev\r\n", 18); }
+                    if (!usbd) { g_console->vtable->write(g_console, "USBSTAT: no dev\r\n", 18); }
                     else { usbd->vtable->ioctl(usbd, USB_IOCTL_DBG_DUMP, NULL); }
                 }
                 else if (strncmp(line, "USBDBG", 6) == 0)
@@ -344,10 +368,10 @@ static void app_main_task(void *arg)
                     int on = 0;
                     if (line[6] == ' ') on = atoi(line + 7);
                     device *usbd = device_manager_get("usb0");
-                    if (!usbd) { d_uart->vtable->write(d_uart, "USBDBG: no dev\r\n", 17); }
+                    if (!usbd) { g_console->vtable->write(g_console, "USBDBG: no dev\r\n", 17); }
                     else {
                         usbd->vtable->ioctl(usbd, USB_IOCTL_DBG_SET, &on);
-                        d_uart->vtable->write(d_uart,
+                        g_console->vtable->write(g_console,
                             on ? "USBDBG: trace ON\r\n" : "USBDBG: trace OFF\r\n",
                             on ? 17 : 18);
                     }
@@ -356,7 +380,7 @@ static void app_main_task(void *arg)
                 {
                     stream_device *s = device_as_stream(d_uart);
                     if (!s) {
-                        d_uart->vtable->write(d_uart, "ERR no stream\r\n", 14);
+                        g_console->vtable->write(g_console, "ERR no stream\r\n", 14);
                     } else {
                         static int g_io_cb_fired;
                         g_io_cb_fired = 0;
@@ -377,17 +401,17 @@ static void app_main_task(void *arg)
                         int n = snprintf(out, sizeof(out),
                                          "[IOXFER] sync r=%d done=%d | async r=%d (started)\r\n",
                                          rs, (int)sx.done, ra);
-                        d_uart->vtable->write(d_uart, out, (size_t)n);
+                        g_console->vtable->write(g_console, out, (size_t)n);
 
                         n = snprintf(out, sizeof(out),
                                      "[IOXFER] async done=%d cb=%d\r\n",
                                      (int)ax.done, g_io_cb_fired);
-                        d_uart->vtable->write(d_uart, out, (size_t)n);
+                        g_console->vtable->write(g_console, out, (size_t)n);
                     }
                 }
                 else
                 {
-                    d_uart->vtable->write(d_uart, "ERR unknown\r\n", 13);
+                    g_console->vtable->write(g_console, "ERR unknown\r\n", 13);
                 }
             }
         }

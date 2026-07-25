@@ -1339,9 +1339,18 @@ static int selftest_vusb(selftest *self)
     (void)self;
     device *d = device_manager_get("usb0");
     if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       usb0: MISSING\n"); return 0; }
-    if (d->vtable->open(d) != 0) {
-        log_printf(app_log(), LOG_DEBUG, "selftest", "       usb0: OPEN FAILED (pin conflict?)\n");
-        return 0;
+
+    /* If the device is ALREADY open (e.g. the console brought it up at boot),
+     * do NOT open/close it here — doing so would tear down the live CDC console
+     * (the close disconnects DP). Just run the host-free control self-test on
+     * the already-connected endpoint. */
+    uint32_t was_connected = 0;
+    d->vtable->ioctl(d, USB_IOCTL_CONNECTED, &was_connected);
+    if (!was_connected) {
+        if (d->vtable->open(d) != 0) {
+            log_printf(app_log(), LOG_DEBUG, "selftest", "       usb0: OPEN FAILED (pin conflict?)\n");
+            return 0;
+        }
     }
 
     int ok = 1;
@@ -1365,7 +1374,7 @@ static int selftest_vusb(selftest *self)
     if (!ok_ctrl) ok = 0;
     log_printf(app_log(), LOG_DEBUG, "selftest", "       ctrl self-test: %s\n", ok_ctrl ? "PASS" : "FAIL");
 
-    d->vtable->close(d);
+    if (!was_connected) d->vtable->close(d);
     return ok;
 }
 
