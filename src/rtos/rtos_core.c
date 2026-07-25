@@ -35,7 +35,7 @@ static task_t g_task_pool[RTOS_MAX_TASKS];
 static int g_task_count = 0;
 
 /* ---- 就绪链表操作（调用方持锁） ---- */
-static void ready_add(task_t *t) {
+void ready_add(task_t *t) {
     int p = t->prio;
     t->sched_prev = g_ready_tail[p];
     t->sched_next = (task_t *)0;
@@ -76,11 +76,19 @@ static void sleep_remove(task_t *t) {
 /* ---- 等待队列操作（调用方持锁） ---- */
 void rtos_waitq_add(void **head, task_t *t) {
     task_t *h = (task_t *)(*head);
+    t->wait_prev = (task_t *)0;
     if (!h) { *head = (void *)t; t->wait_next = (task_t *)0; return; }
     task_t *p = h;
     while (p->wait_next) p = p->wait_next;
     p->wait_next = t;
+    t->wait_prev = p;
     t->wait_next = (task_t *)0;
+}
+void rtos_waitq_remove(void **head, task_t *t) {
+    if (t->wait_prev) t->wait_prev->wait_next = t->wait_next;
+    else              *head = (void *)t->wait_next;
+    if (t->wait_next) t->wait_next->wait_prev = t->wait_prev;
+    t->wait_next = t->wait_prev = (task_t *)0;
 }
 task_t *rtos_waitq_pop_highest(void **head) {
     task_t *best = (task_t *)0, *bestprev = (task_t *)0;
@@ -149,6 +157,7 @@ void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
     memset(t, 0, sizeof(*t));
     t->name = name;
     t->prio = prio;
+    t->base_prio = prio;
     t->entry = entry;
     t->arg = arg;
     t->stack_base = (uint8_t *)stack;
@@ -250,6 +259,19 @@ void rtos_post(void **q) {
         ready_add(t);
     }
     rtos_schedule_request();
+}
+
+/* 修改任务的有效优先级，并在其位于就绪队列时重排（互斥量提升/恢复用）。
+ * 调用方须持调度锁。RUNNING/BLOCKED 任务不在就绪队列中，直接改 prio 即可。 */
+void rtos_set_eff_prio(task_t *t, uint8_t new_prio) {
+    if (!t || t->prio == new_prio) return;
+    if (t->state == TASK_READY) {
+        ready_remove(t);
+        t->prio = new_prio;
+        ready_add(t);
+    } else {
+        t->prio = new_prio;
+    }
 }
 
 /* ---- 查询 API ---- */
