@@ -130,11 +130,46 @@ int main(void)
 
     printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1]\r\n");
 
+    /* NOTE: d_usb (usb0) is already declared/opened just above and stays in
+     * scope for the loop below, where we use it for the CDC loopback echo. */
+
     /* 5. command loop (PC companion test exercises this) */
     char line[64];
     uint32_t idx = 0;
     while (1)
     {
+        /* --- USB CDC loopback echo -----------------------------------------
+         * Poll the CDC bulk-OUT ring buffer and echo every received byte back
+         * on the bulk-IN endpoint. This proves BOTH directions end-to-end:
+         *  - RX: we received exactly what the PC sent (it lands in the rb)
+         *  - TX: the PC receives exactly what we wrote on EP 0x81
+         * usb_stream_write() now stages into a TX ring and returns immediately
+         * (the IN endpoint is armed by usb_tx_pump from the main loop and the
+         * IN-complete ISR), so this never blocks the loop. Runs before the UART
+         * read so it is serviced even when UART is idle.
+         * (CDC baud is virtual; the real ceiling is USB FS bulk bandwidth.) */
+        if (d_usb) {
+            static uint8_t ub[64];
+            /* Cap the read to what the TX staging ring can accept right now, so
+             * we never pull more from RX than we can echo (no silent drops). */
+            size_t tx_free = sizeof(ub);
+            d_usb->vtable->ioctl(d_usb, USB_IOCTL_TX_FREE, &tx_free);
+            size_t want = tx_free < sizeof(ub) ? tx_free : sizeof(ub);
+            int n = 0;
+            if (want) n = d_usb->vtable->read(d_usb, ub, want);
+            if (n > 0)
+                d_usb->vtable->write(d_usb, ub, (size_t)n);   /* echo -> PC */
+            /* Drain the TX staging ring into the bulk-IN endpoint. This is the
+             * ring's ONLY consumer (the IN-complete ISR only clears the busy
+             * flag), so it is safe to call here every iteration — including
+             * when no new RX arrived but data is still staged. */
+            d_usb->vtable->ioctl(d_usb, USB_IOCTL_TX_PUMP, NULL);
+            /* Re-arm the bulk-OUT endpoint if it was NAK'd because the RX ring
+             * had no room (USB back-pressure). Called after the above drained
+             * RX, so room is available again. */
+            d_usb->vtable->ioctl(d_usb, USB_IOCTL_RX_REARM, NULL);
+        }
+
         char c = 0;
         if (d_uart->vtable->read(d_uart, &c, 1) != 1)
             continue;                    /* no char available (HW read blocks) */

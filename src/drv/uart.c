@@ -313,7 +313,12 @@ static int uart_stream_read(stream_device *self, void *buf, size_t len)
         *(char *)buf = uart_hal_read_dr(u->hal);
         return 1;
     }
-    *(char *)buf = uart_rx_getc(u);      /* IRQ: ISR-fed ring — spin until byte */
+    /* IRQ mode: the ISR feeds a ring buffer. Return NON-blocking so a caller can
+     * poll without stalling its loop (the main command loop also services other
+     * devices such as USB). If a byte is present, pop it immediately. */
+    ringbuffer *rb = stream_device_get_ringbuffer(self);
+    if (rb && rb->fun->is_empty(rb)) return 0;
+    *(char *)buf = uart_rx_getc(u);      /* IRQ: ISR-fed ring — byte is ready */
     return 1;
 }
 

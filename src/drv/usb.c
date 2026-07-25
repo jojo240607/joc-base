@@ -4,6 +4,7 @@
 #include "pinmux_hal.h"
 #include "hal/stm32/usb_hal.h"
 #include "irq_manager.h"
+#include "common/ringbuffer.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -47,9 +48,15 @@ struct _usb {
     uint8_t  line_coding[7];
     uint8_t  line_state;           /* DTR/RTS from SET_CONTROL_LINE_STATE */
 
-    int      bulk_tx_pending;
+    volatile int bulk_tx_pending;   /* 1 => bulk-IN endpoint busy (XFRC pending) */
 
+    /* TX staging ring: usb_stream_write() stages bytes here (non-blocking) and
+     * usb_tx_pump() arms the bulk-IN endpoint from it. Decouples the producer
+     * (main loop) from IN pacing so the loop never stalls waiting for the host
+     * to read, and the IN endpoint is only ever armed while idle. */
+    ringbuffer *tx_rb;
     uint8_t  rx_storage[USB_RX_BUF_SIZE];
+    uint8_t  tx_storage[USB_TX_BUF_SIZE];
 
     /* host-free self-test mode */
     int      test_mode;
@@ -91,6 +98,9 @@ static int  usb_stream_write_frame(stream_device *self, const void *buf, size_t 
 
 static void usb_isr(void *ctx);
 
+/* forward decl: arms bulk-IN from the TX staging ring (defined in stream path) */
+static void usb_tx_pump(usb *u);
+
 static const struct stream_deviceVtable usb_stream_vtable = {
     .read        = usb_stream_read,
     .write       = usb_stream_write,
@@ -129,11 +139,25 @@ void usbd_cdc_rx_push(const uint8_t *data, uint16_t len)
     ringbuffer *rb = g_usb ? stream_device_get_ringbuffer((stream_device *)g_usb) : 0;
     for (uint16_t i = 0; i < len && rb; i++)
         rb->fun->put(rb, data[i]);
+    if (g_usb) g_usb->dbg_out++;   /* count bulk-OUT completions */
+}
+
+size_t usbd_cdc_rx_room(void)
+{
+    ringbuffer *rb = g_usb ? stream_device_get_ringbuffer((stream_device *)g_usb) : 0;
+    return rb ? rb->fun->free_space(rb) : 0;
 }
 
 void usbd_cdc_tx_done(void)
 {
-    if (g_usb) g_usb->bulk_tx_pending = 0;
+    /* IN transfer finished (XFRC). ONLY clear the flag here — do NOT touch the
+     * TX staging ring. The ring has a SINGLE consumer (the main loop, which
+     * calls usb_tx_pump from usb_stream_write / the per-iteration TX_PUMP
+     * ioctl). If the ISR also consumed the ring, we'd have two consumers on a
+     * single-consumer ringbuffer and corrupt its tail index under load (the
+     * intermittent byte errors seen on large transfers). The main loop pumps
+     * the next chunk on its very next iteration (sub-microsecond latency). */
+    if (g_usb) { g_usb->bulk_tx_pending = 0; g_usb->dbg_in++; }
 }
 
 void usb_cdc_apply_line_coding(const uint8_t *buf, uint16_t len)
@@ -241,12 +265,18 @@ device *usb_create(const void *config)
     p->line_coding[5] = 0x00;   /* no parity */
     p->line_coding[6] = 0x08;   /* 8 data bits */
     p->dbg_print = 0;
+
+    /* TX staging ring (device->host). Backed by p->tx_storage; overwrite OFF so
+     * a stalled host exerts back-pressure instead of silently dropping. */
+    ringbuffer_config_t txcfg = { .buf = p->tx_storage, .size = USB_TX_BUF_SIZE, .overwrite = 0 };
+    p->tx_rb = ringbuffer_create(&txcfg);
     return (device *)p;
 }
 
 void usb_destroy(usb *self)
 {
     if (!self) return;
+    if (self->tx_rb) { ringbuffer_destroy(self->tx_rb); self->tx_rb = NULL; }
     stream_device_free_ringbuffer((stream_device *)self);
     usb_hal_destroy(self->hal);
     free(self);
@@ -269,24 +299,43 @@ static void usb_isr(void *ctx)
 
 /* ---- stream data path ------------------------------------------------ */
 
+/* Arm at most ONE bulk-IN transfer at a time, draining the TX staging ring.
+ * The single choke-point that touches DCD_EP_Tx, so the endpoint is only ever
+ * armed while idle (bulk_tx_pending == 0). Re-arming an active IN endpoint was
+ * the root cause of a permanent bulk-IN stall under sustained streaming: the
+ * host occasionally is not ready within the old busy-wait window, the writer
+ * gave up while the endpoint was still active, and the next DCD_EP_Tx corrupted
+ * its state. This function is the TX ring's ONLY consumer and is called solely
+ * from the main loop (usb_stream_write and the per-iteration USB_IOCTL_TX_PUMP);
+ * the IN-complete ISR must NOT call it (it only clears bulk_tx_pending) so the
+ * single-consumer ringbuffer invariant holds. DCD_EP_Tx copies the bytes into
+ * the TX FIFO inline, so the stack chunk is safe and need not outlive the call. */
+static void usb_tx_pump(usb *u)
+{
+    if (!u || u->bulk_tx_pending)
+        return;                                   /* IN busy: wait for XFRC */
+    ringbuffer *rb = u->tx_rb;
+    if (!rb || rb->fun->is_empty(rb))
+        return;                                   /* nothing staged to send */
+    uint8_t chunk[64];
+    size_t n = rb->fun->read(rb, chunk, sizeof(chunk));
+    if (n == 0)
+        return;
+    u->bulk_tx_pending = 1;                       /* set BEFORE arming */
+    DCD_EP_Tx(u->hal->pdev, 0x81, chunk, (uint16_t)n);
+}
+
 static int usb_stream_write(stream_device *self, const void *buf, size_t len)
 {
     usb *u = (usb *)self;
-    const uint8_t *p = (const uint8_t *)buf;
-    size_t done = 0;
-    while (done < len) {
-        uint16_t n = (len - done) < 64 ? (uint16_t)(len - done) : 64;
-        u->bulk_tx_pending = 1;          /* set BEFORE arming the endpoint */
-        DCD_EP_Tx(u->hal->pdev, 0x81, (uint8_t *)(p + done), n);
-        /* Wait for the IN-transfer-complete ISR (cdc_DataIn -> usbd_cdc_tx_done)
-         * to clear bulk_tx_pending. Bounded so a disconnected host cannot hang
-         * the caller. */
-        volatile uint32_t to = 2000000UL;
-        while (u->bulk_tx_pending && to--) ;
-        if (u->bulk_tx_pending) break;   /* timed out (host not connected) */
-        done += n;
-    }
-    return (int)done;
+    ringbuffer *rb = u->tx_rb;
+    if (!rb) return -1;
+    /* Stage the bytes (non-blocking). Overwrite is OFF, so if the host is not
+     * draining fast enough this returns fewer than len and the caller applies
+     * back-pressure instead of us silently losing data. */
+    size_t stored = rb->fun->write(rb, buf, len);
+    usb_tx_pump(u);                               /* arm IN if it is idle */
+    return (int)stored;
 }
 
 static int usb_stream_read(stream_device *self, void *buf, size_t len)
@@ -477,6 +526,25 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
         return 0;
     }
     case USB_IOCTL_CONNECTED:   if (arg) *(uint32_t *)arg = (uint32_t)u->connected; return 0;
+    case USB_IOCTL_TX_FREE: {
+        /* Bytes the TX staging ring can still accept — used by the echo loop to
+         * cap its read so it never pulls more from RX than it can stage. */
+        size_t free = u->tx_rb ? u->tx_rb->fun->free_space(u->tx_rb) : 0;
+        if (arg) *(size_t *)arg = free;
+        return 0;
+    }
+    case USB_IOCTL_TX_PUMP:
+        /* Drain the TX staging ring into the bulk-IN endpoint. Safe to call from
+         * the main loop (the ring's only consumer); must NOT be called from the
+         * IN-complete ISR. */
+        usb_tx_pump(u);
+        return 0;
+    case USB_IOCTL_RX_REARM:
+        /* Re-arm the bulk-OUT endpoint if it was NAK'd for lack of RX-ring room.
+         * Called from the main loop after draining RX, restoring flow once space
+         * is available (USB back-pressure, no silent drops). */
+        usbd_cdc_out_reenarm();
+        return 0;
     case USB_IOCTL_SET_LINE_CODING:
         if (!arg) return -1;
         memcpy(u->line_coding, (const uint8_t *)arg, 7); return 0;
@@ -500,9 +568,38 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
         printf("[usb] GINTSTS=0x%08lX GCCFG=0x%08lX DCTL=0x%08lX DSTS=0x%08lX\r\n",
                (unsigned long)gint, (unsigned long)gccf,
                (unsigned long)dctl, (unsigned long)dsts);
+        /* Decode the MASKED (i.e. actually pending & firing) interrupt bits to
+         * localize an interrupt storm. Bit positions from stm32f4 ref manual. */
+        {
+            uint32_t m = gint & u->hal->pdev->regs.GREGS->GINTMSK;
+            printf("[usb] GINT(masked)=0x%08lX:", (unsigned long)m);
+            if (m & (1UL<<4))  printf(" RXFLVL");
+            if (m & (1UL<<5))  printf(" NPTXFE");
+            if (m & (1UL<<11)) printf(" USBSUSP");
+            if (m & (1UL<<12)) printf(" USBRST");
+            if (m & (1UL<<13)) printf(" ENUMDNE");
+            if (m & (1UL<<15)) printf(" EOPF");
+            if (m & (1UL<<18)) printf(" IEPINT");
+            if (m & (1UL<<19)) printf(" OEPINT");
+            if (m & (1UL<<3))  printf(" SOF");
+            if (m & (1UL<<26)) printf(" CIDSCHG");
+            if (m & (1UL<<30)) printf(" SRQINT");
+            printf("\r\n");
+            printf("[usb] DIEPEMPMSK=0x%08lX bulk_tx_pending=%d g_out_nak=%d\r\n",
+                   (unsigned long)u->hal->pdev->regs.DREGS->DIEPEMPMSK,
+                   (int)u->bulk_tx_pending, (int)usbd_cdc_out_nak());
+        }
         printf("[usb] addr=%u cfg=%u connected=%d line_state=0x%02X\r\n",
                (unsigned)(uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL),
                (unsigned)u->config, u->connected, (unsigned)u->line_state);
+
+        /* CDC line coding (baud is VIRTUAL for USB VCP; stored, not timed).
+         * Lets a host confirm the baud it set via SET_LINE_CODING was received. */
+        uint32_t baud = (uint32_t)(u->line_coding[0] | (u->line_coding[1] << 8) |
+                                   (u->line_coding[2] << 16) | (u->line_coding[3] << 24));
+        printf("[usb] line_coding: baud=%lu stop=%u parity=%u data=%u (8N1 default)\r\n",
+               (unsigned long)baud, (unsigned)u->line_coding[4],
+               (unsigned)u->line_coding[5], (unsigned)u->line_coding[6]);
 
         uint32_t gusb = usb_hal_gusbcfg(u->hal);
         printf("[usb] GUSBCFG=0x%08lX (FDMOD=%lu PHYSEL=%lu TRDT=%lu)\r\n",
@@ -518,6 +615,22 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
         printf("[usb] EP0 DIEPCTL=0x%08lX DOEPCTL=0x%08lX MPSIZ=%u/%u\r\n",
                (unsigned long)diep0, (unsigned long)doep0,
                (unsigned)(diep0 & 0x3UL), (unsigned)(doep0 & 0x3UL));
+
+        /* EP1 bulk IN/OUT state — to localize a streaming stall (OUT not armed
+         * vs IN stuck). xfer_count = bytes moved so far on that endpoint. */
+        {
+            USB_OTG_CORE_HANDLE *pdev = u->hal->pdev;
+            uint32_t diep1 = usb_hal_diepctl(u->hal, 1);
+            uint32_t doep1 = usb_hal_doepctl(u->hal, 1);
+            printf("[usb] EP1 IN  DIEPCTL=0x%08lX xfer_count=%u xfer_len=%u\r\n",
+                   (unsigned long)diep1,
+                   (unsigned)pdev->dev.in_ep[1].xfer_count,
+                   (unsigned)pdev->dev.in_ep[1].xfer_len);
+            printf("[usb] EP1 OUT DOEPCTL=0x%08lX xfer_count=%u xfer_len=%u\r\n",
+                   (unsigned long)doep1,
+                   (unsigned)pdev->dev.out_ep[1].xfer_count,
+                   (unsigned)pdev->dev.out_ep[1].xfer_len);
+        }
 
         /* DECISIVE TEST: can DCFG.DAD be written at all, and does it stick?
          * Write a few distinct addresses, read each back, then restore. */

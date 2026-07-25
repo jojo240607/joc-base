@@ -13,6 +13,7 @@
 #define __USB_CDC_CORE_H_
 
 #include "usbd_ioreq.h"
+#include <stddef.h>   /* size_t for usbd_cdc_rx_room / out_nak */
 
 struct _usb;   /* forward declaration of the OOP driver object */
 
@@ -24,6 +25,13 @@ void     usbd_cdc_on_line_state(uint8_t s);
 void     usbd_cdc_rx_push(const uint8_t *data, uint16_t len);
 void     usbd_cdc_tx_done(void);
 void     usb_cdc_apply_line_coding(const uint8_t *buf, uint16_t len);
+
+/* Bulk-OUT flow control (back-pressure). usbd_cdc_rx_room() reports free space
+ * in the driver RX ring; usbd_cdc_out_reenarm() re-arms the OUT endpoint after
+ * it was NAK'd for lack of room (called by the main loop once it has drained). */
+size_t   usbd_cdc_rx_room(void);
+void     usbd_cdc_out_reenarm(void);
+int      usbd_cdc_out_nak(void);   /* 1 if bulk-OUT is NAK'd for back-pressure */
 
 /* CDC class request codes */
 #define SET_LINE_CODING         0x20

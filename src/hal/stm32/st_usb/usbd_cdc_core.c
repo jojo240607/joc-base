@@ -36,9 +36,18 @@ static uint8_t  cdc_cmd_buf[16];
 static uint32_t cdcCmd = 0xFF;
 static uint32_t cdcLen = 0;
 
+/* Back-pressure state for the bulk-OUT endpoint. When the driver RX ring has no
+ * room for another full packet we deliberately do NOT re-arm OUT: the endpoint
+ * stays NAK'd and the host retries later, instead of us silently dropping the
+ * bytes. g_out_nak is cleared by usbd_cdc_out_reenarm() once the consumer has
+ * drained the ring. g_cdc_pdev caches the core handle for that re-arm. */
+static USB_OTG_CORE_HANDLE *g_cdc_pdev = 0;
+static int g_out_nak = 0;
+
 static uint8_t cdc_Init(void *pdev, uint8_t cfgidx)
 {
     (void)cfgidx;
+    g_cdc_pdev = (USB_OTG_CORE_HANDLE *)pdev;
     DCD_EP_Open(pdev, 0x81, 64, USB_OTG_EP_BULK);
     DCD_EP_Open(pdev, 0x01, 64, USB_OTG_EP_BULK);
     DCD_EP_Open(pdev, 0x82, 10, USB_OTG_EP_INT);
@@ -119,11 +128,36 @@ static uint8_t cdc_DataOut(void *pdev, uint8_t epnum)
     if (epnum == 1)
     {
         uint16_t cnt = ((USB_OTG_CORE_HANDLE *)pdev)->dev.out_ep[1].xfer_count;
+        /* Room is guaranteed when we reach here: cdc_DataOut only runs for a
+         * packet we previously armed (and we only arm when the ring had room for
+         * a full packet). So the push never overflows the RX ring. */
         usbd_cdc_rx_push(cdc_rx_buf, cnt);
-        DCD_EP_PrepareRx(pdev, 0x01, cdc_rx_buf, 64);
+        /* Re-arm OUT only if there is room for another full packet. Otherwise
+         * leave the endpoint NAK'd (g_out_nak) so the host is back-pressured
+         * instead of us dropping bytes; usbd_cdc_out_reenarm() re-arms it once
+         * the consumer (main loop) has drained the ring. */
+        if (usbd_cdc_rx_room() >= 64)
+            DCD_EP_PrepareRx(pdev, 0x01, cdc_rx_buf, 64);
+        else
+            g_out_nak = 1;
     }
     return USBD_OK;
 }
+
+/* Re-arm the bulk-OUT endpoint after back-pressure. Called from the main loop
+ * once it has drained the RX ring; only acts if we NAK'd earlier AND room for a
+ * full packet is available again. Safe to call every iteration (cheap). */
+void usbd_cdc_out_reenarm(void)
+{
+    if (!g_out_nak || !g_cdc_pdev) return;
+    if (usbd_cdc_rx_room() >= 64) {
+        DCD_EP_PrepareRx(g_cdc_pdev, 0x01, cdc_rx_buf, 64);
+        g_out_nak = 0;
+    }
+}
+
+/* Expose the OUT back-pressure latch for diagnostics (USBSTAT dump). */
+int usbd_cdc_out_nak(void) { return g_out_nak; }
 
 static uint8_t cdc_SOF(void *pdev)
 {
