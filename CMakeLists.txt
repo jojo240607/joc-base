@@ -106,7 +106,8 @@ if(RTOS)
     src/rtos/rtos_context.S
     src/rtos/rtos_ipc.c
     src/rtos/rtos_selftest.c
-    src/rtos/rtos_mpu.c)
+    src/rtos/rtos_mpu.c
+    src/rtos/rtos_stress.c)
   target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/rtos
     src/rtos/include)

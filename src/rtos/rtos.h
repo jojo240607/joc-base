@@ -159,4 +159,7 @@ void rtos_kobj_foreach(void (*cb)(const char *name, rtos_kobj_type_t type, void 
 /* ---- IPC 运行时自测（从 RTOSIPC 命令调用） ---- */
 int rtos_ipc_selftest(void);
 
+/* ---- 多任务并发压力自测（从 RTOSSTRESS 命令调用） ---- */
+int rtos_stress_selftest(void);
+
 #endif /* JOC_RTOS_H */
