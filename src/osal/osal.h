@@ -21,6 +21,7 @@
 
 typedef struct osal_sem {
     volatile int count;   /* 0 = taken/empty, >0 = available permits */
+    void *wait;           /* 内核等待队列头（仅 rtos 版使用；裸机版为 NULL） */
 } osal_sem_t;
 
 /* initialize a semaphore with `val` permits (normally 0 = a completion flag) */

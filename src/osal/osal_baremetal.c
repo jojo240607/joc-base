@@ -3,7 +3,7 @@
 
 void osal_sem_init(osal_sem_t *s, int val)
 {
-    if (s) s->count = val;
+    if (s) { s->count = val; s->wait = (void *)0; }
 }
 
 void osal_sem_wait(osal_sem_t *s)

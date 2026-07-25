@@ -1,40 +1,15 @@
 /**
- * STM32F4 Discovery (STM32F407VGT6) minimal OOC example
- *  - Clock  : HSE(8 MHz) -> PLL -> 168 MHz            (clock class)
- *  - Serial : USART1 (PA9=TX, PA10=RX) @ 115200 8N1  (uart class)
- *             -> external USB-TTL -> PC COM8
- *  - LED    : green LD4 on PD12                       (gpio_pin class)
- *  - BIST   : on-board self-test                       (selftest class)
+ * STM32F4 Discovery (STM32F407VGT6) minimal OOC example — running on jOS RTOS.
  *
- * All peripherals are modelled as OOC objects that implement the SAME unified
- * `device` interface (iface/device.h). The upper layer therefore holds a
- * `device *` for EVERY driver and operates on them through one virtual dispatch
- * convention — exactly the C equivalent of Java's `dev.open()` on a polymorphic
- * reference:
+ * 启动流程：
+ *   Reset -> board_init() 建好所有 device -> board_tick_init() 起 1kHz systick
+ *        -> rtos_init() 初始化内核并在 systick 线注册节拍
+ *        -> 创建 main/blink/idle 三个任务 -> rtos_start() 切到首个任务。
  *
- *      dev->vtable->open(dev);
- *      dev->vtable->read(dev, buf, len);
- *      dev->vtable->write(dev, buf, len);
- *      dev->vtable->ioctl(dev, cmd, arg);
- *      dev->vtable->close(dev);
- *
- * LAYERING (fully decoupled):
- *   - drv/        : platform-independent drivers, hold only OPAQUE HAL handles.
- *   - hal/stm32/  : the ONLY place that touches chip registers (ADC_TypeDef ...).
- *   - board/      : the ONLY place that knows the real peripherals (ADC1,
- *                   USART1, GPIOD) — expressed as const DATA + a construction
- *                   loop. Equivalent to a device tree + board init.
- *   - devmgr/     : generic name -> device* registry (device_get_binding style).
- *   - main.c      : APPLICATION layer. It knows device NAMES only
- *                   (device_manager_get("uart0")); it never sees a peripheral
- *                   base address or a HAL handle, and includes no chip header.
- *
- * See moban/ for the OOC template (vtable + fun + create/destroy/init/deinit).
- *
- * After BIST the firmware enters a line-based command loop so a PC companion
- * test (tools/companion_test.py) can verify the TX/RX loopback:
- *   PING         -> PONG
- *   ECHO <text>  -> <text>
+ * 原裸机 main() 的全部逻辑（开设备、BIST、命令循环）现在跑在 "main" 任务里；
+ * blink 任务是高优先级演示任务，idle 任务是永远就绪的最低优先级空闲任务。
+ * 统一驱动接口、irq 框架、devmgr 完全不动；osal_sem 已被 rtos 版接管为
+ * “阻塞任务”，驱动阻塞路径零改动。
  */
 #include <stdio.h>
 #include "log/log.h"
@@ -42,8 +17,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include "iface/device.h"
-#include "iface/stream_device.h"   /* device_as_stream downcast */
-#include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
+#include "iface/stream_device.h"
+#include "iface/io_xfer.h"
 #include "devmgr/device_manager.h"
 #include "board.h"
 #include "drv/clock.h"
@@ -55,6 +30,7 @@
 #include "drv/usb.h"
 #include "drv/i2c.h"
 #include "selftest.h"
+#include "rtos.h"
 
 /* completion callback for the IOXFER async demo: records that the transfer
  * finished. Runs in ISR/thread context depending on the engine; just sets a
@@ -65,30 +41,58 @@ static void io_demo_cb(io_xfer_t *x)
         *(int *)x->arg = 1;
 }
 
-int main(void)
+/* ----- 任务栈（静态分配，8 字节对齐以满足异常栈约束） -----
+ * 注意：裸机时 main 用的是巨大的 MSP 栈；RTOS 下每个任务有独立栈，
+ * 必须给够。app_main_task 跑 BIST + printf，栈需求很大，给 8 KB；
+ * blink/idle 很小，分别给 1 KB / 512 B。布局上 g_main_stack 紧邻
+ * g_blink_stack 上方，栈向下生长，main 栈不够会踩坏 blink 栈导致 HardFault。 */
+static uint8_t g_main_stack[8192] __attribute__((aligned(8)));
+static uint8_t g_blink_stack[1024] __attribute__((aligned(8)));
+static uint8_t g_idle_stack[512]  __attribute__((aligned(8)));
+
+static volatile uint32_t g_heartbeat = 0;       /* blink 任务心跳计数 */
+static volatile int      g_rtos_demo_ready = 0; /* BIST 完成后才允许 blink 动 LED */
+static device *g_led = (device *)0;
+
+/* 高优先级演示任务：BIST 完成前只在等标志（不碰 LED，避免干扰 LED 自测），
+ * 之后每 500ms 翻转 LED 并递增心跳计数，证明高优先级任务能抢占 main。 */
+static void blink_task(void *arg)
 {
-    /* BOARD layer builds HAL handles + drivers from its descriptor and
-     * registers them by name. This file learns nothing about the silicon. */
-    board_init();
+    (void)arg;
+    while (!g_rtos_demo_ready) rtos_msleep(10);
+    for (;;) {
+        if (g_led) g_led->vtable->ioctl(g_led, GPIO_IOCTL_TOGGLE, (void *)0);
+        g_heartbeat++;
+        rtos_msleep(500);
+    }
+}
 
-    /* Start the board's 1 kHz SysTick tick service (registered through the
-     * platform-independent irq framework) — demonstrates a core exception
-     * dispatched by the same mechanism as device IRQs. */
-    board_tick_init();
+/* 最低优先级空闲任务：永远 READY，主动让出；保证就绪队列永不为空。 */
+static void idle_task(void *arg)
+{
+    (void)arg;
+    for (;;) rtos_yield();
+}
 
-    /* --- unified device handles (by NAME, not by peripheral) -------------
-     * The application holds a `device *` for every driver and drives them all
-     * through the identical virtual-dispatch API. It does not care which chip
-     * or which concrete driver is behind each name. */
+/* 原裸机 main() 的全部逻辑，现作为 "main" 任务运行。 */
+static void app_main_task(void *arg)
+{
+    (void)arg;
+
+    /* NOTE: board_init() / board_tick_init() are already done ONCE in main()
+     * BEFORE rtos_start() (so the clock, devices and 1 kHz systick exist before
+     * any task runs). Doing them again here would re-init the PLL/pinmux on a
+     * live system and corrupt the UART baud — so we only OPEN + BIST here. */
+
+    /* --- unified device handles (by NAME, not by peripheral) ------------- */
     device *d_clk  = device_manager_get("clk");
     device *d_uart = device_manager_get("uart0");
     device *d_led  = device_manager_get("led");
     device *d_adc  = device_manager_get("adc0");
     device *d_temp = device_manager_get("temp0");
 
-    /* every driver is brought up through the SAME virtual call.
-     * create() only builds the object; hardware is started here in open(). */
-    d_clk->vtable->open(d_clk);      /* configure the PLL */
+    /* every driver is brought up through the SAME virtual call. */
+    d_clk->vtable->open(d_clk);
     d_uart->vtable->open(d_uart);
     d_led->vtable->open(d_led);
     d_adc->vtable->open(d_adc);
@@ -96,19 +100,14 @@ int main(void)
 
     uint32_t hz = 0;
     d_clk->vtable->ioctl(d_clk, CLK_IOCTL_GET_SYSCLK_HZ, &hz);
-    log_printf(app_log(), LOG_INFO, "main", "Hello from STM32F407 Discovery (OOC)!\n");
+    log_printf(app_log(), LOG_INFO, "main", "Hello from STM32F407 Discovery (OOC) on jOS RTOS!\n");
     log_printf(app_log(), LOG_INFO, "main", "System clock: %lu Hz, USART1 @ 115200 8N1\n",
-           (unsigned long)hz);
+               (unsigned long)hz);
 
-    /* Confirmation marker: proves the name-based pinmux changes (board supplies
-     * signal NAMES like "USART1_TX_PA9", drivers resolve via pinmux_hal_resolve)
-     * are compiled in AND flashed. __DATE__/__TIME__ make every build unique so
-     * we can tell a fresh image from a stale one on the board. */
     log_printf(app_log(), LOG_INFO, "main", "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
-           __DATE__, __TIME__);
+               __DATE__, __TIME__);
 
-    /* 4. on-board self-test (BIST) at boot.
-     * selftest_create takes the unified device* handles from the registry. */
+    /* on-board self-test (BIST) at boot. */
     selftest *st = selftest_create(d_clk, d_uart, d_led, d_adc, d_temp);
     selftest_run(st);
 
@@ -118,9 +117,7 @@ int main(void)
     log_printf(app_log(), LOG_INFO, "main", "[BIST] pinmux: %s\n", pmok ? "PASS" : "FAIL");
 
     /* Bring up the CDC device and LEAVE it connected so a real PC host can
-     * enumerate it automatically at boot (VID_0483&PID_5740). The BIST opens
-     * then closes usb0; we re-open it here and never close it, so the device
-     * stays enumerated. (The USBOPEN/USBCLOSE console commands still work.) */
+     * enumerate it automatically at boot. */
     device *d_usb = device_manager_get("usb0");
     if (!d_usb) {
         log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: NOT REGISTERED\n");
@@ -130,52 +127,37 @@ int main(void)
         log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\n");
     }
 
-    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1]\n");
+    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS\n");
 
-    /* NOTE: d_usb (usb0) is already declared/opened just above and stays in
-     * scope for the loop below, where we use it for the CDC loopback echo. */
+    /* blink 任务此后可安全独占 LED（BIST 已结束） */
+    g_led = d_led;
+    g_rtos_demo_ready = 1;
 
-    /* 5. command loop (PC companion test exercises this) */
+    /* command loop (PC companion test exercises this) */
     char line[64];
     uint32_t idx = 0;
     while (1)
     {
-        /* --- USB CDC loopback echo -----------------------------------------
-         * Poll the CDC bulk-OUT ring buffer and echo every received byte back
-         * on the bulk-IN endpoint. This proves BOTH directions end-to-end:
-         *  - RX: we received exactly what the PC sent (it lands in the rb)
-         *  - TX: the PC receives exactly what we wrote on EP 0x81
-         * usb_stream_write() now stages into a TX ring and returns immediately
-         * (the IN endpoint is armed by usb_tx_pump from the main loop and the
-         * IN-complete ISR), so this never blocks the loop. Runs before the UART
-         * read so it is serviced even when UART is idle.
-         * (CDC baud is virtual; the real ceiling is USB FS bulk bandwidth.) */
+        /* --- USB CDC loopback echo --- */
         if (d_usb) {
             static uint8_t ub[64];
-            /* Cap the read to what the TX staging ring can accept right now, so
-             * we never pull more from RX than we can echo (no silent drops). */
             size_t tx_free = sizeof(ub);
             d_usb->vtable->ioctl(d_usb, USB_IOCTL_TX_FREE, &tx_free);
             size_t want = tx_free < sizeof(ub) ? tx_free : sizeof(ub);
             int n = 0;
             if (want) n = d_usb->vtable->read(d_usb, ub, want);
             if (n > 0)
-                d_usb->vtable->write(d_usb, ub, (size_t)n);   /* echo -> PC */
-            /* Drain the TX staging ring into the bulk-IN endpoint. This is the
-             * ring's ONLY consumer (the IN-complete ISR only clears the busy
-             * flag), so it is safe to call here every iteration — including
-             * when no new RX arrived but data is still staged. */
+                d_usb->vtable->write(d_usb, ub, (size_t)n);
             d_usb->vtable->ioctl(d_usb, USB_IOCTL_TX_PUMP, NULL);
-            /* Re-arm the bulk-OUT endpoint if it was NAK'd because the RX ring
-             * had no room (USB back-pressure). Called after the above drained
-             * RX, so room is available again. */
             d_usb->vtable->ioctl(d_usb, USB_IOCTL_RX_REARM, NULL);
         }
 
         char c = 0;
-        if (d_uart->vtable->read(d_uart, &c, 1) != 1)
-            continue;                    /* no char available (HW read blocks) */
-        uart_console_putc(c);                  /* local echo for terminal use */
+        if (d_uart->vtable->read(d_uart, &c, 1) != 1) {
+            rtos_msleep(1);   /* 无输入：让出 1ms，使其它任务得以运行 */
+            continue;
+        }
+        uart_console_putc(c);
 
         if (c == '\r' || c == '\n')
         {
@@ -183,7 +165,6 @@ int main(void)
             {
                 line[idx] = '\0';
                 idx = 0;
-                d_led->vtable->ioctl(d_led, GPIO_IOCTL_TOGGLE, NULL);   /* activity LED */
 
                 if (strcmp(line, "PING") == 0)
                 {
@@ -197,11 +178,9 @@ int main(void)
                 }
                 else if (strcmp(line, "BIST") == 0)
                 {
-                    /* re-emit the build marker on demand so a PC companion that
-                     * connects AFTER boot can still confirm which image is flashed */
                     log_printf(app_log(), LOG_INFO, "main", "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
-                           __DATE__, __TIME__);
-                    selftest_run(st);        /* re-run self-test on demand */
+                               __DATE__, __TIME__);
+                    selftest_run(st);
                 }
                 else if (strncmp(line, "ADC", 3) == 0)
                 {
@@ -216,7 +195,7 @@ int main(void)
                     uint32_t mv = 0;
                     d_adc->vtable->ioctl(d_adc, ADC_IOCTL_READ_MV, &mv);
                     uint32_t zero = 0U;
-                    d_adc->vtable->ioctl(d_adc, ADC_IOCTL_SET_CHANNEL, &zero); /* restore PA0 */
+                    d_adc->vtable->ioctl(d_adc, ADC_IOCTL_SET_CHANNEL, &zero);
 
                     char out[64];
                     int n = snprintf(out, sizeof(out),
@@ -227,7 +206,6 @@ int main(void)
                 }
                 else if (strcmp(line, "TEMP") == 0)
                 {
-                    /* sample the temperature sensor (CH16) for display */
                     uint32_t traw = 0;
                     uint32_t ch = 16U;
                     d_adc->vtable->ioctl(d_adc, ADC_IOCTL_SET_CHANNEL, &ch);
@@ -272,19 +250,37 @@ int main(void)
                 }
                 else if (strcmp(line, "TICKS") == 0)
                 {
-                    /* prove the platform-independent irq framework is live:
-                     * the SysTick ISR increments g_ticks via irq_dispatch(). */
                     char out[32];
                     int n = snprintf(out, sizeof(out), "TICKS %lu\r\n",
                                      (unsigned long)board_ticks());
                     d_uart->vtable->write(d_uart, out, (size_t)n);
                 }
+                else if (strcmp(line, "RTOS") == 0)
+                {
+                    char out[80];
+                    int n = snprintf(out, sizeof(out),
+                                     "RTOS tick=%lu heartbeat=%lu tasks=%d\r\n",
+                                     (unsigned long)rtos_tick_count(),
+                                     (unsigned long)g_heartbeat,
+                                     rtos_task_count());
+                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                    for (int i = 0; i < rtos_task_count(); i++) {
+                        const char *ststr = "?";
+                        switch (rtos_task_state(i)) {
+                            case TASK_READY:    ststr = "READY"; break;
+                            case TASK_RUNNING:  ststr = "RUN";   break;
+                            case TASK_BLOCKED:  ststr = "BLK";   break;
+                            case TASK_SLEEPING: ststr = "SLEEP"; break;
+                            case TASK_DEAD:     ststr = "DEAD";  break;
+                        }
+                        n = snprintf(out, sizeof(out), "  %-6s prio=%2u %s\r\n",
+                                     rtos_task_name(i) ? rtos_task_name(i) : "?",
+                                     (unsigned)rtos_task_prio(i), ststr);
+                        d_uart->vtable->write(d_uart, out, (size_t)n);
+                    }
+                }
                 else if (strcmp(line, "USBOPEN") == 0)
                 {
-                    /* Bring up the CDC device and LEAVE it connected so a real PC
-                     * host can enumerate it (VID_0483&PID_5740). The BIST opens then
-                     * closes usb0, which disconnects it — so for real enumeration the
-                     * device must stay open. Plug the CN5 cable into the PC first. */
                     device *usbd = device_manager_get("usb0");
                     if (!usbd) { d_uart->vtable->write(d_uart, "USBOPEN: no dev\r\n", 18); }
                     else if (usbd->vtable->open(usbd)) {
@@ -309,10 +305,6 @@ int main(void)
                 }
                 else if (strncmp(line, "USBDBG", 6) == 0)
                 {
-                    /* Toggle ISR trace (SETUP/OUT/IN decoding) for live debugging.
-                     * NOTE: printing inside the USB ISR perturbs timing, so leave
-                     * it OFF for normal enumeration; turn on only to watch a host
-                     * that is already enumerating.  USBDBG 1 = on, USBDBG 0 = off. */
                     int on = 0;
                     if (line[6] == ' ') on = atoi(line + 7);
                     device *usbd = device_manager_get("usb0");
@@ -326,11 +318,6 @@ int main(void)
                 }
                 else if (strcmp(line, "IOXFER") == 0)
                 {
-                    /* Demo the unified sync/async transfer API (the framework
-                     * top-level over stream_device). Try it: type IOXFER and the
-                     * board sends two lines through stream_device_transfer_sync / _async.
-                     * The async path uses a completion callback (cb) that sets a
-                     * flag, proving the ISR/callback plumbing end-to-end. */
                     stream_device *s = device_as_stream(d_uart);
                     if (!s) {
                         d_uart->vtable->write(d_uart, "ERR no stream\r\n", 14);
@@ -356,12 +343,6 @@ int main(void)
                                          rs, (int)sx.done, ra);
                         d_uart->vtable->write(d_uart, out, (size_t)n);
 
-                        /* The async transfer completes in the TXE ISR. The
-                         * blocking write just above can only proceed once the
-                         * line is free — i.e. AFTER the async transfer finished —
-                         * so by the time it returned, ax.done and the callback
-                         * flag are final. Print them now to prove the interrupt
-                         * path + completion callback fired end-to-end. */
                         n = snprintf(out, sizeof(out),
                                      "[IOXFER] async done=%d cb=%d\r\n",
                                      (int)ax.done, g_io_cb_fired);
@@ -379,4 +360,20 @@ int main(void)
             line[idx++] = c;
         }
     }
+}
+
+int main(void)
+{
+    /* 仅做最小硬件初始化 + 启动 RTOS；其余逻辑在 app_main_task 里。 */
+    board_init();
+    board_tick_init();
+
+    rtos_init();
+    rtos_task_create("main",  app_main_task, (void *)0, RTOS_PRIO_MAIN,  g_main_stack,  sizeof(g_main_stack));
+    rtos_task_create("blink", blink_task,    (void *)0, RTOS_PRIO_BLINK, g_blink_stack, sizeof(g_blink_stack));
+    rtos_task_create("idle",  idle_task,     (void *)0, RTOS_PRIO_IDLE,  g_idle_stack,  sizeof(g_idle_stack));
+
+    rtos_start();   /* 切换到首个任务；此线程上下文被丢弃，不再返回 */
+
+    for (;;) { }    /* 保险：rtos_start 不会返回 */
 }

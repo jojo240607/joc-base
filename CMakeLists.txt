@@ -27,7 +27,7 @@ add_executable(${PROJECT_NAME}.elf
     src/log/log.c                # OOC logger (level filter + multi-sink)
     src/log/app_log.c            # app glue: logger sunk to console UART
     # OS abstraction layer (semaphore + critical section; RTOS-portable)
-    src/osal/osal_baremetal.c
+    # src/osal: 见下方 RTOS 开关（osal_rtos.c 或 osal_baremetal.c 二选一）
     # driver layer (implements interfaces, delegates to HAL — platform-independent)
     src/drv/adc.c
     src/drv/gpio_pin.c
@@ -95,6 +95,23 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/st_usb/usbd_cdc_core.c
     src/selftest.c
 )
+
+# ---- RTOS 开关：ON 接入 jOS 调度器（osal_rtos.c + rtos/*），OFF 退回裸机 ----
+option(RTOS "Build with jOS RTOS" ON)
+if(RTOS)
+  target_sources(${PROJECT_NAME}.elf PRIVATE
+    src/osal/osal_rtos.c
+    src/rtos/rtos_core.c
+    src/rtos/rtos_port.c
+    src/rtos/rtos_context.S)
+  target_include_directories(${PROJECT_NAME}.elf PRIVATE
+    src/rtos
+    src/rtos/include)
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE JOC_RTOS=1)
+else()
+  target_sources(${PROJECT_NAME}.elf PRIVATE
+    src/osal/osal_baremetal.c)
+endif()
 
 target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src
