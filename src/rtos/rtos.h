@@ -163,6 +163,11 @@ int rtos_ipc_selftest(void);
 /* ---- 多任务并发压力自测（从 RTOSSTRESS 命令调用） ---- */
 int rtos_stress_selftest(void);
 
+/* ---- FPU 上下文保存自测（从 RTOSFPU 命令调用） ----
+ * 验证 PendSV 上下文切换正确保存/恢复 s16-s31：多个任务把浮点累加器钉在 s16-s18，
+ * 高频切换互相踩踏，若 s16-s31 未保存，累加器会被其它任务破坏，与期望值不符。 */
+int rtos_fpu_selftest(void);
+
 /* ---- 编译期自测注册表（链接器段收集，见 linker .rtos_selftests） ----
  * 各模块用 RTOS_SELFTEST_ADD("name", fn) 把自测注册进 .rtos_selftests.<name>
  * 段；rtos_selftest_run_all() 在运行时遍历该段依次执行，无需手动逐个调用。

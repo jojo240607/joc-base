@@ -117,6 +117,84 @@ int rtos_ipc_selftest(void) {
 /* 编译期注册：RTOSALL 会遍历该段依次执行 */
 RTOS_SELFTEST_ADD("ipc", rtos_ipc_selftest);
 
+/* ===========================================================================
+ * FPU 上下文保存自测（从 RTOSFPU 命令调用）。
+ * 证明 PendSV 上下文切换会保存/恢复 s16-s31：
+ *   - 每个任务把三个浮点累加器钉在 s16/s17/s18（属于 callee-saved 的 s16-s31，
+ *     跨上下文共享，必须随任务上下文保存）；
+ *   - 任务间用 rtos_msleep(1) 高频互切，互相踩踏对方的 s16-s18；
+ *   - 若 PendSV 不保存 s16-s31，被切出任务的累加器会被切进任务改写，最终与
+ *     “相同公式独立重算”的期望值偏差巨大；
+ *   - 保存正确则逐位相等（浮点运算顺序与切换无关），判定 PASS。
+ * 注意：S0-S15/FPSCR 由硬件懒栈自动压取，本自测只针对软件必须手存的 s16-s31。
+ * ======================================================================== */
+#define FPU_TASKS 3
+#define FPU_ITERS 300
+
+static volatile uint32_t g_fpu_done[FPU_TASKS];
+static volatile uint32_t g_fpu_ok[FPU_TASKS];
+
+static void fpu_task(void *arg) {
+    int id = (int)(intptr_t)arg;
+    /* 钉在 s16-s18：强制累加器跨 rtos_msleep()/上下文切换一直驻留在这些寄存器里 */
+    register float a asm("s16") = (float)(id + 1) * 1.25f;
+    register float b asm("s17") = (float)(id + 1) * 2.50f;
+    register float c asm("s18") = (float)(id + 1) * 0.30f;
+    for (int i = 0; i < FPU_ITERS; i++) {
+        a = a * 1.0001f + (float)i * 0.5f;
+        b = b / 1.00005f - c;
+        c = c + a * 0.0001f;
+        rtos_msleep(1);                 /* 让出 1 个节拍，强制与其它 FPU 任务互切 */
+    }
+    /* 独立重算期望值（同公式、无切换；结果应与 a/b/c 逐位一致——只要 s16-s18 被保存） */
+    float ea = (float)(id + 1) * 1.25f;
+    float eb = (float)(id + 1) * 2.50f;
+    float ec = (float)(id + 1) * 0.30f;
+    for (int i = 0; i < FPU_ITERS; i++) {
+        ea = ea * 1.0001f + (float)i * 0.5f;
+        eb = eb / 1.00005f - ec;
+        ec = ec + ea * 0.0001f;
+    }
+    float da = (a > ea) ? (a - ea) : (ea - a);
+    float db = (b > eb) ? (b - eb) : (eb - b);
+    float dc = (c > ec) ? (c - ec) : (ec - c);
+    g_fpu_ok[id]   = (da < 1e-3f && db < 1e-3f && dc < 1e-3f) ? 1U : 0U;
+    g_fpu_done[id] = 1U;
+}
+
+int rtos_fpu_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[FPU] self-test begin\n");
+    for (int i = 0; i < FPU_TASKS; i++) { g_fpu_done[i] = 0; g_fpu_ok[i] = 0; }
+
+    static uint8_t st_f[FPU_TASKS][1024] __attribute__((aligned(8)));
+    for (int i = 0; i < FPU_TASKS; i++)
+        rtos_task_create("fpu", fpu_task, (void *)(intptr_t)i,
+                         (uint8_t)(22 + i), st_f[i], sizeof(st_f[i]));
+
+    /* 等 FPU 任务完成（或超时 5s） */
+    uint32_t waited = 0;
+    while (waited < 5000) {
+        int all = 1;
+        for (int i = 0; i < FPU_TASKS; i++) if (!g_fpu_done[i]) all = 0;
+        if (all) break;
+        rtos_msleep(10);
+        waited += 10;
+    }
+
+    for (int i = 0; i < FPU_TASKS; i++) {
+        int lok = g_fpu_done[i] && g_fpu_ok[i];
+        if (!lok) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[FPU] task%d s16-s18 preserved: %s\n", i, lok ? "PASS" : "FAIL");
+    }
+    log_printf(app_log(), LOG_INFO, "rtos", "[FPU] self-test: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+/* 编译期注册：RTOSALL 会遍历该段依次执行 */
+RTOS_SELFTEST_ADD("fpu", rtos_fpu_selftest);
+
 /* 遍历链接器收集到的所有自测项（.rtos_selftests.* 段），依次运行 */
 int rtos_selftest_run_all(void) {
     int ok = 1;

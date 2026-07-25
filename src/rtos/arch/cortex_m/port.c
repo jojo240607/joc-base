@@ -22,11 +22,20 @@ void rtos_schedule_request(void) {
     __DSB();
 }
 
-/* 启动调度：开启 FPU 惰性栈存（切换不必手动保存 s16-s31），
- * 把 PendSV 设为最低优先级，再用 SVC 0 切换到首个任务。 */
+/* 启动调度：配置 FPU 上下文保存、把 PendSV 设为最低优先级，再用 SVC 0 切换到首个任务。 */
 void rtos_arch_start(void) {
-    /* 开启 FPU 惰性栈存，避免切换路径手动处理 s16-s31 */
-    FPU->FPCCR |= FPU_FPCCR_ASPEN_Msk | FPU_FPCCR_LSPEN_Msk;
+    /* FPU 上下文保存配置（Cortex-M4 标准做法，与 FreeRTOS 一致）：
+     *   ASPEN=1  开启“自动 FPU 状态保存”——异常进出时硬件保存/恢复 S0-S15+FPSCR；
+     *   LSPEN=1  保留“懒栈”——仅当 Handler 里首次用到 FPU 才真正把 S0-S15+FPSCR
+     *             落栈（避免每个异常都无谓压 0x48 字节）。
+     * 采用懒栈是必须的：context.S 在 PendSV 里手动保存 s16-s31 时，第一条就是 vstmdb，
+     * 这条 VFP 指令会触发懒栈把 S0-S15+FPSCR flush 到任务栈帧，使整段 FPU 上下文
+     * 完整落在任务栈上；若关闭懒栈(ASPEN 仍开)在某些嵌套/抢占组合下会与手工保存产生
+     * 帧布局错位（表现为返回时 EXC_RETURN 错乱、INVSTATE）。S0-S15/FPSCR 由硬件在异常
+     * 返回时自动取回，s16-s31 由 context.S 手动保存/恢复（硬件从不保存它们）。 */
+    FPU->FPCCR = (FPU->FPCCR & ~(uint32_t)FPU_FPCCR_ASPEN_Msk)
+                              |  (uint32_t)FPU_FPCCR_ASPEN_Msk
+                              |  (uint32_t)FPU_FPCCR_LSPEN_Msk;
 
     /* PendSV 设为最低优先级，保证它只在“无更高优先级异常”时运行 */
     NVIC_SetPriority(PendSV_IRQn, 0xFF);

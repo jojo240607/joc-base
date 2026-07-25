@@ -28,6 +28,8 @@ volatile uint32_t g_fault_cfsr     = 0;
 volatile uint32_t g_fault_pc       = 0;
 volatile uint32_t g_fault_mmfar    = 0;
 volatile uint32_t g_fault_lr       = 0;
+volatile uint32_t g_fault_frame    = 0;   /* 故障异常帧基址（事后用 OpenOCD 翻帧定位 PC） */
+volatile uint32_t g_fault_pc_raw   = 0;   /* frame[6] 原始值（不做 FP 帧跳过，便于交叉核对） */
 
 /* 一个区域：base 必须对齐到 size；ap 见 Cortex-M RASR AP 位；xn=1 禁止执行 */
 static void mpu_set_region(uint32_t idx, uint32_t base,
@@ -62,6 +64,9 @@ void rtos_mpu_init(void) {
 
     /* 打开 MemManage 异常（否则 MPU 违例会升级为 HardFault） */
     SCB->SHCSR |= SCB_SHCSR_MEMFAULTENA_Msk;
+    /* 同时打开 UsageFault / BusFault：INVSTATE/UNDEFINSTR/对齐错等被首次捕获
+     * （不升级为 HardFault），栈帧干净，便于事后定位故障 PC。 */
+    SCB->SHCSR |= (SCB_SHCSR_USGFAULTENA_Msk | SCB_SHCSR_BUSFAULTENA_Msk);
 }
 
 void rtos_mpu_enable(void)  { MPU->CTRL |=  MPU_CTRL_ENABLE_Msk;  __DSB(); __ISB(); }
@@ -104,16 +109,29 @@ static void rtos_mpu_do_violation(void) {
 int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     uint32_t cfsr = SCB->CFSR;
 
-    /* 计算真正的异常帧：若发生故障时 FPCA=1，硬件会在基本帧前多压 0x48 字节 FP
-     * 上下文。EXC_RETURN 的 bit4 = 0 表示压入了 FP 帧，须跳过才能得到 R0..PC。 */
-    uint32_t *p = frame;
-    if ((lr & (1u << 4)) == 0u) {
-        p = (uint32_t *)((uint8_t *)p + 0x48u);
-    }
+    /* 先无条件保存“原始帧基址 + frame[6]”，再做任何有风险的 FP 帧跳过解引用。
+     * 若下方跳过逻辑算出越界地址并重解引用，会二次故障升级为 lockup，导致 g_fault_frame
+     * 等永远写不进去；先把原始值落盘可避免丢失关键信息。 */
+    g_fault_frame  = (uint32_t)frame;
+    g_fault_pc_raw = frame[6];
+    g_fault_lr     = lr;
+    g_fault_cfsr   = cfsr;
 
-    g_fault_cfsr  = cfsr;
-    g_fault_pc    = p[6];
-    g_fault_lr    = lr;
+    /* 计算真正的故障 PC。难点：故障可能发生在 Handler 模式（如 PendSV 内）且当时
+     * FPCA=1，硬件会在基本帧前多压 0x48 字节 FP 上下文；但传给本处理器的
+     * EXC_RETURN（lr）若是 Handler 模式（0xffffffe1），其 bit4=1 反而会“骗”我们说没有
+     * FP 帧，导致 frame[6] 落到 FP 帧区域内读到垃圾。
+     * 稳妥做法：同时按“无 FP 帧偏移(frame[6])”和“有 FP 帧偏移(frame[0x12])”读 PC，
+     * 取落在 Flash 且 Thumb 位(bit0)为 1 的那一个（真正的故障指令地址）。 */
+    uint32_t pc_ns = frame[6];                 /* 无 FP 帧假设下的 PC */
+    uint32_t pc_s  = frame[0x18];              /* 有 FP 帧：FP 帧 0x48=0x12 字，hw 帧 PC 在第 6 字 → frame[0x12+6]=frame[0x18] */
+    g_fault_pc_raw = pc_ns;
+    if ((pc_ns & 0xFF000000u) == 0x08000000u && (pc_ns & 1u))
+        g_fault_pc = pc_ns;
+    else if ((pc_s & 0xFF000000u) == 0x08000000u && (pc_s & 1u))
+        g_fault_pc = pc_s;
+    else
+        g_fault_pc = pc_ns;                     /* 兜底：保留原始值 */
     if (cfsr & (1u << 7))                    /* MMFSR.MMARVALID */
         g_fault_mmfar = SCB->MMFAR;
     else
@@ -122,7 +140,7 @@ int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     /* 自测期间的故意越权：标记捕获、清状态、恢复到调用点之后、恢复特权并返回 */
     if (g_mpu_test_active) {
         g_mpu_violation = 1;
-        p[6] = p[5];                         /* 故障帧 LR = 调用点下一条指令 */
+        frame[6] = frame[5];                 /* 故障帧 LR = 调用点下一条指令 */
         SCB->CFSR = cfsr;                    /* 写 1 清除 */
         __set_CONTROL(0x2u);                 /* 返回线程模式，恢复特权(nPRIV=0) */
         __ISB();
