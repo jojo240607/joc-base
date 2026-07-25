@@ -11,11 +11,13 @@
  *
  * 注意：MPU 是 ISA 特性（所有 Cortex-M 共有），但“区域布局”（Flash/SRAM/
  * 外设基址与大小）属于芯片内存映射，是换芯片时需要调整的【移植旋钮】，
- * 集中在下方 mpu_set_region() 调用处，便于按新芯片修改。
+ * 已抽到 arch/cortex_m/memmap.h —— 换芯片只需改那一处头文件。
  * ------------------------------------------------------------------------- */
 
 /* 移植旋钮 + ISA 级最小 IRQn 定义（见 cortex_m.h 注释；换芯片只改该头） */
 #include "cortex_m.h"
+/* 芯片内存映射（MPU 区域布局）：换芯片只改 memmap.h */
+#include "memmap.h"
 #include "core_cm4.h"   /* CMSIS ISA 头：SCB / NVIC / FPU / SysTick_IRQn */
 #include "mpu_armv7.h"  /* CMSIS ISA 头：MPU_Type / MPU / MPU_CTRL_*（MPU 是 ISA 特性） */
 
@@ -42,16 +44,16 @@ void rtos_mpu_init(void) {
     /* 关 MPU 再配置，避免半配置期间异常 */
     MPU->CTRL = 0;
 
-    /* Region 0: Flash 0x08000000, 1 MB, RO(双方), 可执行(XN=0) —— 保护代码不被改写 */
-    mpu_set_region(0, 0x08000000u, 20, 0b110u, 0);
-    /* Region 1: SRAM  0x20000000, 128 KB, RW(双方), 不可执行(XN=1) */
-    mpu_set_region(1, 0x20000000u, 17, 0b011u, 1);
-    /* Region 2: 外设 0x40000000, 512 MB, 仅特权 RW(0b001), 不可执行 */
-    mpu_set_region(2, 0x40000000u, 29, 0b001u, 1);
-    /* Region 3: Flash BIST 备用扇区 0x08060000, 128 KB, 仅特权 RW(0b001), 不可执行。
+    /* Region 0: Flash（只读 + 可执行）—— 保护代码不被改写。布局见 memmap.h */
+    mpu_set_region(0, MEMMAP_FLASH_BASE,        MEMMAP_FLASH_SIZE_LOG2,        MEMMAP_FLASH_AP,        MEMMAP_FLASH_XN);
+    /* Region 1: SRAM（RW，不可执行） */
+    mpu_set_region(1, MEMMAP_SRAM_BASE,         MEMMAP_SRAM_SIZE_LOG2,         MEMMAP_SRAM_AP,         MEMMAP_SRAM_XN);
+    /* Region 2: 外设（仅特权 RW，不可执行） */
+    mpu_set_region(2, MEMMAP_PERIPH_BASE,       MEMMAP_PERIPH_SIZE_LOG2,       MEMMAP_PERIPH_AP,       MEMMAP_PERIPH_XN);
+    /* Region 3: Flash BIST 备用扇区（仅特权 RW，不可执行）。
      * 编号高于 Region0，重叠时高编号优先，使 flash 烧录自检的“写闪存”不被 RO 拦截，
      * 其余 Flash 仍为只读（代码保护）。 */
-    mpu_set_region(3, 0x08060000u, 17, 0b001u, 1);
+    mpu_set_region(3, MEMMAP_FLASH_BIST_BASE,   MEMMAP_FLASH_BIST_SIZE_LOG2,   MEMMAP_FLASH_BIST_AP,   MEMMAP_FLASH_BIST_XN);
 
     /* 使能 MPU；PRIVDEFENA=1 让特权代码拥有背景区（对现行特权任务透明）。 */
     MPU->CTRL = MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
@@ -91,7 +93,7 @@ static void rtos_mpu_do_violation(void) {
     __asm volatile(
         "str %0, [%1]\n"
         "b  .\n"                         /* 理论到不了：str 应已触发 MemFault */
-        : : "r"(0xDEADu), "r"(0x40000000u) : "memory"
+        : : "r"(0xDEADu), "r"(MEMMAP_PERIPH_BASE) : "memory"
     );
 }
 
