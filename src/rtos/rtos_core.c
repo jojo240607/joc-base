@@ -151,9 +151,18 @@ void rtos_init(void) {
 
 void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
                       uint8_t prio, void *stack, size_t stack_size) {
-    if (g_task_count >= RTOS_MAX_TASKS) return;
     if (prio >= PRIO_LEVELS) prio = (uint8_t)(PRIO_LEVELS - 1);
-    task_t *t = &g_task_pool[g_task_count++];
+    task_t *t = (task_t *)0;
+    /* 回收已终止(TASK_DEAD)的槽位，使 RTOS* 自测可重复运行：
+     * 任务正常返回(entry 落到 rtos_task_exit 置 DEAD)后，其池槽可被新任务复用，
+     * 否则 g_task_count 单调增长、几次后创建即被拒（原设计只能单次调用）。 */
+    for (int i = 0; i < g_task_count; i++) {
+        if (g_task_pool[i].state == TASK_DEAD) { t = &g_task_pool[i]; break; }
+    }
+    if (!t) {
+        if (g_task_count >= RTOS_MAX_TASKS) return;   /* 池真正耗尽 */
+        t = &g_task_pool[g_task_count++];
+    }
     memset(t, 0, sizeof(*t));
     t->name = name;
     t->prio = prio;
