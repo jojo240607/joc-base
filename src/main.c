@@ -128,7 +128,7 @@ static void app_main_task(void *arg)
         log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\n");
     }
 
-    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC / RTOSMPU / RTOSSTRESS\n");
+    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC / RTOSMPU / RTOSSTRESS / RTOSALL\n");
 
     /* blink 任务此后可安全独占 LED（BIST 已结束） */
     g_led = d_led;
@@ -299,6 +299,13 @@ static void app_main_task(void *arg)
                     int sok = rtos_stress_selftest();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSSTRESS %s\r\n", sok ? "PASS" : "FAIL");
+                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                }
+                else if (strcmp(line, "RTOSALL") == 0)
+                {
+                    int allok = rtos_selftest_run_all();
+                    char out[32];
+                    int n = snprintf(out, sizeof(out), "RTOSALL %s\r\n", allok ? "PASS" : "FAIL");
                     d_uart->vtable->write(d_uart, out, (size_t)n);
                 }
                 else if (strcmp(line, "USBOPEN") == 0)

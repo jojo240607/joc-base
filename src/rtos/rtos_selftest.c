@@ -113,3 +113,28 @@ int rtos_ipc_selftest(void) {
     log_printf(app_log(), LOG_INFO, "rtos", "[IPC] self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
+
+/* 编译期注册：RTOSALL 会遍历该段依次执行 */
+RTOS_SELFTEST_ADD("ipc", rtos_ipc_selftest);
+
+/* 遍历链接器收集到的所有自测项（.rtos_selftests.* 段），依次运行 */
+int rtos_selftest_run_all(void) {
+    int ok = 1;
+    const rtos_selftest_entry_t *end = __rtos_selftest_end;
+    size_t n = (size_t)(end - __rtos_selftest_start);
+    log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] run-all begin (%u entries)\n",
+               (unsigned)n);
+    if (n == 0) {
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SELFTEST] WARNING: no self-test entries collected (check linker .rtos_selftests)\n");
+    }
+    for (const rtos_selftest_entry_t *p = __rtos_selftest_start; p < end; p++) {
+        const char *nm = p->name ? p->name : "?";
+        log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] >>> %s\n", nm);
+        int r = p->fn();
+        if (!r) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] %s: %s\n", nm, r ? "PASS" : "FAIL");
+    }
+    log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] ALL: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}

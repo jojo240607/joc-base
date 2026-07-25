@@ -163,3 +163,6 @@ int rtos_mpu_selftest(void) {
     log_printf(app_log(), LOG_INFO, "rtos", "[MPU] self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
+
+/* 编译期注册：RTOSALL 会遍历该段依次执行 */
+RTOS_SELFTEST_ADD("mpu", rtos_mpu_selftest);

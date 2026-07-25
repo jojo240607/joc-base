@@ -162,4 +162,26 @@ int rtos_ipc_selftest(void);
 /* ---- 多任务并发压力自测（从 RTOSSTRESS 命令调用） ---- */
 int rtos_stress_selftest(void);
 
+/* ---- 编译期自测注册表（链接器段收集，见 linker .rtos_selftests） ----
+ * 各模块用 RTOS_SELFTEST_ADD("name", fn) 把自测注册进 .rtos_selftests.<name>
+ * 段；rtos_selftest_run_all() 在运行时遍历该段依次执行，无需手动逐个调用。
+ * 段起止符号由链接脚本 PROVIDE（__rtos_selftest_start / _end）。 */
+typedef int (*rtos_selftest_fn_t)(void);
+typedef struct {
+    const char         *name;
+    rtos_selftest_fn_t  fn;
+} rtos_selftest_entry_t;
+
+extern const rtos_selftest_entry_t __rtos_selftest_start[];
+extern const rtos_selftest_entry_t __rtos_selftest_end[];
+
+#define RTOS_SELFTEST_ADD(_name, _fn)                                          \
+    static const rtos_selftest_entry_t __attribute__((used,                    \
+        section(".rtos_selftests." _name))) _rtos_selftest_##_fn = {          \
+        .name = _name, .fn = _fn                                               \
+    }
+
+/* 遍历编译期收集的所有自测并依次运行，返回整体是否全部 PASS */
+int rtos_selftest_run_all(void);
+
 #endif /* JOC_RTOS_H */

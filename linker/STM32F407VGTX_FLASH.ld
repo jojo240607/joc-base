@@ -80,6 +80,16 @@ SECTIONS
     PROVIDE_HIDDEN (__fini_array_end = .);
   } >FLASH
 
+  /* 编译期收集的自测注册表：每个 RTOS_SELFTEST_ADD 把一项放进 .rtos_selftests.<name>
+   * 段；运行时 rtos_selftest_run_all() 遍历 __rtos_selftest_start.._end 依次执行。
+   * SORT 保证按名字稳定排序（ipc < mpu < stress ...）。 */
+  .rtos_selftests :
+  {
+    PROVIDE_HIDDEN (__rtos_selftest_start = .);
+    KEEP (*(SORT(.rtos_selftests.*)))
+    PROVIDE_HIDDEN (__rtos_selftest_end = .);
+  } >FLASH
+
   /* Pad total FLASH footprint to 16-byte boundary (ART prefetch requires
    * 128-bit row alignment — without this, non-16-byte-aligned firmware
    * sizes hang at boot due to prefetch fetching partial rows). */

@@ -32,9 +32,10 @@
   #define RTOS_PRIO_BLINK 8    /* 演示用高优先级任务 */
 #endif
 
-/* 是否启用 MPU（P2 阶段置 1） */
+/* 是否启用 MPU（固定区域 + 栈哨兵 + MemManage 恢复；任务保持特权故对现行任务透明）。
+ * 默认开启：P2 阶段已验证 MPU 自测（越权捕获/恢复）与 BIST 共存无回归。 */
 #ifndef RTOS_USE_MPU
-  #define RTOS_USE_MPU 0
+  #define RTOS_USE_MPU 1
 #endif
 
 #endif /* JOC_RTOS_CONFIG_H */

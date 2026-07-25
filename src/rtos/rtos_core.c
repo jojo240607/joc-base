@@ -175,7 +175,9 @@ void rtos_start(void) {
     first->state = TASK_RUNNING;
     g_running = first;
     g_rtos_started = 1;
+#if RTOS_USE_MPU
     rtos_mpu_init();     /* 配置固定区域并使能 MPU + MemManage（对特权任务透明） */
+#endif
     rtos_arch_start();   /* 触发 SVC；切换后不再返回原线程 */
 }
 
