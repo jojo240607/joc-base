@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual implementations dispatched through the unified device vtable */
 static int can_dev_open(device *self);
@@ -50,12 +52,12 @@ device *can_create(const void *config)
 
     pinmux_port_t txp; uint8_t txpn, txaf;
     if (!pinmux_hal_resolve(c->tx_signal, &txp, &txpn, &txaf)) {
-        printf("[can] %s: unknown TX \"%s\"\r\n", c->name, c->tx_signal);
+        log_printf(app_log(), LOG_DEBUG, "can", "%s: unknown TX \"%s\"", c->name, c->tx_signal);
         free(p); return NULL;
     }
     pinmux_port_t rxp; uint8_t rxpn, rxaf;
     if (!pinmux_hal_resolve(c->rx_signal, &rxp, &rxpn, &rxaf)) {
-        printf("[can] %s: unknown RX \"%s\"\r\n", c->name, c->rx_signal);
+        log_printf(app_log(), LOG_DEBUG, "can", "%s: unknown RX \"%s\"", c->name, c->rx_signal);
         free(p); return NULL;
     }
 
@@ -98,11 +100,11 @@ static int can_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, p->tx_port, p->tx_pin, p->tx_af, p->parent.parent.name) != 0) {
-            printf("[can] %s: TX P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "can", "%s: TX P%c%d CONFLICT", p->parent.parent.name,
                    'A' + (int)p->tx_port, (int)p->tx_pin); return -2;
         }
         if (pm->fun->request(pm, p->rx_port, p->rx_pin, p->rx_af, p->parent.parent.name) != 0) {
-            printf("[can] %s: RX P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "can", "%s: RX P%c%d CONFLICT", p->parent.parent.name,
                    'A' + (int)p->rx_port, (int)p->rx_pin); return -2;
         }
         pinmux_pin_cfg_t cfg = { .af = p->tx_af, .mode = 2, .otype = 0, .speed = 3, .pupd = 0 };

@@ -2,6 +2,8 @@
 #include "irq.h"
 #include "irq_hal.h"   /* irq_hal_index() + IRQ_HAL_TABLE_SIZE (HAL index mapping) */
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /*
  * Centralized interrupt registry — a thin layer ON TOP of the platform-neutral
@@ -131,18 +133,18 @@ const irq_mgr_entry_t *irq_manager_get(irq_id_t id)
 
 void irq_manager_dump(void)
 {
-    printf("--- IRQ manager table ---\r\n");
+    log_printf(app_log(), LOG_DEBUG, "irq", "--- IRQ manager table ---");
     int n = 0;
     for (int i = 0; i < IRQ_MGR_POOL; i++) {
         if (!g_mgr[i].registered)
             continue;
         n++;
-        printf("  irq %3d : reg=%d en=%d cb=%s\r\n",
+        log_printf(app_log(), LOG_DEBUG, "irq", "  irq %3d : reg=%d en=%d cb=%s",
                (int)g_mgr[i].id,
                g_mgr[i].registered,
                g_mgr[i].enabled,
                g_mgr[i].cb ? "yes" : "no");
     }
-    printf("  (%d handler(s) attached)\r\n", n);
-    printf("--- end IRQ manager table ---\r\n");
+    log_printf(app_log(), LOG_DEBUG, "irq", "  (%d handler(s) attached)", n);
+    log_printf(app_log(), LOG_DEBUG, "irq", "--- end IRQ manager table ---");
 }

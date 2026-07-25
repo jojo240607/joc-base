@@ -1570,7 +1570,7 @@ static int selftest_vadvpwm(selftest *self)
     printf("       pwm1(TIM8 CH1+CH1N): MOE=%s DTG=%lu(64? %s) comp=%s\r\n",
            ok_moe ? "on" : "OFF", (unsigned long)(bdtr & 0xFFU),
            ok_dtg ? "PASS" : "FAIL", ok_comp ? "on" : "OFF");
-    printf("         duty@50%%=%lu (~%lu, %s); timer4 ov %lu->%lu while PWM (%s)\\r\\n",
+    printf("         duty@50%%=%lu (~%lu, %s); timer4 ov %lu->%lu while PWM (%s)\r\n",
            (unsigned long)duty, (unsigned long)(period / 2), ok_duty ? "PASS" : "FAIL",
            (unsigned long)ov0, (unsigned long)ov1, ok_coord ? "PASS" : "FAIL");
 

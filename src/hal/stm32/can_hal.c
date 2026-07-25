@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /*
  * Hardware Abstraction Layer — bxCAN (STM32F4).
@@ -55,7 +57,7 @@ void can_hal_enable_clock(can_hal_handle_t *h)
         RCC->APB1ENR |= RCC_APB1ENR_CAN1EN;
     else if (p == (void *)CAN2_BASE)
         RCC->APB1ENR |= RCC_APB1ENR_CAN2EN;
-    printf("[can_hal] clock: APB1ENR=0x%08lX CAN1EN=%d CAN_PCLK=%lu\r\n",
+    log_printf(app_log(), LOG_DEBUG, "can_hal", "clock: APB1ENR=0x%08lX CAN1EN=%d CAN_PCLK=%lu",
            (unsigned long)RCC->APB1ENR,
            (int)((RCC->APB1ENR & RCC_APB1ENR_CAN1EN) != 0U),
            (unsigned long)h->pclk_hz);
@@ -94,7 +96,7 @@ int can_hal_init(can_hal_handle_t *h, uint32_t pclk_hz,
      * disconnect the AF mux and the controller would lose its RX pin. */
     volatile uint32_t pb8_raw = (GPIOB->IDR >> 8) & 1U;
     volatile uint32_t pb9_raw = (GPIOB->IDR >> 9) & 1U;
-    printf("[can_hal] PB8/PB9 level(AF9)=%lu/%lu PUPDR=0x%08lX\r\n",
+    log_printf(app_log(), LOG_DEBUG, "can_hal", "PB8/PB9 level(AF9)=%lu/%lu PUPDR=0x%08lX",
            (unsigned long)pb8_raw, (unsigned long)pb9_raw, (unsigned long)GPIOB->PUPDR);
 
     /* 1) Enter initialisation mode: MCR.INRQ=1 (full write, clears SLEEP/DBF/etc),
@@ -102,11 +104,11 @@ int can_hal_init(can_hal_handle_t *h, uint32_t pclk_hz,
      *    leaving a stray debug-freeze (DBF) bit set, which would freeze the CAN
      *    bit engine and prevent INAK from ever clearing. */
     r->MCR = CAN_MCR_INRQ;
-    printf("[can_hal] enter-init MCR=0x%08lX MSR=0x%08lX\r\n",
+    log_printf(app_log(), LOG_DEBUG, "can_hal", "enter-init MCR=0x%08lX MSR=0x%08lX",
            (unsigned long)r->MCR, (unsigned long)r->MSR);
     volatile uint32_t tmo = CAN_TIMEOUT;
     while (!(r->MSR & CAN_MSR_INAK)) { if (--tmo == 0) return -1; }
-    printf("[can_hal] entered-init tmo=%lu MSR=0x%08lX\r\n",
+    log_printf(app_log(), LOG_DEBUG, "can_hal", "entered-init tmo=%lu MSR=0x%08lX",
            (unsigned long)tmo, (unsigned long)r->MSR);
 
     /* 2) Master (CAN1) filter config: bank 0 = 32-bit MASK, accept-all, FIFO0.
@@ -136,17 +138,17 @@ int can_hal_init(can_hal_handle_t *h, uint32_t pclk_hz,
 
     /* 4) Leave initialisation mode: MCR.INRQ=0 (full write), wait MSR.INAK cleared. */
     r->MCR = 0U;
-    printf("[can_hal] leave-init MCR=0x%08lX MSR=0x%08lX BTR=0x%08lX\r\n",
+    log_printf(app_log(), LOG_DEBUG, "can_hal", "leave-init MCR=0x%08lX MSR=0x%08lX BTR=0x%08lX",
            (unsigned long)r->MCR, (unsigned long)r->MSR, (unsigned long)r->BTR);
     tmo = CAN_TIMEOUT;
     while ((r->MSR & CAN_MSR_INAK)) { if (--tmo == 0) {
-        printf("[can_hal] EXIT-INIT TIMEOUT ESR=0x%08lX MSR=0x%08lX BTR=0x%08lX "
-               "PB8_IDR=%lu PUPDR=0x%08lX\r\n",
+        log_printf(app_log(), LOG_DEBUG, "can_hal", "EXIT-INIT TIMEOUT ESR=0x%08lX MSR=0x%08lX BTR=0x%08lX "
+               "PB8_IDR=%lu PUPDR=0x%08lX",
                (unsigned long)r->ESR, (unsigned long)r->MSR, (unsigned long)r->BTR,
                (unsigned long)((GPIOB->IDR >> 8) & 1U), (unsigned long)GPIOB->PUPDR);
         return -1;
     } }
-    printf("[can_hal] left-init tmo=%lu MSR=0x%08lX\r\n",
+    log_printf(app_log(), LOG_DEBUG, "can_hal", "left-init tmo=%lu MSR=0x%08lX",
            (unsigned long)tmo, (unsigned long)r->MSR);
 
     return 0;

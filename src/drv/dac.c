@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>                     /* printf for conflict diagnostics */
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual implementations dispatched through the unified device vtable */
 static int dac_dev_open(device *self);
@@ -76,7 +78,7 @@ static int dac_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm && p->out_signal) {
         if (pm->fun->request(pm, p->port, p->pin, p->af, p->parent.parent.name) != 0) {
-            printf("[dac] %s: pin P%c%d CONFLICT — refused\r\n",
+            log_printf(app_log(), LOG_DEBUG, "dac", "%s: pin P%c%d CONFLICT — refused",
                    p->parent.parent.name, 'A' + p->port, p->pin);
             return -2;
         }

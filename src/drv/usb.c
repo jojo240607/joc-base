@@ -1,5 +1,7 @@
 #include "usb.h"
 #include "devmgr/device_manager.h"
+#include "log/log.h"
+#include "log/app_log.h"
 #include "drv/pinmux.h"
 #include "pinmux_hal.h"
 #include "hal/stm32/usb_hal.h"
@@ -368,21 +370,21 @@ static int usb_dev_open(device *self)
         pinmux_port_t port; uint8_t pin, af;
         pinmux_pin_cfg_t cfg = { .mode = 2, .otype = 0, .speed = 3, .pupd = 0 };
         if (!pinmux_hal_resolve(u->dm_signal, &port, &pin, &af)) {
-            printf("[usb] %s: unknown DM \"%s\"\r\n", u->parent.parent.name, u->dm_signal);
+            log_printf(app_log(), LOG_DEBUG, "usb", "%s: unknown DM \"%s\"", u->parent.parent.name, u->dm_signal);
             return -3;
         }
         if (pm->fun->request(pm, port, pin, af, u->parent.parent.name) != 0) {
-            printf("[usb] %s: DM P%c%d CONFLICT\r\n", u->parent.parent.name, 'A' + port, pin);
+            log_printf(app_log(), LOG_DEBUG, "usb", "%s: DM P%c%d CONFLICT", u->parent.parent.name, 'A' + port, pin);
             return -2;
         }
         cfg.af = af; pm->fun->config(pm, port, pin, &cfg);
 
         if (!pinmux_hal_resolve(u->dp_signal, &port, &pin, &af)) {
-            printf("[usb] %s: unknown DP \"%s\"\r\n", u->parent.parent.name, u->dp_signal);
+            log_printf(app_log(), LOG_DEBUG, "usb", "%s: unknown DP \"%s\"", u->parent.parent.name, u->dp_signal);
             return -3;
         }
         if (pm->fun->request(pm, port, pin, af, u->parent.parent.name) != 0) {
-            printf("[usb] %s: DP P%c%d CONFLICT\r\n", u->parent.parent.name, 'A' + port, pin);
+            log_printf(app_log(), LOG_DEBUG, "usb", "%s: DP P%c%d CONFLICT", u->parent.parent.name, 'A' + port, pin);
             return -2;
         }
         cfg.af = af; pm->fun->config(pm, port, pin, &cfg);
@@ -437,7 +439,7 @@ static int usb_run_ctrl_selftest(usb *u)
     int ok_dev = (pdev->dev.in_ep[0].xfer_buff == (uint8_t *)dev_desc) &&
                  (pdev->dev.in_ep[0].xfer_len == DEV_DESC_LEN);
     if (!ok_dev) ok = 0;
-    printf("       ctrl GET_DESCRIPTOR(device): len=%u expect=%u %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl GET_DESCRIPTOR(device): len=%u expect=%u %s",
            (unsigned)pdev->dev.in_ep[0].xfer_len, (unsigned)DEV_DESC_LEN, ok_dev ? "PASS" : "FAIL");
 
     /* (2) GET_DESCRIPTOR(config) */
@@ -452,7 +454,7 @@ static int usb_run_ctrl_selftest(usb *u)
     int ok_cfg = (pdev->dev.in_ep[0].xfer_buff == cdc_config_descriptor) &&
                  (pdev->dev.in_ep[0].total_data_len == CFG_DESC_LEN);
     if (!ok_cfg) ok = 0;
-    printf("       ctrl GET_DESCRIPTOR(config): len=%u expect=%u (xfer_len=%u) %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl GET_DESCRIPTOR(config): len=%u expect=%u (xfer_len=%u) %s",
            (unsigned)pdev->dev.in_ep[0].total_data_len, (unsigned)CFG_DESC_LEN,
            (unsigned)pdev->dev.in_ep[0].xfer_len, ok_cfg ? "PASS" : "FAIL");
 
@@ -463,7 +465,7 @@ static int usb_run_ctrl_selftest(usb *u)
     USBD_StdDevReq(pdev, &req);
     int ok_str = (pdev->dev.in_ep[0].xfer_len == 4);
     if (!ok_str) ok = 0;
-    printf("       ctrl GET_DESCRIPTOR(string0): len=%u expect=4 %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl GET_DESCRIPTOR(string0): len=%u expect=4 %s",
            (unsigned)pdev->dev.in_ep[0].xfer_len, ok_str ? "PASS" : "FAIL");
 
     /* (4) GET_LINE_CODING -> default 115200 8N1 */
@@ -474,7 +476,7 @@ static int usb_run_ctrl_selftest(usb *u)
     int ok_glc = (pdev->dev.in_ep[0].xfer_buff == u->line_coding) &&
                  (pdev->dev.in_ep[0].xfer_len == 7);
     if (!ok_glc) ok = 0;
-    printf("       ctrl GET_LINE_CODING: len=%u expect=7 %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl GET_LINE_CODING: len=%u expect=7 %s",
            (unsigned)pdev->dev.in_ep[0].xfer_len, ok_glc ? "PASS" : "FAIL");
 
     /* (5) SET_LINE_CODING 9600 then GET_LINE_CODING echoes it */
@@ -486,7 +488,7 @@ static int usb_run_ctrl_selftest(usb *u)
     usbd_cdc_feed_cmd(lc, 7);          /* emulate host OUT data + RxReady */
     int ok_slc = (u->line_coding[0] == 0x80) && (u->line_coding[1] == 0x25);
     if (!ok_slc) ok = 0;
-    printf("       ctrl SET/GET_LINE_CODING: 9600=%s\r\n", ok_slc ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl SET/GET_LINE_CODING: 9600=%s", ok_slc ? "PASS" : "FAIL");
 
     /* (6) SET_CONTROL_LINE_STATE (DTR) */
     uint8_t scl[8] = { 0x21, 0x22, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -495,7 +497,7 @@ static int usb_run_ctrl_selftest(usb *u)
     cdc_Setup(pdev, &req);
     int ok_cls = (u->line_state & 0x1) ? 1 : 0;
     if (!ok_cls) ok = 0;
-    printf("       ctrl SET_CONTROL_LINE_STATE: DTR=%s\r\n", ok_cls ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl SET_CONTROL_LINE_STATE: DTR=%s", ok_cls ? "PASS" : "FAIL");
 
     /* (7) SET_ADDRESS latched into DCFG.DAD */
     uint8_t sadd[8] = { 0x00, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -505,7 +507,7 @@ static int usb_run_ctrl_selftest(usb *u)
     uint8_t dad = (uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL);
     int ok_addr = (dad == 0x07);
     if (!ok_addr) ok = 0;
-    printf("       ctrl SET_ADDRESS(7): DAD=0x%02X %s\r\n", dad, ok_addr ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl SET_ADDRESS(7): DAD=0x%02X %s", dad, ok_addr ? "PASS" : "FAIL");
     DCD_EP_SetAddress(pdev, 0);        /* restore so real enumeration is clean */
 
     return ok ? 0 : -1;
@@ -561,60 +563,68 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
         uint32_t dctl = usb_hal_dctl(u->hal);
         uint32_t dsts = usb_hal_dsts(u->hal);
         uint32_t gccf = usb_hal_gccfg(u->hal);
-        printf("[usb] irq=%lu rst=%lu enum=%lu setup=%lu out=%lu in=%lu\r\n",
-               (unsigned long)u->dbg_irq, (unsigned long)u->dbg_rst,
-               (unsigned long)u->dbg_enum, (unsigned long)u->dbg_setup,
-               (unsigned long)u->dbg_out, (unsigned long)u->dbg_in);
-        printf("[usb] GINTSTS=0x%08lX GCCFG=0x%08lX DCTL=0x%08lX DSTS=0x%08lX\r\n",
-               (unsigned long)gint, (unsigned long)gccf,
-               (unsigned long)dctl, (unsigned long)dsts);
+        log_printf(app_log(), LOG_DEBUG, "usb",
+                   "irq=%lu rst=%lu enum=%lu setup=%lu out=%lu in=%lu",
+                   (unsigned long)u->dbg_irq, (unsigned long)u->dbg_rst,
+                   (unsigned long)u->dbg_enum, (unsigned long)u->dbg_setup,
+                   (unsigned long)u->dbg_out, (unsigned long)u->dbg_in);
+        log_printf(app_log(), LOG_DEBUG, "usb",
+                   "GINTSTS=0x%08lX GCCFG=0x%08lX DCTL=0x%08lX DSTS=0x%08lX",
+                   (unsigned long)gint, (unsigned long)gccf,
+                   (unsigned long)dctl, (unsigned long)dsts);
         /* Decode the MASKED (i.e. actually pending & firing) interrupt bits to
          * localize an interrupt storm. Bit positions from stm32f4 ref manual. */
         {
             uint32_t m = gint & u->hal->pdev->regs.GREGS->GINTMSK;
-            printf("[usb] GINT(masked)=0x%08lX:", (unsigned long)m);
-            if (m & (1UL<<4))  printf(" RXFLVL");
-            if (m & (1UL<<5))  printf(" NPTXFE");
-            if (m & (1UL<<11)) printf(" USBSUSP");
-            if (m & (1UL<<12)) printf(" USBRST");
-            if (m & (1UL<<13)) printf(" ENUMDNE");
-            if (m & (1UL<<15)) printf(" EOPF");
-            if (m & (1UL<<18)) printf(" IEPINT");
-            if (m & (1UL<<19)) printf(" OEPINT");
-            if (m & (1UL<<3))  printf(" SOF");
-            if (m & (1UL<<26)) printf(" CIDSCHG");
-            if (m & (1UL<<30)) printf(" SRQINT");
-            printf("\r\n");
-            printf("[usb] DIEPEMPMSK=0x%08lX bulk_tx_pending=%d g_out_nak=%d\r\n",
-                   (unsigned long)u->hal->pdev->regs.DREGS->DIEPEMPMSK,
-                   (int)u->bulk_tx_pending, (int)usbd_cdc_out_nak());
+            char bits[96] = "";
+            if (m & (1UL<<4))  strcat(bits, " RXFLVL");
+            if (m & (1UL<<5))  strcat(bits, " NPTXFE");
+            if (m & (1UL<<11)) strcat(bits, " USBSUSP");
+            if (m & (1UL<<12)) strcat(bits, " USBRST");
+            if (m & (1UL<<13)) strcat(bits, " ENUMDNE");
+            if (m & (1UL<<15)) strcat(bits, " EOPF");
+            if (m & (1UL<<18)) strcat(bits, " IEPINT");
+            if (m & (1UL<<19)) strcat(bits, " OEPINT");
+            if (m & (1UL<<3))  strcat(bits, " SOF");
+            if (m & (1UL<<26)) strcat(bits, " CIDSCHG");
+            if (m & (1UL<<30)) strcat(bits, " SRQINT");
+            log_printf(app_log(), LOG_DEBUG, "usb",
+                       "GINT(masked)=0x%08lX:%s DIEPEMPMSK=0x%08lX bulk_tx_pending=%d g_out_nak=%d",
+                       (unsigned long)m, bits,
+                       (unsigned long)u->hal->pdev->regs.DREGS->DIEPEMPMSK,
+                       (int)u->bulk_tx_pending, (int)usbd_cdc_out_nak());
         }
-        printf("[usb] addr=%u cfg=%u connected=%d line_state=0x%02X\r\n",
-               (unsigned)(uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL),
-               (unsigned)u->config, u->connected, (unsigned)u->line_state);
+        log_printf(app_log(), LOG_DEBUG, "usb",
+                   "addr=%u cfg=%u connected=%d line_state=0x%02X",
+                   (unsigned)(uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL),
+                   (unsigned)u->config, u->connected, (unsigned)u->line_state);
 
         /* CDC line coding (baud is VIRTUAL for USB VCP; stored, not timed).
          * Lets a host confirm the baud it set via SET_LINE_CODING was received. */
         uint32_t baud = (uint32_t)(u->line_coding[0] | (u->line_coding[1] << 8) |
                                    (u->line_coding[2] << 16) | (u->line_coding[3] << 24));
-        printf("[usb] line_coding: baud=%lu stop=%u parity=%u data=%u (8N1 default)\r\n",
-               (unsigned long)baud, (unsigned)u->line_coding[4],
-               (unsigned)u->line_coding[5], (unsigned)u->line_coding[6]);
+        log_printf(app_log(), LOG_DEBUG, "usb",
+                   "line_coding: baud=%lu stop=%u parity=%u data=%u (8N1 default)",
+                   (unsigned long)baud, (unsigned)u->line_coding[4],
+                   (unsigned)u->line_coding[5], (unsigned)u->line_coding[6]);
 
         uint32_t gusb = usb_hal_gusbcfg(u->hal);
-        printf("[usb] GUSBCFG=0x%08lX (FDMOD=%lu PHYSEL=%lu TRDT=%lu)\r\n",
-               (unsigned long)gusb, (unsigned long)((gusb >> 30) & 1),
-               (unsigned long)((gusb >> 6) & 1), (unsigned long)((gusb >> 10) & 0xF));
+        log_printf(app_log(), LOG_DEBUG, "usb",
+                   "GUSBCFG=0x%08lX (FDMOD=%lu PHYSEL=%lu TRDT=%lu)",
+                   (unsigned long)gusb, (unsigned long)((gusb >> 30) & 1),
+                   (unsigned long)((gusb >> 6) & 1), (unsigned long)((gusb >> 10) & 0xF));
         uint32_t dcfg = usb_hal_dcfg(u->hal);
-        printf("[usb] DCFG=0x%08lX DSPD=%lu DAD=%lu\r\n",
-               (unsigned long)dcfg, (unsigned long)(dcfg & 3),
-               (unsigned long)((dcfg >> 4) & 0x7FUL));
+        log_printf(app_log(), LOG_DEBUG, "usb",
+                   "DCFG=0x%08lX DSPD=%lu DAD=%lu",
+                   (unsigned long)dcfg, (unsigned long)(dcfg & 3),
+                   (unsigned long)((dcfg >> 4) & 0x7FUL));
 
         uint32_t diep0 = usb_hal_diepctl(u->hal, 0);
         uint32_t doep0 = usb_hal_doepctl(u->hal, 0);
-        printf("[usb] EP0 DIEPCTL=0x%08lX DOEPCTL=0x%08lX MPSIZ=%u/%u\r\n",
-               (unsigned long)diep0, (unsigned long)doep0,
-               (unsigned)(diep0 & 0x3UL), (unsigned)(doep0 & 0x3UL));
+        log_printf(app_log(), LOG_DEBUG, "usb",
+                   "EP0 DIEPCTL=0x%08lX DOEPCTL=0x%08lX MPSIZ=%u/%u",
+                   (unsigned long)diep0, (unsigned long)doep0,
+                   (unsigned)(diep0 & 0x3UL), (unsigned)(doep0 & 0x3UL));
 
         /* EP1 bulk IN/OUT state — to localize a streaming stall (OUT not armed
          * vs IN stuck). xfer_count = bytes moved so far on that endpoint. */
@@ -622,14 +632,16 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
             USB_OTG_CORE_HANDLE *pdev = u->hal->pdev;
             uint32_t diep1 = usb_hal_diepctl(u->hal, 1);
             uint32_t doep1 = usb_hal_doepctl(u->hal, 1);
-            printf("[usb] EP1 IN  DIEPCTL=0x%08lX xfer_count=%u xfer_len=%u\r\n",
-                   (unsigned long)diep1,
-                   (unsigned)pdev->dev.in_ep[1].xfer_count,
-                   (unsigned)pdev->dev.in_ep[1].xfer_len);
-            printf("[usb] EP1 OUT DOEPCTL=0x%08lX xfer_count=%u xfer_len=%u\r\n",
-                   (unsigned long)doep1,
-                   (unsigned)pdev->dev.out_ep[1].xfer_count,
-                   (unsigned)pdev->dev.out_ep[1].xfer_len);
+            log_printf(app_log(), LOG_DEBUG, "usb",
+                       "EP1 IN  DIEPCTL=0x%08lX xfer_count=%u xfer_len=%u",
+                       (unsigned long)diep1,
+                       (unsigned)pdev->dev.in_ep[1].xfer_count,
+                       (unsigned)pdev->dev.in_ep[1].xfer_len);
+            log_printf(app_log(), LOG_DEBUG, "usb",
+                       "EP1 OUT DOEPCTL=0x%08lX xfer_count=%u xfer_len=%u",
+                       (unsigned long)doep1,
+                       (unsigned)pdev->dev.out_ep[1].xfer_count,
+                       (unsigned)pdev->dev.out_ep[1].xfer_len);
         }
 
         /* DECISIVE TEST: can DCFG.DAD be written at all, and does it stick?
@@ -637,15 +649,19 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
         {
             uint8_t save = (uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL);
             uint8_t probes[] = { 5, 9, 17, 0x7F };
-            printf("[usb] DCFG.DAD write test (immediate readback):\r\n");
+            log_printf(app_log(), LOG_DEBUG, "usb",
+                       "DCFG.DAD write test (immediate readback):");
             for (int t = 0; t < 4; t++) {
                 DCD_EP_SetAddress(u->hal->pdev, probes[t]);
                 uint8_t rb = (uint8_t)((usb_hal_dcfg(u->hal) >> 4) & 0x7FUL);
-                printf("       wrote=%u readback=%u %s\r\n",
-                       (unsigned)probes[t], (unsigned)rb, (rb == probes[t]) ? "OK" : "FAIL");
+                log_printf(app_log(), LOG_DEBUG, "usb",
+                           "      wrote=%u readback=%u %s",
+                           (unsigned)probes[t], (unsigned)rb,
+                           (rb == probes[t]) ? "OK" : "FAIL");
             }
             DCD_EP_SetAddress(u->hal->pdev, save);
-            printf("       restored DAD=%u\r\n", (unsigned)save);
+            log_printf(app_log(), LOG_DEBUG, "usb",
+                       "      restored DAD=%u", (unsigned)save);
         }
         return 0;
     }

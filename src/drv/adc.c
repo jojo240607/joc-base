@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>                     /* printf for conflict diagnostics */
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual implementations dispatched through the unified device vtable */
 static int adc_dev_open(device *self);
@@ -239,7 +241,7 @@ static void adc_hw_init(adc *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm && self->channel < 16U) {
         if (pm->fun->request(pm, self->port, self->pin, self->af, self->parent.parent.name) != 0) {
-            printf("[adc] %s: pin P%c%d CONFLICT — refused\r\n",
+            log_printf(app_log(), LOG_DEBUG, "adc", "%s: pin P%c%d CONFLICT — refused",
                    self->parent.parent.name, 'A' + self->port, self->pin);
             return;                          /* conflict: do NOT configure */
         }
