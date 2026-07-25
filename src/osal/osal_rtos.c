@@ -11,9 +11,9 @@
  *   - 若在中断上下文调用 wait（不应发生），同样退化为忙等，避免死锁。
  * ------------------------------------------------------------------------- */
 
-/* 读 SCB->ICSR 的 VECTACTIVE 域判断是否在 ISR 中 */
+/* 读 SCB->ICSR 的 VECTACTIVE 域判断是否在 ISR 中（透过 port/lock 头，避免散落魔法地址） */
 static int osal_in_interrupt(void) {
-    return (((*(volatile uint32_t *)0xE000ED04u) & 0x1FFu) != 0u);
+    return arch_in_isr();
 }
 
 void osal_sem_init(osal_sem_t *s, int val) {

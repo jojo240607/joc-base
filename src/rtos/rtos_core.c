@@ -1,7 +1,6 @@
 #include "rtos.h"
 #include "common/lock.h"
 #include "irq.h"
-#include "irq_hal.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -145,8 +144,9 @@ void rtos_init(void) {
     }
     g_sleep_head = (task_t *)0;
     g_task_count = 0;
-    /* 在 systick 共享线上注册 RTOS 节拍（与 systick 驱动 ISR 并存） */
-    irq_register(irq_hal_systick_id(), rtos_tick_isr, (void *)0);
+    /* 在 systick 共享线上注册 RTOS 节拍（与 systick 驱动 ISR 并存）。
+     * 节拍中断 id 由 arch 层给出，核心不直接依赖任何芯片 HAL。 */
+    irq_register(rtos_arch_tick_id(), rtos_tick_isr, (void *)0);
 }
 
 void rtos_task_create(const char *name, void (*entry)(void *), void *arg,

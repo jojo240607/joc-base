@@ -1,11 +1,23 @@
 #include "rtos_mpu.h"
 #include "log/log.h"
 #include "log/app_log.h"
-#include "stm32f4xx.h"   /* MPU_Type / SCB_Type / CMSIS 内联 */
+#include <stdint.h>
 
 /* ---------------------------------------------------------------------------
- * MPU 固定区域 + 栈哨兵 + 故障恢复
+ * arch 层（Cortex-M4）：MPU 固定区域编程 + 栈哨兵 + 故障恢复。
+ *
+ * 本文件是内核核心与底层硬件之间的隔离层：只依赖 ARMv7-M 的 ISA 头
+ * core_cm4.h（MPU / SCB），绝不包含任何厂商芯片头（如 stm32f4xx.h）。
+ *
+ * 注意：MPU 是 ISA 特性（所有 Cortex-M 共有），但“区域布局”（Flash/SRAM/
+ * 外设基址与大小）属于芯片内存映射，是换芯片时需要调整的【移植旋钮】，
+ * 集中在下方 mpu_set_region() 调用处，便于按新芯片修改。
  * ------------------------------------------------------------------------- */
+
+/* 移植旋钮 + ISA 级最小 IRQn 定义（见 cortex_m.h 注释；换芯片只改该头） */
+#include "cortex_m.h"
+#include "core_cm4.h"   /* CMSIS ISA 头：SCB / NVIC / FPU / SysTick_IRQn */
+#include "mpu_armv7.h"  /* CMSIS ISA 头：MPU_Type / MPU / MPU_CTRL_*（MPU 是 ISA 特性） */
 
 volatile int      g_mpu_violation  = 0;
 volatile int      g_mpu_test_active = 0;

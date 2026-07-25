@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "rtos_config.h"
+#include "arch/rtos_arch.h"   /* 移植契约：arch 层必须提供的入口（rtos_arch_start / rtos_schedule_request / rtos_arch_tick_id） */
 
 /* ---------------------------------------------------------------------------
  * jOS RTOS 公开 API
@@ -85,9 +86,9 @@ extern volatile int g_stack_overflow;
 void  rtos_pend(void **waitq_head);
 void  rtos_post(void **waitq_head);
 
-/* ---- 内部：arch 层实现 ---- */
-void rtos_arch_start(void);          /* 配置 FPU/PendSV 优先级并触发首次切换 */
-void rtos_schedule_request(void);    /* 置 PENDSVSET，请求上下文切换 */
+/* ---- 内部：arch 层接口（契约见 src/rtos/arch/rtos_arch.h） ----
+ * rtos_arch_start / rtos_schedule_request / rtos_arch_tick_id 由 arch 层实现；
+ * 此处仅保留“可移植核心”自身实现、但供汇编/外部调用的符号。 */
 void *rtos_pendsv_switch(void *old_sp); /* 由 PendSV 汇编调用，返回新 sp */
 void  rtos_tick_isr(void *ctx);        /* 由 systick 共享线调用 */
 void rtos_mpu_init(void);             /* 配置固定 MPU 区域并使能（对特权任务透明） */

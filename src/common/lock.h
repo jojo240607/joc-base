@@ -68,6 +68,13 @@ static inline bool irq_is_disabled(void) {
     return (state & 0x1U) != 0U;
 }
 
+/* 是否处于中断上下文（Handler 模式）：读 Cortex-M 的 SCB->ICSR.VECTACTIVE。
+ * 这是 ISA 级探测，集中放在本 port/lock 头里，避免各处散落 0xE000ED04 魔法地址。
+ * 注意：本函数仅判断“是否在异常/ISR 中”，不区分具体是哪个中断。 */
+static inline int arch_in_isr(void) {
+    return (((*(volatile uint32_t *)0xE000ED04u) & 0x1FFu) != 0u);
+}
+
 #else  /* host / 非 arm：空操作桩，仅用于编译与逻辑自测 */
 
 static inline irq_state_t irq_lock(void)        { return 0U; }
@@ -75,6 +82,9 @@ static inline void irq_unlock(irq_state_t s)    { (void)s; }
 static inline void sched_lock(uint8_t prio)     { (void)prio; }
 static inline void sched_unlock(void)           { }
 static inline bool irq_is_disabled(void)        { return false; }
+
+/* host 桩：永不处于中断上下文 */
+static inline int arch_in_isr(void)              { return 0; }
 
 #endif
 

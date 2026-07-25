@@ -1,9 +1,14 @@
 /*
- * Cortex-M4 上下文切换汇编
+ * Cortex-M4 上下文切换汇编（arch 层实现，ISA 相关）
  *  - PendSV_Handler：保存/恢复 r4-r11 与 EXC_RETURN，调用 C 侧选下一任务。
  *  - SVC_Handler   ：首次切换到第一个任务（从线程模式 MSP 切到 PSP）。
+ *  - MemManage / HardFault_Handler：把异常帧交给 C 侧 rtos_fault_handler。
  *
- * 这些符号覆盖 startup_stm32f407xx.s 中的弱符号 PendSV_Handler / SVC_Handler。
+ * 这些符号覆盖 startup 向量表里的弱符号 PendSV_Handler / SVC_Handler /
+ * MemManage_Handler / HardFault_Handler。
+ *
+ * 本文件是“可移植内核核心”与底层之间的隔离层之一：它只依赖 ARMv7-M 指令集
+ * 与 Cortex-M 异常模型，不碰任何芯片外设。
  */
     .syntax unified
     .thumb
