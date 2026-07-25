@@ -72,7 +72,10 @@ def main():
             if not line:
                 continue
             print(f"  board> {line}")
-            if line.startswith("SELF-TEST:"):
+            # The board now emits BIST through the logger, so the line is
+            # prefixed (e.g. "D/selftest: SELF-TEST: PASS"). Match as a
+            # substring rather than a strict startswith.
+            if "SELF-TEST:" in line:
                 bist_ok = "PASS" in line
                 break
         if bist_ok:

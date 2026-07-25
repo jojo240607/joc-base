@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>                     /* printf for conflict diagnostics */
+#include "log/log.h"
+#include "log/app_log.h"
 
 static uart *g_console = NULL;
 
@@ -242,11 +244,11 @@ static int uart_dev_open(device *self)
 
         /* TX */
         if (!pinmux_hal_resolve(u->tx_signal, &port, &pin, &af)) {
-            printf("[uart] %s: unknown TX signal \"%s\"\r\n", u->parent.parent.name, u->tx_signal);
+            log_printf(app_log(), LOG_DEBUG, "uart", "[uart] %s: unknown TX signal \"%s\"\n", u->parent.parent.name, u->tx_signal);
             return -3;
         }
         if (pm->fun->request(pm, port, pin, af, u->parent.parent.name) != 0) {
-            printf("[uart] %s: TX pin P%c%d CONFLICT — refused\r\n",
+            log_printf(app_log(), LOG_DEBUG, "uart", "[uart] %s: TX pin P%c%d CONFLICT — refused\n",
                    u->parent.parent.name, 'A' + port, pin);
             return -2;                       /* conflict: do NOT configure */
         }
@@ -255,12 +257,12 @@ static int uart_dev_open(device *self)
 
         /* RX */
         if (!pinmux_hal_resolve(u->rx_signal, &port, &pin, &af)) {
-            printf("[uart] %s: unknown RX signal \"%s\"\r\n", u->parent.parent.name, u->rx_signal);
+            log_printf(app_log(), LOG_DEBUG, "uart", "[uart] %s: unknown RX signal \"%s\"\n", u->parent.parent.name, u->rx_signal);
             pm->fun->release_owner(pm, u->parent.parent.name);   /* roll back TX */
             return -3;
         }
         if (pm->fun->request(pm, port, pin, af, u->parent.parent.name) != 0) {
-            printf("[uart] %s: RX pin P%c%d CONFLICT — refused\r\n",
+            log_printf(app_log(), LOG_DEBUG, "uart", "[uart] %s: RX pin P%c%d CONFLICT — refused\n",
                    u->parent.parent.name, 'A' + port, pin);
             pm->fun->release_owner(pm, u->parent.parent.name);   /* roll back TX */
             return -2;

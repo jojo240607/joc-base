@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /*
  * SD Card driver — BLOCK device. Drives the SD protocol through an
@@ -72,7 +74,7 @@ static int sc_dev_open(device *self)
     p->bus_dev = device_manager_get(p->parent.parent.name ? "sdio0" : NULL);
     /* ^ TODO: use the config's bus_name — needs a field in struct.
      * For now, hardcode sdio0 since bus_type==0 implies sdio. */
-    if (!p->bus_dev) { printf("[sd_card] no bus device\r\n"); return -1; }
+    if (!p->bus_dev) { log_printf(app_log(), LOG_DEBUG, "sd_card", "[sd_card] no bus device\n"); return -1; }
     /* The bus device (sdio0) must already be opened by the application. */
     return 0;
 }

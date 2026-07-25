@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* Fixed PLLI2S settings used by the driver (PLLI2S input = HSE/PLLM = 1 MHz).
  * N=258, R=3 => PLLI2SVCO = 258 MHz, I2SxCLK = 258/3 = 86 MHz. The prescaler in
@@ -56,21 +58,21 @@ device *i2s_create(const void *config)
 
     pinmux_port_t wp; uint8_t wpn, waf;
     if (!pinmux_hal_resolve(c->ws_signal, &wp, &wpn, &waf)) {
-        printf("[i2s] %s: unknown WS \"%s\"\r\n", c->name, c->ws_signal);
+        log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: unknown WS \"%s\"\n", c->name, c->ws_signal);
         free(p); return NULL;
     }
     pinmux_port_t kp; uint8_t kpn, kaf;
     if (!pinmux_hal_resolve(c->ck_signal, &kp, &kpn, &kaf)) {
-        printf("[i2s] %s: unknown CK \"%s\"\r\n", c->name, c->ck_signal);
+        log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: unknown CK \"%s\"\n", c->name, c->ck_signal);
         free(p); return NULL;
     }
     pinmux_port_t dp; uint8_t dpn, daf;
     if (!pinmux_hal_resolve(c->sd_signal, &dp, &dpn, &daf)) {
-        printf("[i2s] %s: unknown SD \"%s\"\r\n", c->name, c->sd_signal);
+        log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: unknown SD \"%s\"\n", c->name, c->sd_signal);
         free(p); return NULL;
     }
     if (waf != kaf || waf != daf) {
-        printf("[i2s] %s: AF mismatch WS=%u CK=%u SD=%u\r\n",
+        log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: AF mismatch WS=%u CK=%u SD=%u\n",
                c->name, (unsigned)waf, (unsigned)kaf, (unsigned)daf);
         free(p); return NULL;
     }
@@ -80,7 +82,7 @@ device *i2s_create(const void *config)
         if (pinmux_hal_resolve(c->extsd_signal, &p->esd_port, &p->esd_pin, &p->esd_af)) {
             p->has_esd = 1;
         } else {
-            printf("[i2s] %s: unknown extSD \"%s\" (ignored)\r\n",
+            log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: unknown extSD \"%s\" (ignored)\n",
                    c->name, c->extsd_signal);
         }
     }
@@ -121,20 +123,20 @@ static int i2s_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, p->ws_port, p->ws_pin, p->ws_af, p->parent.parent.name) != 0) {
-            printf("[i2s] %s: WS P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: WS P%c%d CONFLICT\n", p->parent.parent.name,
                    'A' + (int)p->ws_port, (int)p->ws_pin); return -2;
         }
         if (pm->fun->request(pm, p->ck_port, p->ck_pin, p->ck_af, p->parent.parent.name) != 0) {
-            printf("[i2s] %s: CK P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: CK P%c%d CONFLICT\n", p->parent.parent.name,
                    'A' + (int)p->ck_port, (int)p->ck_pin); return -2;
         }
         if (pm->fun->request(pm, p->sd_port, p->sd_pin, p->sd_af, p->parent.parent.name) != 0) {
-            printf("[i2s] %s: SD P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: SD P%c%d CONFLICT\n", p->parent.parent.name,
                    'A' + (int)p->sd_port, (int)p->sd_pin); return -2;
         }
         if (p->has_esd) {
             if (pm->fun->request(pm, p->esd_port, p->esd_pin, p->esd_af, p->parent.parent.name) != 0) {
-                printf("[i2s] %s: extSD P%c%d CONFLICT\r\n", p->parent.parent.name,
+                log_printf(app_log(), LOG_DEBUG, "i2s", "[i2s] %s: extSD P%c%d CONFLICT\n", p->parent.parent.name,
                        'A' + (int)p->esd_port, (int)p->esd_pin); return -2;
             }
         }

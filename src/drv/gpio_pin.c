@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>                     /* printf for conflict diagnostics */
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual implementations dispatched through the unified device vtable */
 static int gpio_dev_open(device *self);
@@ -55,7 +57,7 @@ device *gpio_pin_create(const void *config)
      * the pin through the pinmux later. A plain GPIO pin uses af = 0. */
     pinmux_port_t port; uint8_t pin, af;
     if (!pinmux_hal_resolve(c->signal, &port, &pin, &af)) {
-        printf("[gpio] %s: unknown signal \"%s\"\r\n", c->name, c->signal);
+        log_printf(app_log(), LOG_DEBUG, "gpio", "[gpio] %s: unknown signal \"%s\"\n", c->name, c->signal);
         free(self);
         return NULL;
     }
@@ -116,7 +118,7 @@ static int gpio_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, g->port, g->pin, g->af, g->parent.parent.name) != 0) {
-            printf("[gpio] %s: pin P%c%d CONFLICT — refused\r\n",
+            log_printf(app_log(), LOG_DEBUG, "gpio", "[gpio] %s: pin P%c%d CONFLICT — refused\n",
                    g->parent.parent.name, 'A' + g->port, (int)g->pin);
             return -2;                       /* conflict: do NOT configure */
         }

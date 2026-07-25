@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual implementations dispatched through the unified device vtable */
 static int pwm_dev_open(device *self);
@@ -58,7 +60,7 @@ device *pwm_create(const void *config)
      * the pin through the pinmux later and know which pad we own. */
     pinmux_port_t port; uint8_t pin, af;
     if (!pinmux_hal_resolve(c->pin_signal, &port, &pin, &af)) {
-        printf("[pwm] %s: unknown signal \"%s\"\r\n", c->name, c->pin_signal);
+        log_printf(app_log(), LOG_DEBUG, "pwm", "[pwm] %s: unknown signal \"%s\"\n", c->name, c->pin_signal);
         free(p);
         return NULL;
     }
@@ -91,7 +93,7 @@ device *pwm_create(const void *config)
     if (c->comp_pin_signal) {
         pinmux_port_t cp; uint8_t cpn, cpa;
         if (!pinmux_hal_resolve(c->comp_pin_signal, &cp, &cpn, &cpa)) {
-            printf("[pwm] %s: unknown complementary signal \"%s\"\r\n",
+            log_printf(app_log(), LOG_DEBUG, "pwm", "[pwm] %s: unknown complementary signal \"%s\"\n",
                    c->name, c->comp_pin_signal);
             free(p);
             return NULL;
@@ -118,7 +120,7 @@ static int pwm_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, p->port, p->pin, p->af, p->parent.parent.name) != 0) {
-            printf("[pwm] %s: pin P%c%d CONFLICT — refused\r\n",
+            log_printf(app_log(), LOG_DEBUG, "pwm", "[pwm] %s: pin P%c%d CONFLICT — refused\n",
                    p->parent.parent.name, 'A' + (int)p->port, (int)p->pin);
             return -2;
         }
@@ -130,7 +132,7 @@ static int pwm_dev_open(device *self)
         if (p->comp_port) {
             if (pm->fun->request(pm, p->comp_port, p->comp_pin, p->comp_af,
                                  p->parent.parent.name) != 0) {
-                printf("[pwm] %s: complementary pin P%c%d CONFLICT — refused\r\n",
+                log_printf(app_log(), LOG_DEBUG, "pwm", "[pwm] %s: complementary pin P%c%d CONFLICT — refused\n",
                        p->parent.parent.name, 'A' + (int)p->comp_port,
                        (int)p->comp_pin);
                 return -2;

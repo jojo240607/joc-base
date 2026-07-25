@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual implementations dispatched through the unified device vtable */
 static int spi_dev_open(device *self);
@@ -57,21 +59,21 @@ device *spi_create(const void *config)
 
     pinmux_port_t sp; uint8_t spn, saf;
     if (!pinmux_hal_resolve(c->sck_signal, &sp, &spn, &saf)) {
-        printf("[spi] %s: unknown SCK \"%s\"\r\n", c->name, c->sck_signal);
+        log_printf(app_log(), LOG_DEBUG, "spi", "[spi] %s: unknown SCK \"%s\"\n", c->name, c->sck_signal);
         free(p); return NULL;
     }
     pinmux_port_t mp; uint8_t mpn, maf;
     if (!pinmux_hal_resolve(c->miso_signal, &mp, &mpn, &maf)) {
-        printf("[spi] %s: unknown MISO \"%s\"\r\n", c->name, c->miso_signal);
+        log_printf(app_log(), LOG_DEBUG, "spi", "[spi] %s: unknown MISO \"%s\"\n", c->name, c->miso_signal);
         free(p); return NULL;
     }
     pinmux_port_t dp; uint8_t dpn, daf;
     if (!pinmux_hal_resolve(c->mosi_signal, &dp, &dpn, &daf)) {
-        printf("[spi] %s: unknown MOSI \"%s\"\r\n", c->name, c->mosi_signal);
+        log_printf(app_log(), LOG_DEBUG, "spi", "[spi] %s: unknown MOSI \"%s\"\n", c->name, c->mosi_signal);
         free(p); return NULL;
     }
     if (saf != maf || saf != daf) {
-        printf("[spi] %s: AF mismatch SCK=%u MISO=%u MOSI=%u\r\n",
+        log_printf(app_log(), LOG_DEBUG, "spi", "[spi] %s: AF mismatch SCK=%u MISO=%u MOSI=%u\n",
                c->name, (unsigned)saf, (unsigned)maf, (unsigned)daf);
         free(p); return NULL;
     }
@@ -109,15 +111,15 @@ static int spi_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, p->sck_port, p->sck_pin, p->sck_af, p->parent.parent.name) != 0) {
-            printf("[spi] %s: SCK P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "spi", "[spi] %s: SCK P%c%d CONFLICT\n", p->parent.parent.name,
                    'A' + (int)p->sck_port, (int)p->sck_pin); return -2;
         }
         if (pm->fun->request(pm, p->miso_port, p->miso_pin, p->miso_af, p->parent.parent.name) != 0) {
-            printf("[spi] %s: MISO P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "spi", "[spi] %s: MISO P%c%d CONFLICT\n", p->parent.parent.name,
                    'A' + (int)p->miso_port, (int)p->miso_pin); return -2;
         }
         if (pm->fun->request(pm, p->mosi_port, p->mosi_pin, p->mosi_af, p->parent.parent.name) != 0) {
-            printf("[spi] %s: MOSI P%c%d CONFLICT\r\n", p->parent.parent.name,
+            log_printf(app_log(), LOG_DEBUG, "spi", "[spi] %s: MOSI P%c%d CONFLICT\n", p->parent.parent.name,
                    'A' + (int)p->mosi_port, (int)p->mosi_pin); return -2;
         }
         pinmux_pin_cfg_t cfg = { .af = p->sck_af, .mode = 2, .otype = 0, .speed = 3, .pupd = 0 };

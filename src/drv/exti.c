@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual impls dispatched through the event_device vtable */
 static int exti_set_cb(event_device *self, device_event_type_t ev,
@@ -99,7 +101,7 @@ static int exti_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, e->port, e->pin, e->af, e->parent.parent.name) != 0) {
-            printf("[exti] %s: pin P%c%d CONFLICT — refused\r\n",
+            log_printf(app_log(), LOG_DEBUG, "exti", "[exti] %s: pin P%c%d CONFLICT — refused\n",
                    e->parent.parent.name, 'A' + (int)e->port, (int)e->pin);
             return -2;
         }
@@ -158,7 +160,7 @@ device *exti_create(const void *config)
 
     pinmux_port_t port; uint8_t pin, af;
     if (!pinmux_hal_resolve(c->pin_signal, &port, &pin, &af)) {
-        printf("[exti] %s: unknown signal \"%s\"\r\n", c->name, c->pin_signal);
+        log_printf(app_log(), LOG_DEBUG, "exti", "[exti] %s: unknown signal \"%s\"\n", c->name, c->pin_signal);
         return NULL;
     }
 

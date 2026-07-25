@@ -2,6 +2,8 @@
 #include "irq_manager.h"     /* dump the centralized interrupt registry in BIST */
 #include "stm32f4xx.h"
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -140,108 +142,108 @@ int selftest_run(selftest *self)
     int pass = 1;
     int r;
 
-    printf("\r\n--- On-board self-test (BIST) ---\r\n");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "\n--- On-board self-test (BIST) ---\n");
 
     irq_manager_dump();   /* dump the centralized interrupt registry (verify wiring) */
 
     r = self->vtable->test_clock(self);
-    printf("[BIST] clock : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] clock : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_uart(self);
-    printf("[BIST] uart  : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] uart  : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_gpio(self);
-    printf("[BIST] gpio  : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] gpio  : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_adc(self);
-    printf("[BIST] adc   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] adc   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_temp(self);
-    printf("[BIST] temp  : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] temp  : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_io(self);
-    printf("[BIST] io    : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] io    : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_mode(self);
-    printf("[BIST] mode  : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] mode  : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_timer(self);
-    printf("[BIST] timer : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] timer : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_pwm(self);
-    printf("[BIST] pwm   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] pwm   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_exti(self);
-    printf("[BIST] exti  : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] exti  : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_adv_timer(self);
-    printf("[BIST] adv_timer: %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] adv_timer: %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_adv_pwm(self);
-    printf("[BIST] adv_pwm  : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] adv_pwm  : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_i2c(self);
-    printf("[BIST] i2c    : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] i2c    : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_spi(self);
-    printf("[BIST] spi    : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] spi    : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_sdio(self);
-    printf("[BIST] sdio   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] sdio   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_dac(self);
-    printf("[BIST] dac    : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] dac    : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_rtc(self);
-    printf("[BIST] rtc    : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] rtc    : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_rng(self);
-    printf("[BIST] rng    : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] rng    : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_crc(self);
-    printf("[BIST] crc    : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] crc    : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_iwdg(self);
-    printf("[BIST] iwdg   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] iwdg   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_wwdg(self);
-    printf("[BIST] wwdg   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] wwdg   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_flash(self);
-    printf("[BIST] flash : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] flash : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_i2s(self);
-    printf("[BIST] i2s   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] i2s   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_can(self);
-    printf("[BIST] can   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] can   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
     r = self->vtable->test_usb(self);
-    printf("[BIST] usb   : %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] usb   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
 
@@ -249,10 +251,10 @@ int selftest_run(selftest *self)
     /* ring buffer utility class (common/) — exercised standalone so the class
      * itself is proven independent of any driver. */
     r = ringbuffer_run_selftest();
-    printf("[BIST] ringbuf: %s\r\n", r ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] ringbuf: %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
-    printf("SELF-TEST: %s\r\n", pass ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "SELF-TEST: %s\n", pass ? "PASS" : "FAIL");
     return pass;
 }
 
@@ -314,7 +316,7 @@ static int selftest_vadc(selftest *self)
     adc->vtable->ioctl(adc, ADC_IOCTL_SET_CHANNEL, &zero);   /* restore external channel */
 
     int vref_ok = (vref >= 800U && vref <= 2200U);
-    printf("       VREFINT raw=%lu (expect ~1500) %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       VREFINT raw=%lu (expect ~1500) %s\n",
            (unsigned long)vref, vref_ok ? "" : "[OUT OF RANGE]");
     return vref_ok;
 }
@@ -332,7 +334,7 @@ static int selftest_vtemp(selftest *self)
 
     int32_t ip = t10 / 10;
     int32_t fp = (t10 < 0) ? -(t10 % 10) : (t10 % 10);
-    printf("       die temp = %ld.%ld C (cal1=%u cal2=%u)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       die temp = %ld.%ld C (cal1=%u cal2=%u)\n",
            (long)ip, (long)fp, (unsigned)cal1, (unsigned)cal2);
 
     /* A running STM32 die is typically 10..90 C; accept a wide band so the
@@ -361,7 +363,7 @@ static int selftest_vio(selftest *self)
     io_xfer_t has_submit = { .buf = dummy, .len = 0, .dir = IO_XFER_DIR_WRITE };
     int accepted = (stream_device_transfer_async(us, &has_submit) == 0);   /* uart: has submit */
 
-    printf("       downcast ok, async reject(adc)=%s accept(uart)=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       downcast ok, async reject(adc)=%s accept(uart)=%s\n",
            rejected ? "yes" : "NO", accepted ? "yes" : "NO");
     return rejected && accepted;
 }
@@ -399,7 +401,7 @@ static int selftest_vmode(selftest *self)
     uart->vtable->ioctl(uart, STREAM_IOCTL_GET_MODE, &got);
     if (got != STREAM_MODE_IRQ) ok = 0;
 
-    printf("       adc irq read=%lu, uart mode switch %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       adc irq read=%lu, uart mode switch %s\n",
            (unsigned long)adc_irq, ok ? "ok" : "FAIL");
     return ok;
 }
@@ -433,10 +435,10 @@ static int selftest_timer_shared_line(const char *na, const char *nb)
 {
     device *da = device_manager_get(na);
     device *db = device_manager_get(nb);
-    if (!da || !db) { printf("       %s+%s: MISSING\r\n", na, nb); return 0; }
+    if (!da || !db) { log_printf(app_log(), LOG_DEBUG, "selftest", "       %s+%s: MISSING\n", na, nb); return 0; }
     event_device *ea = device_as_event(da);
     event_device *eb = device_as_event(db);
-    if (!ea || !eb) { printf("       %s+%s: not-event\r\n", na, nb); return 0; }
+    if (!ea || !eb) { log_printf(app_log(), LOG_DEBUG, "selftest", "       %s+%s: not-event\n", na, nb); return 0; }
 
     g_timer_cb_a = g_timer_cb_b = 0;
     ea->vtable->set_event_callback(ea, DEVICE_EVENT_TICK, selftest_timer_cb_a, NULL);
@@ -463,7 +465,7 @@ static int selftest_timer_shared_line(const char *na, const char *nb)
     int ok_b  = (ob >= 2U && g_timer_cb_b >= 2U);
     int ok    = ok_a && ok_b;
     if (!ok) ok = 0;
-    printf("       %s+%s: ov_a=%lu cb_a=%lu, ov_b=%lu cb_b=%lu (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       %s+%s: ov_a=%lu cb_a=%lu, ov_b=%lu cb_b=%lu (%s)\n",
            na, nb, (unsigned long)oa, (unsigned long)g_timer_cb_a,
            (unsigned long)ob, (unsigned long)g_timer_cb_b,
            ok ? "PASS" : "FAIL");
@@ -481,9 +483,9 @@ static int selftest_vtimer(selftest *self)
     int ok = 1;
     for (unsigned i = 0; i < sizeof(timers) / sizeof(timers[0]); i++) {
         device *tim = device_manager_get(timers[i]);
-        if (!tim) { ok = 0; printf("       %s: MISSING\r\n", timers[i]); continue; }
+        if (!tim) { ok = 0; log_printf(app_log(), LOG_DEBUG, "selftest", "       %s: MISSING\n", timers[i]); continue; }
         event_device *te = device_as_event(tim);
-        if (!te)  { ok = 0; printf("       %s: not-event\r\n", timers[i]); continue; }
+        if (!te)  { ok = 0; log_printf(app_log(), LOG_DEBUG, "selftest", "       %s: not-event\n", timers[i]); continue; }
 
         g_timer_cb_count = 0;
         te->vtable->set_event_callback(te, DEVICE_EVENT_TICK, selftest_timer_cb, NULL);
@@ -502,7 +504,7 @@ static int selftest_vtimer(selftest *self)
         int ok_isr = (ov >= 2U);
         int ok_cb  = (g_timer_cb_count >= 2U);
         if (!ok_isr || !ok_cb) ok = 0;
-        printf("       %s: overflows=%lu (ISR %s), cb=%lu (cb %s)\r\n",
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       %s: overflows=%lu (ISR %s), cb=%lu (cb %s)\n",
                timers[i], (unsigned long)ov, ok_isr ? "PASS" : "FAIL",
                (unsigned long)g_timer_cb_count, ok_cb ? "PASS" : "FAIL");
     }
@@ -526,9 +528,9 @@ static int selftest_vpwm(selftest *self)
     (void)self;
     device *tim = device_manager_get("timer11");  /* TIM3, 20 Hz TICK source */
     device *pwmd = device_manager_get("pwm0");     /* TIM3 CH1, coordinates */
-    if (!tim || !pwmd) { printf("       pwm0/timer11: MISSING\r\n"); return 0; }
+    if (!tim || !pwmd) { log_printf(app_log(), LOG_DEBUG, "selftest", "       pwm0/timer11: MISSING\n"); return 0; }
     event_device *te = device_as_event(tim);
-    if (!te) { printf("       timer11: not-event\r\n"); return 0; }
+    if (!te) { log_printf(app_log(), LOG_DEBUG, "selftest", "       timer11: not-event\n"); return 0; }
 
     /* 1) bring up the timer driver first (owns TIM3 period + counter). */
     tim->vtable->open(tim);
@@ -536,7 +538,7 @@ static int selftest_vpwm(selftest *self)
 
     /* 2) bring up PWM on the SAME TIM3 (coord mode: channel + duty only). */
     if (pwmd->vtable->open(pwmd) != 0) {
-        printf("       pwm0: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       pwm0: OPEN FAILED (pin conflict?)\n");
         te->vtable->disable(te); tim->vtable->close(tim);
         return 0;
     }
@@ -573,15 +575,15 @@ static int selftest_vpwm(selftest *self)
     int ok_coord = (ov_after > ov_before);   /* timer event still firing on shared TIM */
 
     if (!ok_period || !ok_50 || !ok_25 || !ok_coord) ok = 0;
-    printf("       pwm0(TIM3_CH1): period=%lu ticks (expect %lu, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       pwm0(TIM3_CH1): period=%lu ticks (expect %lu, %s)\n",
            (unsigned long)period, (unsigned long)exp_period,
            ok_period ? "PASS" : "FAIL");
-    printf("         duty@50%%=%lu (~%lu, %s), duty@25%%=%lu (~%lu, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "         duty@50%%=%lu (~%lu, %s), duty@25%%=%lu (~%lu, %s)\n",
            (unsigned long)duty50, (unsigned long)(period/2),
            ok_50 ? "PASS" : "FAIL",
            (unsigned long)duty25, (unsigned long)(period/4),
            ok_25 ? "PASS" : "FAIL");
-    printf("         timer11 overflows %lu->%lu while PWM live (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "         timer11 overflows %lu->%lu while PWM live (%s)\n",
            (unsigned long)ov_before, (unsigned long)ov_after,
            ok_coord ? "PASS" : "FAIL");
 
@@ -602,10 +604,10 @@ static int selftest_vi2c(selftest *self)
 {
     (void)self;
     device *i2cd = device_manager_get("i2c0");
-    if (!i2cd) { printf("       i2c0: MISSING\r\n"); return 0; }
+    if (!i2cd) { log_printf(app_log(), LOG_DEBUG, "selftest", "       i2c0: MISSING\n"); return 0; }
 
     if (i2cd->vtable->open(i2cd) != 0) {
-        printf("       i2c0: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       i2c0: OPEN FAILED (pin conflict?)\n");
         return 0;
     }
 
@@ -620,7 +622,7 @@ static int selftest_vi2c(selftest *self)
     int ok_ccr  = (ccr == 210UL);
     int ok_freq = (freq == 42UL);
     if (!ok_pe || !ok_ccr || !ok_freq) ok = 0;
-    printf("       i2c0(I2C1,PB6/PB7): PE=%s CCR=%lu(210? %s) FREQ=%lu(42? %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       i2c0(I2C1,PB6/PB7): PE=%s CCR=%lu(210? %s) FREQ=%lu(42? %s)\n",
            ok_pe ? "on" : "OFF", (unsigned long)ccr, ok_ccr ? "PASS" : "FAIL",
            (unsigned long)freq, ok_freq ? "PASS" : "FAIL");
 
@@ -629,14 +631,14 @@ static int selftest_vi2c(selftest *self)
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_MASTER_WRITE, &probe);
     int ok_aprobe = (probe.result == -1);
     if (!ok_aprobe) ok = 0;
-    printf("       addr wr 0x50 probe -> %s (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       addr wr 0x50 probe -> %s (%s)\n",
            probe.result == 0 ? "ACK" : "NACK", ok_aprobe ? "PASS" : "FAIL");
 
     i2c_scan_t scan;
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_BUS_SCAN, &scan);
     int ok_scan = (scan.found == 0);
     if (!ok_scan) ok = 0;
-    printf("       addr bus scan: found=%u (expect 0, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       addr bus scan: found=%u (expect 0, %s)\n",
            (unsigned)scan.found, ok_scan ? "PASS" : "FAIL");
 
     /* (3) STREAM interface: set current_addr and use base read/write */
@@ -646,7 +648,7 @@ static int selftest_vi2c(selftest *self)
     i2cd->vtable->ioctl(i2cd, I2C_IOCTL_GET_ADDR, &got_addr);
     int ok_addr = (got_addr == 0x50);
     if (!ok_addr) ok = 0;
-    printf("       STREAM set_addr=0x50 get=0x%02X (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       STREAM set_addr=0x50 get=0x%02X (%s)\n",
            (unsigned)got_addr, ok_addr ? "PASS" : "FAIL");
 
     /* stream_write ("i2cd->vtable->write") with no slave → NACK */
@@ -654,7 +656,7 @@ static int selftest_vi2c(selftest *self)
     int wret = i2cd->vtable->write(i2cd, &txb, 1);
     int ok_swr = (wret == -1);    /* NACK means -1 from HAL */
     if (!ok_swr) ok = 0;
-    printf("       STREAM write 1B to 0x50 -> %d (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       STREAM write 1B to 0x50 -> %d (%s)\n",
            wret, ok_swr ? "PASS" : "FAIL");
 
     /* stream_read with no slave → NACK */
@@ -662,7 +664,7 @@ static int selftest_vi2c(selftest *self)
     int rret = i2cd->vtable->read(i2cd, &rxb, 1);
     int ok_srd = (rret == -1);
     if (!ok_srd) ok = 0;
-    printf("       STREAM read  1B from 0x50 -> %d (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       STREAM read  1B from 0x50 -> %d (%s)\n",
            rret, ok_srd ? "PASS" : "FAIL");
 
     i2cd->vtable->close(i2cd);
@@ -679,10 +681,10 @@ static int selftest_vspi(selftest *self)
 {
     (void)self;
     device *spid = device_manager_get("spi0");
-    if (!spid) { printf("       spi0: MISSING\r\n"); return 0; }
+    if (!spid) { log_printf(app_log(), LOG_DEBUG, "selftest", "       spi0: MISSING\n"); return 0; }
 
     if (spid->vtable->open(spid) != 0) {
-        printf("       spi0: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       spi0: OPEN FAILED (pin conflict?)\n");
         return 0;
     }
 
@@ -695,7 +697,7 @@ static int selftest_vspi(selftest *self)
     int ok_mstr = (cr1 & SPI_CR1_MSTR) ? 1 : 0;
     int ok_br   = ((cr1 & SPI_CR1_BR) == (6U << 3)) ? 1 : 0;  /* BR=6 */
     if (!ok_spe || !ok_mstr || !ok_br) ok = 0;
-    printf("       spi0(SPI1,PA5/6/7): SPE=%s MSTR=%s BR=0x%lX(0x30? %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       spi0(SPI1,PA5/6/7): SPE=%s MSTR=%s BR=0x%lX(0x30? %s)\n",
            ok_spe ? "on" : "OFF", ok_mstr ? "on" : "OFF",
            (unsigned long)(cr1 & SPI_CR1_BR), ok_br ? "PASS" : "FAIL");
 
@@ -708,7 +710,7 @@ static int selftest_vspi(selftest *self)
     spid->vtable->ioctl(spid, SPI_IOCTL_GET_BSY, &bsy);
     int poll_bsy = (bsy == 0);
     if (!poll_bsy) ok = 0;
-    printf("       POLL xfer 1B: tx=0x%02X rx=0x%02X xfer=%s BSY=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       POLL xfer 1B: tx=0x%02X rx=0x%02X xfer=%s BSY=%s\n",
            (unsigned)tx, (unsigned)rx_poll,
            poll_ok ? "PASS" : "FAIL", poll_bsy ? "clear" : "SET");
 
@@ -725,7 +727,7 @@ static int selftest_vspi(selftest *self)
     spid->vtable->ioctl(spid, SPI_IOCTL_GET_BSY, &bsy);
     int irq_bsy = (bsy == 0);
     if (!mode_irq_ok || !irq_xfer_ok || !irq_bsy) ok = 0;
-    printf("       IRQ  xfer 1B: mode=%s tx=0x%02X rx=0x%02X xfer=%s BSY=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       IRQ  xfer 1B: mode=%s tx=0x%02X rx=0x%02X xfer=%s BSY=%s\n",
            mode_irq_ok ? "PASS" : "FAIL",
            (unsigned)tx, (unsigned)rx_irq,
            irq_xfer_ok ? "PASS" : "FAIL", irq_bsy ? "clear" : "SET");
@@ -747,10 +749,10 @@ static int selftest_vsdio(selftest *self)
 {
     (void)self;
     device *sd = device_manager_get("sdio0");
-    if (!sd) { printf("       sdio0: MISSING\r\n"); return 0; }
+    if (!sd) { log_printf(app_log(), LOG_DEBUG, "selftest", "       sdio0: MISSING\n"); return 0; }
 
     if (sd->vtable->open(sd) != 0) {
-        printf("       sdio0: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       sdio0: OPEN FAILED (pin conflict?)\n");
         return 0;
     }
 
@@ -766,9 +768,9 @@ static int selftest_vsdio(selftest *self)
     int ok_wid  = ((clkcr & SDIO_CLKCR_WIDBUS) == SDIO_CLKCR_WIDBUS_0); /* 4-bit          */
     if (!ok_pwr || !ok_div || !ok_cken || !ok_wid) ok = 0;
 
-    printf("       sdio0(SDIO): POWER=0x%02lX(pwon? %s) CLKCR=0x%08lX\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       sdio0(SDIO): POWER=0x%02lX(pwon? %s) CLKCR=0x%08lX\n",
            (unsigned long)power, ok_pwr ? "PASS" : "FAIL", (unsigned long)clkcr);
-    printf("         CLKDIV=%lu(118? %s) CLKEN=%s WIDBUS=4bit(%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "         CLKDIV=%lu(118? %s) CLKEN=%s WIDBUS=4bit(%s)\n",
            (unsigned long)(clkcr & SDIO_CLKCR_CLKDIV), ok_div ? "PASS" : "FAIL",
            ok_cken ? "on" : "OFF", ok_wid ? "PASS" : "FAIL");
 
@@ -785,9 +787,9 @@ static int selftest_vdac(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("dac0");
-    if (!d) { printf("       dac0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       dac0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       dac0: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       dac0: OPEN FAILED (pin conflict?)\n");
         return 0;
     }
 
@@ -807,7 +809,7 @@ static int selftest_vdac(selftest *self)
     int ok_en = ((cr & 0x1U) != 0U);   /* CR.EN1 (channel 1 enabled) */
     if (!rb_ok || !ok_en) ok = 0;
 
-    printf("       dac0(DAC1_CH1,PA4): DOR readback %s, CR.EN1=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       dac0(DAC1_CH1,PA4): DOR readback %s, CR.EN1=%s\n",
            rb_ok ? "PASS" : "FAIL", ok_en ? "on" : "OFF");
 
     d->vtable->close(d);
@@ -827,9 +829,9 @@ static int selftest_vrng(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("rng0");
-    if (!d) { printf("       rng0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       rng0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       rng0: OPEN FAILED\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       rng0: OPEN FAILED\n");
         return 0;
     }
 
@@ -850,11 +852,14 @@ static int selftest_vrng(selftest *self)
     for (int i = 1; i < N; i++) if (v[i] != v[0]) { all_same = 0; break; }
     if (all_same) ok = 0;
 
-    printf("       rng0(RNG): ");
-    for (int i = 0; i < N; i++) printf("%08lX ", (unsigned long)v[i]);
-    printf("%s%s\r\n",
-           err ? "ERR " : "",
-           ok ? "PASS" : "FAIL");
+    char rng_line[96];
+    int rng_off = snprintf(rng_line, sizeof(rng_line), "       rng0(RNG):");
+    for (int i = 0; i < N; i++)
+        rng_off += snprintf(rng_line + rng_off, sizeof(rng_line) - rng_off,
+                            " %08lX", (unsigned long)v[i]);
+    rng_off += snprintf(rng_line + rng_off, sizeof(rng_line) - rng_off,
+                        " %s%s", err ? "ERR " : "", ok ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "%s\n", rng_line);
 
     d->vtable->close(d);
     return ok;
@@ -872,9 +877,9 @@ static int selftest_vrtc(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("rtc0");
-    if (!d) { printf("       rtc0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       rtc0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       rtc0: OPEN FAILED\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       rtc0: OPEN FAILED\n");
         return 0;
     }
 
@@ -886,7 +891,7 @@ static int selftest_vrtc(selftest *self)
     int ok_en  = (bdcr & RCC_BDCR_RTCEN) != 0U;
     int ok_src = ((bdcr & RCC_BDCR_RTCSEL) == RCC_BDCR_RTCSEL_1);  /* LSI */
     if (!ok_en || !ok_src) ok = 0;
-    printf("       rtc0(RTC,LSI): RTCEN=%s RTCSEL=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       rtc0(RTC,LSI): RTCEN=%s RTCSEL=%s\n",
            ok_en ? "on" : "OFF", ok_src ? "LSI" : "OTHER");
 
     /* (2) prescaler readback. */
@@ -894,7 +899,7 @@ static int selftest_vrtc(selftest *self)
     d->vtable->ioctl(d, RTC_IOCTL_GET_PRER, &pr);
     int ok_pr = (pr.prediv_a == 127U && pr.prediv_s == 255U);
     if (!ok_pr) ok = 0;
-    printf("       PRER async=%lu sync=%lu (expect 127/255, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       PRER async=%lu sync=%lu (expect 127/255, %s)\n",
            (unsigned long)pr.prediv_a, (unsigned long)pr.prediv_s,
            ok_pr ? "PASS" : "FAIL");
 
@@ -905,7 +910,7 @@ static int selftest_vrtc(selftest *self)
     d->vtable->ioctl(d, RTC_IOCTL_GET_TIME, &got);
     int ok_time = (got.hour == 12 && got.min == 34 && got.sec == 56);
     if (!ok_time) ok = 0;
-    printf("       set 12:34:56 -> get %02u:%02u:%02u (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       set 12:34:56 -> get %02u:%02u:%02u (%s)\n",
            (unsigned)got.hour, (unsigned)got.min, (unsigned)got.sec,
            ok_time ? "PASS" : "FAIL");
 
@@ -920,7 +925,7 @@ static int selftest_vrtc(selftest *self)
     d->vtable->ioctl(d, RTC_IOCTL_GET_DATE, &dgot);
     int ok_date = (dgot.year == 2026 && dgot.month == 1 && dgot.day == 1);
     if (!ok_date) ok = 0;
-    printf("       set 2026-01-01 -> get %u-%02u-%02u (rawDR=0x%08lX, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       set 2026-01-01 -> get %u-%02u-%02u (rawDR=0x%08lX, %s)\n",
            (unsigned)dgot.year, (unsigned)dgot.month, (unsigned)dgot.day,
            (unsigned long)raw_dr, ok_date ? "PASS" : "FAIL");
 
@@ -954,9 +959,9 @@ static int selftest_vcrc(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("crc0");
-    if (!d) { printf("       crc0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       crc0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       crc0: OPEN FAILED\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       crc0: OPEN FAILED\n");
         return 0;
     }
 
@@ -974,7 +979,7 @@ static int selftest_vcrc(selftest *self)
 
     int ok_match = (hw == sw);
     if (!ok_match) ok = 0;
-    printf("       crc0(CRC): hw=0x%08lX sw=0x%08lX %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       crc0(CRC): hw=0x%08lX sw=0x%08lX %s\n",
            (unsigned long)hw, (unsigned long)sw, ok_match ? "PASS" : "FAIL");
 
     d->vtable->close(d);
@@ -992,9 +997,9 @@ static int selftest_viwdg(selftest *self)
     int ok = 1;
 
     device *d = device_manager_get("iwdg0");
-    if (!d) { printf("       iwdg0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       iwdg0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       iwdg0: OPEN FAILED\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       iwdg0: OPEN FAILED\n");
         return 0;
     }
 
@@ -1023,7 +1028,7 @@ static int selftest_viwdg(selftest *self)
     if (!now_pending) ok = 0;
     int ok_all = now_pending;
 
-    printf("       iwdg0(IWDG): program PR=0x%lx RLR=0x%lx -> SR=0x%lx (PVU/RVU set = %s) %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       iwdg0(IWDG): program PR=0x%lx RLR=0x%lx -> SR=0x%lx (PVU/RVU set = %s) %s\n",
            (unsigned long)pr_set, (unsigned long)rl_set, (unsigned long)sr,
            now_pending ? "PASS" : "FAIL", ok_all ? "PASS" : "FAIL");
 
@@ -1045,9 +1050,9 @@ static int selftest_vwwdg(selftest *self)
     int ok = 1;
 
     device *d = device_manager_get("wwdg0");
-    if (!d) { printf("       wwdg0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       wwdg0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       wwdg0: OPEN FAILED\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       wwdg0: OPEN FAILED\n");
         return 0;
     }
 
@@ -1068,7 +1073,7 @@ static int selftest_vwwdg(selftest *self)
     if (!ok_tb || !ok_win) ok = 0;
     int ok_all = ok_tb && ok_win;
 
-    printf("       wwdg0(WWDG): CFR=0x%lx WDGTB set=0x%lx get=0x%lx (%s), W set=0x%lx get=0x%lx (%s) %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       wwdg0(WWDG): CFR=0x%lx WDGTB set=0x%lx get=0x%lx (%s), W set=0x%lx get=0x%lx (%s) %s\n",
            (unsigned long)cfr, (unsigned long)tb_set, (unsigned long)tb_get, ok_tb ? "PASS" : "FAIL",
            (unsigned long)win_set, (unsigned long)win_get, ok_win ? "PASS" : "FAIL",
            ok_all ? "PASS" : "FAIL");
@@ -1091,9 +1096,9 @@ static int selftest_vflash(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("flash0");
-    if (!d) { printf("       flash0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       flash0: MISSING\n"); return 0; }
     block_device *fb = device_as_block(d);
-    if (!fb) { printf("       flash0: not-block\r\n"); return 0; }
+    if (!fb) { log_printf(app_log(), LOG_DEBUG, "selftest", "       flash0: not-block\n"); return 0; }
 
     int ok = 1;
 
@@ -1107,7 +1112,7 @@ static int selftest_vflash(selftest *self)
     int ok_info = (info.block_size == 4U) && (info.block_count == info.total_bytes / 4U)
                   && (info.total_bytes == 128UL * 1024UL);
     if (!ok_info) ok = 0;
-    printf("       flash0(sector %lu @0x%08lX): %lu blocks x %luB = %lu B (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       flash0(sector %lu @0x%08lX): %lu blocks x %luB = %lu B (%s)\n",
            (unsigned long)sector, (unsigned long)base,
            (unsigned long)info.block_count, (unsigned long)info.block_size,
            (unsigned long)info.total_bytes, ok_info ? "PASS" : "FAIL");
@@ -1120,7 +1125,7 @@ static int selftest_vflash(selftest *self)
     fb->vtable->read(fb, 0, &erased, 1);
     int ok_erased = (erased == 0xFFFFFFFFU);
     if (!ok_erased) ok = 0;
-    printf("       after erase: word[0]=0x%08lX (expect 0xFFFFFFFF, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       after erase: word[0]=0x%08lX (expect 0xFFFFFFFF, %s)\n",
            (unsigned long)erased, ok_erased ? "PASS" : "FAIL");
 
     /* (4) program a known pattern at lba 0..3, read back, compare. */
@@ -1131,7 +1136,7 @@ static int selftest_vflash(selftest *self)
     int ok_pat = 1;
     for (int i = 0; i < 4; i++) if (got[i] != pat[i]) ok_pat = 0;
     if (!ok_pat) ok = 0;
-    printf("       program[0..3] readback: %08lX %08lX %08lX %08lX (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       program[0..3] readback: %08lX %08lX %08lX %08lX (%s)\n",
            (unsigned long)got[0], (unsigned long)got[1],
            (unsigned long)got[2], (unsigned long)got[3], ok_pat ? "PASS" : "FAIL");
 
@@ -1142,7 +1147,7 @@ static int selftest_vflash(selftest *self)
     fb->vtable->read(fb, 100, &far_got, 1);
     int ok_far = (far_got == far);
     if (!ok_far) ok = 0;
-    printf("       program[100]=0x%08lX readback=0x%08lX (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       program[100]=0x%08lX readback=0x%08lX (%s)\n",
            (unsigned long)far, (unsigned long)far_got, ok_far ? "PASS" : "FAIL");
 
     /* (6) leave the spare sector erased/clean. */
@@ -1151,7 +1156,7 @@ static int selftest_vflash(selftest *self)
     fb->vtable->read(fb, 100, &clean, 1);
     int ok_clean = (clean == 0xFFFFFFFFU);
     if (!ok_clean) ok = 0;
-    printf("       re-erase: word[100]=0x%08lX (expect 0xFFFFFFFF, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       re-erase: word[100]=0x%08lX (expect 0xFFFFFFFF, %s)\n",
            (unsigned long)clean, ok_clean ? "PASS" : "FAIL");
 
     return ok;
@@ -1172,9 +1177,9 @@ static int selftest_vi2s(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("i2s0");
-    if (!d) { printf("       i2s0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       i2s0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       i2s0: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       i2s0: OPEN FAILED (pin conflict?)\n");
         return 0;
     }
 
@@ -1200,7 +1205,7 @@ static int selftest_vi2s(selftest *self)
     int ok_std    = ((i2scfgr & 0x0030U) == 0x0000U); /* Philips */
     int ok_dlen   = ((i2scfgr & 0x0007U) == 0x0000U);  /* 16-bit (DATLEN=0,CHLEN=0) */
     if (!ok_i2smod || !ok_i2se || !ok_cfg || !ok_std || !ok_dlen) ok = 0;
-    printf("       I2SCFGR=0x%08lX I2SMOD=%s I2SE=%s masterTX=%s Philips=%s 16bit=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       I2SCFGR=0x%08lX I2SMOD=%s I2SE=%s masterTX=%s Philips=%s 16bit=%s\n",
            (unsigned long)i2scfgr, ok_i2smod ? "yes" : "NO", ok_i2se ? "yes" : "NO",
            ok_cfg ? "yes" : "NO", ok_std ? "yes" : "NO", ok_dlen ? "yes" : "NO");
 
@@ -1220,7 +1225,7 @@ static int selftest_vi2s(selftest *self)
     uint32_t got_odd = (i2spr >> 8) & 0x1U;
     int ok_pr = (got_div == ediv) && (got_odd == eodd);
     if (!ok_pr) ok = 0;
-    printf("       i2s_clk=%lu Hz, audio=%lu Hz -> I2SDIV=%lu(calc %lu) ODD=%lu(calc %lu) %s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       i2s_clk=%lu Hz, audio=%lu Hz -> I2SDIV=%lu(calc %lu) ODD=%lu(calc %lu) %s\n",
            (unsigned long)i2s_clk, (unsigned long)audio_hz,
            (unsigned long)got_div, (unsigned long)ediv,
            (unsigned long)got_odd, (unsigned long)eodd, ok_pr ? "PASS" : "FAIL");
@@ -1231,7 +1236,7 @@ static int selftest_vi2s(selftest *self)
     int wr = d->vtable->write(d, snd, sizeof(snd));
     int ok_tx = (wr == (int)sizeof(snd));
     if (!ok_tx) ok = 0;
-    printf("       write 4x16b samples -> %d bytes (expect %u, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       write 4x16b samples -> %d bytes (expect %u, %s)\n",
            wr, (unsigned)sizeof(snd), ok_tx ? "PASS" : "FAIL");
 
     d->vtable->close(d);
@@ -1253,9 +1258,9 @@ static int selftest_vcan(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("can0");
-    if (!d) { printf("       can0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       can0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       can0: OPEN FAILED\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       can0: OPEN FAILED\n");
         return 0;
     }
 
@@ -1267,7 +1272,7 @@ static int selftest_vcan(selftest *self)
     d->vtable->ioctl(d, CAN_IOCTL_GET_MSR, &msr);
     int ok_live = ((mcr & 0x1U) == 0U) && ((msr & 0x1U) == 0U);   /* INRQ=0, INAK=0 */
     if (!ok_live) ok = 0;
-    printf("       MCR=0x%08lX MSR=0x%08lX (init-exited %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       MCR=0x%08lX MSR=0x%08lX (init-exited %s)\n",
            (unsigned long)mcr, (unsigned long)msr, ok_live ? "yes" : "NO");
 
     /* (2) BTR: loopback set, and a non-zero prescaler + segments. */
@@ -1278,7 +1283,7 @@ static int selftest_vcan(selftest *self)
                      (((btr >> 16) & 0xFU) != 0U) &&
                      (((btr >> 20) & 0x7U) != 0U));
     if (!ok_lbkm || !ok_timing) ok = 0;
-    printf("       BTR=0x%08lX LBKM=%s timing=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       BTR=0x%08lX LBKM=%s timing=%s\n",
            (unsigned long)btr, ok_lbkm ? "yes" : "NO", ok_timing ? "ok" : "BAD");
 
     /* (3) filter bank 0 active (accept-all). */
@@ -1286,7 +1291,7 @@ static int selftest_vcan(selftest *self)
     d->vtable->ioctl(d, CAN_IOCTL_GET_FA1R, &fa1r);
     int ok_filter = (fa1r & 0x1U) ? 1 : 0;       /* FACT0 */
     if (!ok_filter) ok = 0;
-    printf("       FA1R=0x%08lX filter0-active=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       FA1R=0x%08lX filter0-active=%s\n",
            (unsigned long)fa1r, ok_filter ? "yes" : "NO");
 
     /* (4) loopback TX/RX round-trip with a known frame. */
@@ -1300,7 +1305,7 @@ static int selftest_vcan(selftest *self)
                   (rx.id == 0x123U) && (rx.dlc == 2) &&
                   (rx.data[0] == 0xAB) && (rx.data[1] == 0xCD);
     if (!ok_echo) ok = 0;
-    printf("       loopback tx id=0x%03lX data=%02X%02X -> rx id=0x%03lX dlc=%u data=%02X%02X (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       loopback tx id=0x%03lX data=%02X%02X -> rx id=0x%03lX dlc=%u data=%02X%02X (%s)\n",
            (unsigned long)tx.id, tx.data[0], tx.data[1],
            (unsigned long)rx.id, (unsigned)rx.dlc, rx.data[0], rx.data[1],
            ok_echo ? "PASS" : "FAIL");
@@ -1313,7 +1318,7 @@ static int selftest_vcan(selftest *self)
     int ok_stream = (wn == 3) && (rn == 3) &&
                     (rbuf[0] == 0x11) && (rbuf[1] == 0x22) && (rbuf[2] == 0x33);
     if (!ok_stream) ok = 0;
-    printf("       stream tx 3B {11,22,33} -> rx 3B {%02X,%02X,%02X} (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       stream tx 3B {11,22,33} -> rx 3B {%02X,%02X,%02X} (%s)\n",
            rbuf[0], rbuf[1], rbuf[2], ok_stream ? "PASS" : "FAIL");
 
     d->vtable->close(d);
@@ -1333,9 +1338,9 @@ static int selftest_vusb(selftest *self)
 {
     (void)self;
     device *d = device_manager_get("usb0");
-    if (!d) { printf("       usb0: MISSING\r\n"); return 0; }
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "selftest", "       usb0: MISSING\n"); return 0; }
     if (d->vtable->open(d) != 0) {
-        printf("       usb0: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       usb0: OPEN FAILED (pin conflict?)\n");
         return 0;
     }
 
@@ -1350,7 +1355,7 @@ static int selftest_vusb(selftest *self)
 
     uint32_t dsts = 0;
     d->vtable->ioctl(d, USB_IOCTL_GET_DSTS, &dsts);
-    printf("       GCCFG=0x%08lX PWRDWN=%s NOVBUSSENS=%s DSTS=0x%08lX\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       GCCFG=0x%08lX PWRDWN=%s NOVBUSSENS=%s DSTS=0x%08lX\n",
            (unsigned long)gccfg, ok_pwrdwn ? "on" : "OFF",
            ok_novb ? "set" : "NOT", (unsigned long)dsts);
 
@@ -1358,7 +1363,7 @@ static int selftest_vusb(selftest *self)
     int st = d->vtable->ioctl(d, USB_IOCTL_RUN_CTRL_SELFTEST, NULL);
     int ok_ctrl = (st == 0);
     if (!ok_ctrl) ok = 0;
-    printf("       ctrl self-test: %s\r\n", ok_ctrl ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       ctrl self-test: %s\n", ok_ctrl ? "PASS" : "FAIL");
 
     d->vtable->close(d);
     return ok;
@@ -1384,7 +1389,7 @@ static int selftest_vexti(selftest *self)
 
     /* --- single, dedicated line: exti2 = PE0 -> EXTI0 (IRQ6) --- */
     device *d0 = device_manager_get("exti2");
-    if (!d0) { printf("       exti2: MISSING\r\n"); ok = 0; }
+    if (!d0) { log_printf(app_log(), LOG_DEBUG, "selftest", "       exti2: MISSING\n"); ok = 0; }
     else {
         event_device *e0 = device_as_event(d0);
         g_exti_cb_count = 0;
@@ -1399,7 +1404,7 @@ static int selftest_vexti(selftest *self)
         d0->vtable->ioctl(d0, EXTI_IOCTL_GET_COUNT, &cnt);
         int ok_single = (cnt >= 2U) && (g_exti_cb_count >= 2U);
         if (!ok_single) ok = 0;
-        printf("       exti2(PE0,IRQ6): count=%lu cb=%lu (%s)\r\n",
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       exti2(PE0,IRQ6): count=%lu cb=%lu (%s)\n",
                (unsigned long)cnt, (unsigned long)g_exti_cb_count,
                ok_single ? "PASS" : "FAIL");
         e0->vtable->disable(e0);
@@ -1410,7 +1415,7 @@ static int selftest_vexti(selftest *self)
     /* --- shared line: exti0(PE5) + exti1(PE6) on EXTI9_5 (IRQ23) --- */
     device *da = device_manager_get("exti0");
     device *db = device_manager_get("exti1");
-    if (!da || !db) { printf("       exti0/exti1: MISSING\r\n"); ok = 0; }
+    if (!da || !db) { log_printf(app_log(), LOG_DEBUG, "selftest", "       exti0/exti1: MISSING\n"); ok = 0; }
     else {
         event_device *ea = device_as_event(da);
         event_device *eb = device_as_event(db);
@@ -1440,7 +1445,7 @@ static int selftest_vexti(selftest *self)
         int ok_b = (cb >= 1U) && (ca >= 1U);   /* B now fired, A unchanged */
         if (!ok_b) ok = 0;
 
-        printf("       exti0(PE5)+exti1(PE6) IRQ23: A=%lu B=%lu (sibling-guard %s)\r\n",
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       exti0(PE5)+exti1(PE6) IRQ23: A=%lu B=%lu (sibling-guard %s)\n",
                (unsigned long)ca, (unsigned long)cb, (ok_a && ok_b) ? "PASS" : "FAIL");
         ea->vtable->disable(ea);
         eb->vtable->disable(eb);
@@ -1463,10 +1468,10 @@ static int selftest_vadvtimer(selftest *self)
     (void)self;
     device *ref = device_manager_get("timer11");  /* TIM3, 20 Hz, RCR=0 */
     device *adv = device_manager_get("timer1");   /* TIM1, advanced, 20 Hz */
-    if (!ref || !adv) { printf("       timer1/timer11: MISSING\r\n"); return 0; }
+    if (!ref || !adv) { log_printf(app_log(), LOG_DEBUG, "selftest", "       timer1/timer11: MISSING\n"); return 0; }
     event_device *re = device_as_event(ref);
     event_device *ae = device_as_event(adv);
-    if (!re || !ae) { printf("       timer1/timer11: not-event\r\n"); return 0; }
+    if (!re || !ae) { log_printf(app_log(), LOG_DEBUG, "selftest", "       timer1/timer11: not-event\n"); return 0; }
 
     ref->vtable->open(ref);  re->vtable->enable(re);    /* reference clock */
     adv->vtable->open(adv); ae->vtable->enable(ae);
@@ -1500,9 +1505,9 @@ static int selftest_vadvtimer(selftest *self)
                  (adv_ticks <= expect + 2U);
     int ok = ok_rep && ok_div;
 
-    printf("       timer1(TIM1,RCR=3): adv_ticks=%lu ref_ticks=%lu (expect ~1/4, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       timer1(TIM1,RCR=3): adv_ticks=%lu ref_ticks=%lu (expect ~1/4, %s)\n",
            (unsigned long)adv_ticks, (unsigned long)ref_ticks, ok_div ? "PASS" : "FAIL");
-    printf("         RCR readback=%lu (expect 3, %s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "         RCR readback=%lu (expect 3, %s)\n",
            (unsigned long)rep_rb, ok_rep ? "PASS" : "FAIL");
 
     /* restore RCR=0 so later BIST runs see the normal 20 Hz rate, then tear down */
@@ -1524,14 +1529,14 @@ static int selftest_vadvpwm(selftest *self)
     (void)self;
     device *tim = device_manager_get("timer4");   /* TIM8, 20 Hz TICK source */
     device *pwmd = device_manager_get("pwm1");     /* TIM8 CH1 + CH1N, dead-time */
-    if (!tim || !pwmd) { printf("       timer4/pwm1: MISSING\r\n"); return 0; }
+    if (!tim || !pwmd) { log_printf(app_log(), LOG_DEBUG, "selftest", "       timer4/pwm1: MISSING\n"); return 0; }
     event_device *te = device_as_event(tim);
-    if (!te) { printf("       timer4: not-event\r\n"); return 0; }
+    if (!te) { log_printf(app_log(), LOG_DEBUG, "selftest", "       timer4: not-event\n"); return 0; }
 
     tim->vtable->open(tim);
     te->vtable->enable(te);
     if (pwmd->vtable->open(pwmd) != 0) {
-        printf("       pwm1: OPEN FAILED (pin conflict?)\r\n");
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       pwm1: OPEN FAILED (pin conflict?)\n");
         te->vtable->disable(te); tim->vtable->close(tim);
         return 0;
     }
@@ -1567,10 +1572,10 @@ static int selftest_vadvpwm(selftest *self)
     int ok_coord = (ov1 > ov0);
 
     if (!ok_moe || !ok_dtg || !ok_comp || !ok_duty || !ok_coord) ok = 0;
-    printf("       pwm1(TIM8 CH1+CH1N): MOE=%s DTG=%lu(64? %s) comp=%s\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       pwm1(TIM8 CH1+CH1N): MOE=%s DTG=%lu(64? %s) comp=%s\n",
            ok_moe ? "on" : "OFF", (unsigned long)(bdtr & 0xFFU),
            ok_dtg ? "PASS" : "FAIL", ok_comp ? "on" : "OFF");
-    printf("         duty@50%%=%lu (~%lu, %s); timer4 ov %lu->%lu while PWM (%s)\r\n",
+    log_printf(app_log(), LOG_DEBUG, "selftest", "         duty@50%%=%lu (~%lu, %s); timer4 ov %lu->%lu while PWM (%s)\n",
            (unsigned long)duty, (unsigned long)(period / 2), ok_duty ? "PASS" : "FAIL",
            (unsigned long)ov0, (unsigned long)ov1, ok_coord ? "PASS" : "FAIL");
 

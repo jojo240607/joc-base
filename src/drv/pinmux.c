@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* virtual implementations dispatched through the unified device vtable */
 static int pinmux_dev_open(device *self);
@@ -171,7 +173,7 @@ static void pinmux_dump(pinmux *self)
 {
     if (!self) return;
     static const char letters[] = "ABCDEFGHI";
-    printf("pinmux claims:\r\n");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "pinmux claims:\n");
     for (int p = 0; p < PINMUX_PORT_COUNT; p++) {
         for (int n = 0; n < 16; n++) {
             pinmux_pin_state_t *s = &self->state[p][n];
@@ -185,11 +187,11 @@ static void pinmux_dump(pinmux *self)
                 sig = gpio_buf;
             }
             if (sig)
-                printf("  P%c%d af%d owner=%s [%s]\r\n",
+                log_printf(app_log(), LOG_DEBUG, "pinmux", "  P%c%d af%d owner=%s [%s]\n",
                        letters[p], n, s->af,
                        s->owner ? s->owner : "?", sig);
             else
-                printf("  P%c%d af%d owner=%s\r\n",
+                log_printf(app_log(), LOG_DEBUG, "pinmux", "  P%c%d af%d owner=%s\n",
                        letters[p], n, s->af,
                        s->owner ? s->owner : "?");
         }
@@ -282,27 +284,27 @@ int pinmux_run_selftest(pinmux *self)
     int pass = 1;
     int r;
 
-    printf("\r\n--- pinmux self-test (conflict detection) ---\r\n");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "\n--- pinmux self-test (conflict detection) ---\n");
 
     /* 1) a fresh claim must succeed */
     r = pinmux_request(self, PINMUX_PORT_B, 6, 4, "i2c_test");   /* PB6 = I2C1_SCL */
-    printf("[pinmux] claim PB6/I2C1_SCL : %s\r\n", r == 0 ? "OK" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "[pinmux] claim PB6/I2C1_SCL : %s\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
 
     /* 2) a DIFFERENT owner grabbing the same pin must be REJECTED (-2) */
     r = pinmux_request(self, PINMUX_PORT_B, 6, 4, "spurious");
-    printf("[pinmux] conflict on PB6     : %s\r\n", r == -2 ? "DETECTED" : "MISSED");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "[pinmux] conflict on PB6     : %s\n", r == -2 ? "DETECTED" : "MISSED");
     pass &= (r == -2);
 
     /* 3) the SAME owner re-claiming the SAME function is idempotent (0) */
     r = pinmux_request(self, PINMUX_PORT_B, 6, 4, "i2c_test");
-    printf("[pinmux] re-claim PB6        : %s\r\n", r == 0 ? "OK" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "[pinmux] re-claim PB6        : %s\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
 
     /* 4) after release it can be claimed again */
     pinmux_release(self, PINMUX_PORT_B, 6);
     r = pinmux_request(self, PINMUX_PORT_B, 6, 4, "i2c_test");
-    printf("[pinmux] re-claim after free : %s\r\n", r == 0 ? "OK" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "[pinmux] re-claim after free : %s\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
     pinmux_release(self, PINMUX_PORT_B, 6);   /* leave it free for the board */
 
@@ -310,7 +312,7 @@ int pinmux_run_selftest(pinmux *self)
      *    uart driver claims them now. The unique names ("USART1_TX_PA9" vs
      *    "USART1_TX_PB6") resolve to exactly one pad, so there is no ambiguity. */
     r = pinmux_request_signal(self, "USART1_TX_PA9", "uart0");   /* PA9  = USART1_TX */
-    printf("[pinmux] claim USART1_TX_PA9  : %s\r\n", r == 0 ? "OK" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "[pinmux] claim USART1_TX_PA9  : %s\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
     r = pinmux_request_signal(self, "USART1_RX_PA10", "uart0");  /* PA10 = USART1_RX */
     pass &= (r == 0);
@@ -320,15 +322,15 @@ int pinmux_run_selftest(pinmux *self)
      *     the duplicate-name problem is gone: both physical locations are
      *     reachable by distinct names. */
     r = pinmux_request_signal(self, "USART1_TX_PB6", "uart0");   /* PB6 = USART1_TX alt */
-    printf("[pinmux] alt name USART1_TX_PB6: %s\r\n", r == 0 ? "OK" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "[pinmux] alt name USART1_TX_PB6: %s\n", r == 0 ? "OK" : "FAIL");
     pass &= (r == 0);
     pinmux_release(self, PINMUX_PORT_B, 6);                   /* free it again */
 
     /* 6) an unknown signal name must still be rejected (-3) via request_signal */
     r = pinmux_request_signal(self, "NOPE_NOPE", "x");
-    printf("[pinmux] unknown signal      : %s\r\n", r == -3 ? "REJECTED" : "MISSED");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "[pinmux] unknown signal      : %s\n", r == -3 ? "REJECTED" : "MISSED");
     pass &= (r == -3);
 
-    printf("PINMUX SELF-TEST: %s\r\n", pass ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_DEBUG, "pinmux", "PINMUX SELF-TEST: %s\n", pass ? "PASS" : "FAIL");
     return pass;
 }

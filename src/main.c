@@ -37,6 +37,8 @@
  *   ECHO <text>  -> <text>
  */
 #include <stdio.h>
+#include "log/log.h"
+#include "log/app_log.h"
 #include <string.h>
 #include <stdlib.h>
 #include "iface/device.h"
@@ -94,15 +96,15 @@ int main(void)
 
     uint32_t hz = 0;
     d_clk->vtable->ioctl(d_clk, CLK_IOCTL_GET_SYSCLK_HZ, &hz);
-    printf("Hello from STM32F407 Discovery (OOC)!\r\n");
-    printf("System clock: %lu Hz, USART1 @ 115200 8N1\r\n",
+    log_printf(app_log(), LOG_INFO, "main", "Hello from STM32F407 Discovery (OOC)!\n");
+    log_printf(app_log(), LOG_INFO, "main", "System clock: %lu Hz, USART1 @ 115200 8N1\n",
            (unsigned long)hz);
 
     /* Confirmation marker: proves the name-based pinmux changes (board supplies
      * signal NAMES like "USART1_TX_PA9", drivers resolve via pinmux_hal_resolve)
      * are compiled in AND flashed. __DATE__/__TIME__ make every build unique so
      * we can tell a fresh image from a stale one on the board. */
-    printf("BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\r\n",
+    log_printf(app_log(), LOG_INFO, "main", "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
            __DATE__, __TIME__);
 
     /* 4. on-board self-test (BIST) at boot.
@@ -113,7 +115,7 @@ int main(void)
     /* pinmux conflict-detection self-test (exercises the new driver) */
     device *d_pinmux = device_manager_get("pinmux");
     int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
-    printf("[BIST] pinmux: %s\r\n", pmok ? "PASS" : "FAIL");
+    log_printf(app_log(), LOG_INFO, "main", "[BIST] pinmux: %s\n", pmok ? "PASS" : "FAIL");
 
     /* Bring up the CDC device and LEAVE it connected so a real PC host can
      * enumerate it automatically at boot (VID_0483&PID_5740). The BIST opens
@@ -121,14 +123,14 @@ int main(void)
      * stays enumerated. (The USBOPEN/USBCLOSE console commands still work.) */
     device *d_usb = device_manager_get("usb0");
     if (!d_usb) {
-        printf("[boot] usb0: NOT REGISTERED\r\n");
+        log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: NOT REGISTERED\n");
     } else if (d_usb->vtable->open(d_usb)) {
-        printf("[boot] usb0: OPEN FAILED\r\n");
+        log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: OPEN FAILED\n");
     } else {
-        printf("[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\r\n");
+        log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\n");
     }
 
-    printf("READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1]\r\n");
+    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1]\n");
 
     /* NOTE: d_usb (usb0) is already declared/opened just above and stays in
      * scope for the loop below, where we use it for the CDC loopback echo. */
@@ -197,7 +199,7 @@ int main(void)
                 {
                     /* re-emit the build marker on demand so a PC companion that
                      * connects AFTER boot can still confirm which image is flashed */
-                    printf("BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\r\n",
+                    log_printf(app_log(), LOG_INFO, "main", "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
                            __DATE__, __TIME__);
                     selftest_run(st);        /* re-run self-test on demand */
                 }
@@ -253,8 +255,8 @@ int main(void)
                 else if (strcmp(line, "I2C_IRQ") == 0)
                 {
                     device *i2cd = device_manager_get("i2c0");
-                    if (!i2cd) { printf("I2C_IRQ: no dev\r\n"); }
-                    else if (i2cd->vtable->open(i2cd)) { printf("I2C_IRQ: open FAIL\r\n"); }
+                    if (!i2cd) { log_printf(app_log(), LOG_INFO, "main", "I2C_IRQ: no dev\n"); }
+                    else if (i2cd->vtable->open(i2cd)) { log_printf(app_log(), LOG_INFO, "main", "I2C_IRQ: open FAIL\n"); }
                     else {
                         stream_xfer_mode_t irq_m = STREAM_MODE_IRQ;
                         i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &irq_m);
@@ -262,7 +264,7 @@ int main(void)
                         i2c_xfer_t ip = { .addr = 0x50, .buf = NULL, .len = 0, .result = 0 };
                         int r = i2cd->vtable->ioctl(i2cd, I2C_IOCTL_MASTER_WRITE, &ip);
                         uart_console_putc('b'); uart_console_putc('\n');
-                        printf("I2C_IRQ: result=%d probe=%s\r\n", r, ip.result == -1 ? "NACK" : "ERR");
+                        log_printf(app_log(), LOG_INFO, "main", "I2C_IRQ: result=%d probe=%s\n", r, ip.result == -1 ? "NACK" : "ERR");
                         irq_m = STREAM_MODE_POLL;
                         i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &irq_m);
                         i2cd->vtable->close(i2cd);
