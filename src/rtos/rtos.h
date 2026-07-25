@@ -76,6 +76,11 @@ void  ready_add(task_t *t);   /* 把任务加入就绪队列（IPC 唤醒路径�
 /* 修改任务有效优先级并重排就绪队列（互斥量优先级提升/恢复用） */
 void  rtos_set_eff_prio(task_t *t, uint8_t new_prio);
 
+/* ---- 栈哨兵（MPU 模块实现，调度器在创建/切换任务时调用） ---- */
+void rtos_stack_fill_sentinel(task_t *t);
+int  rtos_stack_check_sentinel(task_t *t);
+extern volatile int g_stack_overflow;
+
 /* ---- 内部：阻塞当前任务 / 唤醒最高等待者（调用方须持调度锁/关中断） ---- */
 void  rtos_pend(void **waitq_head);
 void  rtos_post(void **waitq_head);
@@ -85,6 +90,7 @@ void rtos_arch_start(void);          /* 配置 FPU/PendSV 优先级并触发首�
 void rtos_schedule_request(void);    /* 置 PENDSVSET，请求上下文切换 */
 void *rtos_pendsv_switch(void *old_sp); /* 由 PendSV 汇编调用，返回新 sp */
 void  rtos_tick_isr(void *ctx);        /* 由 systick 共享线调用 */
+void rtos_mpu_init(void);             /* 配置固定 MPU 区域并使能（对特权任务透明） */
 
 /* ===========================================================================
  * IPC 原语

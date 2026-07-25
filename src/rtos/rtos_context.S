@@ -54,3 +54,33 @@ SVC_Handler:
     msr    PSP, r1            /* PSP 现在指向异常帧 */
     ldr    lr, =0xFFFFFFFD    /* 返回线程模式、用 PSP、无 FPU 帧 */
     bx     lr
+
+/* ---------------------------------------------------------------------------
+ * MemManage / HardFault：把异常帧交给 C 侧 rtos_fault_handler。
+ *   根据 EXC_RETURN(lr) 的 bit2 选择栈帧所在（PSP=线程 / MSP=处理器）。
+ * ------------------------------------------------------------------------- */
+    .global MemManage_Handler
+    .type MemManage_Handler, %function
+    .thumb_func
+MemManage_Handler:
+    tst    lr, #4
+    ite    eq
+    mrseq  r0, MSP
+    mrsne  r0, PSP
+    mov    r1, lr           /* arg2 = EXC_RETURN */
+    mov    r4, lr           /* 用 callee-saved 保存 EXC_RETURN（bl 会覆盖 lr/r1） */
+    bl     rtos_fault_handler
+    bx     r4              /* 用保存的 EXC_RETURN 做真正的异常返回 */
+
+    .global HardFault_Handler
+    .type HardFault_Handler, %function
+    .thumb_func
+HardFault_Handler:
+    tst    lr, #4
+    ite    eq
+    mrseq  r0, MSP
+    mrsne  r0, PSP
+    mov    r1, lr           /* arg2 = EXC_RETURN */
+    mov    r4, lr           /* 用 callee-saved 保存 EXC_RETURN */
+    bl     rtos_fault_handler
+    bx     r4              /* 用保存的 EXC_RETURN 做真正的异常返回 */

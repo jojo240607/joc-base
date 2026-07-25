@@ -164,6 +164,7 @@ void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
     t->stack_size = stack_size;
     t->state = TASK_READY;
     task_stack_init(t);
+    rtos_stack_fill_sentinel(t);   /* 填栈底魔数，供切换时检测溢出 */
     ready_add(t);
 }
 
@@ -174,6 +175,7 @@ void rtos_start(void) {
     first->state = TASK_RUNNING;
     g_running = first;
     g_rtos_started = 1;
+    rtos_mpu_init();     /* 配置固定区域并使能 MPU + MemManage（对特权任务透明） */
     rtos_arch_start();   /* 触发 SVC；切换后不再返回原线程 */
 }
 
@@ -205,6 +207,9 @@ void *rtos_pendsv_switch(void *old_sp) {
     task_t *cur = g_running;
     if (cur) {
         cur->sp = old_sp;
+        if (rtos_stack_check_sentinel(cur)) {   /* 栈溢出检测（MPU 辅助） */
+            g_stack_overflow = 1;
+        }
         if (cur->state == TASK_RUNNING) {   /* 被抢占：回到就绪队列 */
             cur->state = TASK_READY;
             ready_add(cur);

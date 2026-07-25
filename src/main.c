@@ -31,6 +31,7 @@
 #include "drv/i2c.h"
 #include "selftest.h"
 #include "rtos.h"
+#include "rtos/rtos_mpu.h"
 
 /* completion callback for the IOXFER async demo: records that the transfer
  * finished. Runs in ISR/thread context depending on the engine; just sets a
@@ -127,7 +128,7 @@ static void app_main_task(void *arg)
         log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\n");
     }
 
-    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC\n");
+    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC / RTOSMPU\n");
 
     /* blink 任务此后可安全独占 LED（BIST 已结束） */
     g_led = d_led;
@@ -284,6 +285,13 @@ static void app_main_task(void *arg)
                     int ipcok = rtos_ipc_selftest();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSIPC %s\r\n", ipcok ? "PASS" : "FAIL");
+                    d_uart->vtable->write(d_uart, out, (size_t)n);
+                }
+                else if (strcmp(line, "RTOSMPU") == 0)
+                {
+                    int mpuok = rtos_mpu_selftest();
+                    char out[32];
+                    int n = snprintf(out, sizeof(out), "RTOSMPU %s\r\n", mpuok ? "PASS" : "FAIL");
                     d_uart->vtable->write(d_uart, out, (size_t)n);
                 }
                 else if (strcmp(line, "USBOPEN") == 0)
