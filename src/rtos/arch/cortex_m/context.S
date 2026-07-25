@@ -121,9 +121,11 @@ MemManage_Handler:
     mrseq  r0, MSP
     mrsne  r0, PSP
     mov    r1, lr           /* arg2 = EXC_RETURN */
-    mov    r4, lr           /* 用 callee-saved 保存 EXC_RETURN（bl 会覆盖 lr/r1） */
-    bl     rtos_fault_handler
-    bx     r4              /* 用保存的 EXC_RETURN 做真正的异常返回 */
+    b      rtos_fault_handler   /* 尾调用：lr 始终为 EXC_RETURN（不被 bl 改写），
+                                   C 侧以 bx lr 完成真正的异常返回；不占用 r4 这类
+                                   callee-saved 寄存器，避免破坏任务的 r4-r11（它们不在
+                                   异常帧里，异常返回不会恢复，若被 EXC_RETURN 覆盖会
+                                   导致任务寄存器被破坏，如 ok 变 0xFFFFFFFD） */
 
     .global HardFault_Handler
     .type HardFault_Handler, %function

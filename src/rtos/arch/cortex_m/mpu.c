@@ -96,9 +96,10 @@ int rtos_stack_check_sentinel(task_t *t) {
 __attribute__((naked))
 static void rtos_mpu_do_violation(void) {
     __asm volatile(
-        "str %0, [%1]\n"
-        "b  .\n"                         /* 理论到不了：str 应已触发 MemFault */
-        : : "r"(0xDEADu), "r"(MEMMAP_PERIPH_BASE) : "memory"
+        "ldr r3, [%0]\n"                 /* 非特权下读“仅特权”外设区 -> MemFault；
+                                           恢复特权后重执行本条，仅做一次无副作用的读 */
+        "bx  lr\n"                       /* 重执行读（已特权）成功后正常返回调用点 */
+        : : "r"(MEMMAP_PERIPH_BASE) : "r3", "memory"
     );
 }
 
@@ -109,40 +110,40 @@ static void rtos_mpu_do_violation(void) {
 int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     uint32_t cfsr = SCB->CFSR;
 
-    /* 先无条件保存“原始帧基址 + frame[6]”，再做任何有风险的 FP 帧跳过解引用。
-     * 若下方跳过逻辑算出越界地址并重解引用，会二次故障升级为 lockup，导致 g_fault_frame
-     * 等永远写不进去；先把原始值落盘可避免丢失关键信息。 */
+    /* 先无条件保存原始信息，再做有风险的 FP 帧跳过解引用（避免二次故障丢失关键数据）。 */
     g_fault_frame  = (uint32_t)frame;
-    g_fault_pc_raw = frame[6];
     g_fault_lr     = lr;
     g_fault_cfsr   = cfsr;
 
-    /* 计算真正的故障 PC。难点：故障可能发生在 Handler 模式（如 PendSV 内）且当时
-     * FPCA=1，硬件会在基本帧前多压 0x48 字节 FP 上下文；但传给本处理器的
-     * EXC_RETURN（lr）若是 Handler 模式（0xffffffe1），其 bit4=1 反而会“骗”我们说没有
-     * FP 帧，导致 frame[6] 落到 FP 帧区域内读到垃圾。
-     * 稳妥做法：同时按“无 FP 帧偏移(frame[6])”和“有 FP 帧偏移(frame[0x12])”读 PC，
-     * 取落在 Flash 且 Thumb 位(bit0)为 1 的那一个（真正的故障指令地址）。 */
-    uint32_t pc_ns = frame[6];                 /* 无 FP 帧假设下的 PC */
-    uint32_t pc_s  = frame[0x18];              /* 有 FP 帧：FP 帧 0x48=0x12 字，hw 帧 PC 在第 6 字 → frame[0x12+6]=frame[0x18] */
-    g_fault_pc_raw = pc_ns;
-    if ((pc_ns & 0xFF000000u) == 0x08000000u && (pc_ns & 1u))
-        g_fault_pc = pc_ns;
-    else if ((pc_s & 0xFF000000u) == 0x08000000u && (pc_s & 1u))
-        g_fault_pc = pc_s;
-    else
-        g_fault_pc = pc_ns;                     /* 兜底：保留原始值 */
+    /* 计算基本帧相对异常帧基址的偏移：
+     *   EXC_RETURN bit4 = 1 -> 基本帧（无 FPU 懒栈），偏移 0；
+     *   EXC_RETURN bit4 = 0 -> 扩展帧（S0-S15+FPSCR 占 0x48 = 0x12 字），偏移 0x12。
+     * 硬件异常帧 = [S0..S15, FPSCR] + [R0,R1,R2,R3,R12, LR, PC, xPSR]，
+     * 故 LR 在 base+5，PC 在 base+6。PC 解析与“自测恢复”必须共用同一偏移，
+     * 否则扩展帧下会把 S5/S6 误当 LR/PC，造成跳到错误地址（曾表现为 IACCVIOL@0x40000000）。 */
+    unsigned fo = (lr & 0x10u) ? 0u : 0x12u;
+    uint32_t *pc_slot = frame + fo + 6u;
+
+    uint32_t pc = *pc_slot;
+    g_fault_pc_raw = pc;
+    g_fault_pc     = pc;                     /* 真实故障指令地址（已按帧类型定位） */
     if (cfsr & (1u << 7))                    /* MMFSR.MMARVALID */
         g_fault_mmfar = SCB->MMFAR;
     else
         g_fault_mmfar = 0;
 
-    /* 自测期间的故意越权：标记捕获、清状态、恢复到调用点之后、恢复特权并返回 */
+    /* 自测期间的故意越权：捕获后把异常帧的 PC 直接改成“调用点的返回地址”
+     * （与 LR 槽相同），使异常返回等价于“从 rtos_mpu_do_violation 正常 bx lr
+     * 返回”——干净跳过越权指令本身，无需重执行、无需猜指令长度、与帧类型无关。
+     * 帧布局：basic=[R0,R1,R2,R3,R12,LR,PC,xPSR]（fo=0），extended 在其前多 0x12
+     * 字 S0-S15+FPSCR（fo=0x12）；LR 恒在 fo+5、PC 恒在 fo+6，而返回所用的
+     * EXC_RETURN 正是本入口的 lr，故 fo 由同一个值推导，必然自洽。 */
     if (g_mpu_test_active) {
         g_mpu_violation = 1;
-        frame[6] = frame[5];                 /* 故障帧 LR = 调用点下一条指令 */
-        SCB->CFSR = cfsr;                    /* 写 1 清除 */
-        __set_CONTROL(0x2u);                 /* 返回线程模式，恢复特权(nPRIV=0) */
+        uint32_t *lr_slot = frame + fo + 5u;
+        *pc_slot = *lr_slot;                 /* 异常返回即“函数返回”，跳过越权指令 */
+        SCB->CFSR = cfsr;                    /* 写 1 清除故障位 */
+        __set_CONTROL(0x2u);                 /* 恢复特权(nPRIV=0)，线程继续用 PSP */
         __ISB();
         return 1;
     }
