@@ -46,4 +46,15 @@
 #define MEMMAP_FLASH_BIST_AP         0b001u /* AP[2:0] = 仅特权 RW */
 #define MEMMAP_FLASH_BIST_XN         1     /* 不可执行 */
 
+/* --- Region 5: CCM（内核对象区，0x10000000, 64K，CPU 专用、DMA 不可达） ---
+ * CCM 存放 TCB 池(g_task_pool) 与所有任务栈（见 docs/rtos-design.md §4.5：为腾出
+ * 主 SRAM 给 DMA 缓冲而搬入）。非特权任务在“经 SVC 门前”就要读 g_running(TCB) 判断
+ * 是否需陷门（rtos_need_svc）、且必须读写自身栈，故对 CCM 开放 unpriv RW(XN)。
+ * 与 R4 每任务栈 region 重叠处属性一致(均 unpriv RW+XN)，高编号优先但无冲突；CCM
+ * 不可被 DMA 访问，其数据天然与 DMA 缓冲隔离，开放 unpriv 访问不引入 DMA 越权风险。 */
+#define MEMMAP_CCM_BASE              0x10000000u
+#define MEMMAP_CCM_SIZE_LOG2         16u  /* 64 KB */
+#define MEMMAP_CCM_AP                0b011u /* AP[2:0] = RW（双方） */
+#define MEMMAP_CCM_XN                1     /* 不可执行 */
+
 #endif /* JOC_RTOS_ARCH_CORTEX_M_MEMMAP_H */

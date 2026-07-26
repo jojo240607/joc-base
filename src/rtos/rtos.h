@@ -67,7 +67,7 @@ void rtos_start(void);  /* 选取首个任务并切换到任务模式（不再�
      (sz) <= 2048   ? 2048u : (sz) <= 4096 ? 4096u : (sz) <= 8192 ? 8192u : 16384u)
 #define RTOS_TASK_STACK(name, sz) \
     static uint8_t name[RTOS_STACK_ALIGN_UP(sz)] \
-        __attribute__((aligned(RTOS_STACK_ALIGN_UP(sz))))
+        __attribute__((aligned(RTOS_STACK_ALIGN_UP(sz)), section(".ccm_bss")))
 
 /* ---- 任务主动让出 / 延时 / 抢占点 ---- */
 void rtos_yield(void);

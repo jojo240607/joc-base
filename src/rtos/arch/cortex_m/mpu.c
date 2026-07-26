@@ -100,6 +100,12 @@ void rtos_mpu_init(void) {
      * 其余 Flash 仍为只读（代码保护）。 */
     mpu_set_region(3, MEMMAP_FLASH_BIST_BASE,   MEMMAP_FLASH_BIST_SIZE_LOG2,   MEMMAP_FLASH_BIST_AP,   MEMMAP_FLASH_BIST_XN);
 
+    /* Region 5: CCM（内核对象区：TCB 池 + 任务栈，CPU 专用、DMA 不可达）。
+     * 非特权任务运行时要读 g_running(TCB，判断是否需要 SVC 门) 并读写自身栈，
+     * 故对 CCM 开放 unpriv RW(XN)。与 R4 每任务栈 region 重叠处属性一致，无冲突。
+     * 注意：务必放在 R4 之前的固定区编程，且编号不得与 RTOS_MPU_STACK_REGION(4) 冲突。 */
+    mpu_set_region(5, MEMMAP_CCM_BASE,          MEMMAP_CCM_SIZE_LOG2,          MEMMAP_CCM_AP,          MEMMAP_CCM_XN);
+
     /* 使能 MPU；PRIVDEFENA=1 让特权代码拥有背景区（对现行特权任务透明）。 */
     MPU->CTRL = MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
     __DSB();

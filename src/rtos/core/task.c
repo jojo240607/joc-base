@@ -13,8 +13,8 @@
  * 就绪队列/睡眠/切换见 core/sched.c；SVC 分发见 core/syscalls.c。
  * ------------------------------------------------------------------------- */
 
-/* ---- TCB 静态池（无堆，确定性） ---- */
-static task_t g_task_pool[RTOS_MAX_TASKS];
+/* ---- TCB 静态池（无堆，确定性）：放 CCM，纯 CPU 访问、不占主 SRAM ---- */
+static task_t g_task_pool[RTOS_MAX_TASKS] __attribute__((section(".ccm_bss")));
 
 /* 前向声明：任务入口返回时调用，标记 TASK_DEAD 并请求重新调度 */
 static void rtos_task_exit(void);

@@ -4,14 +4,18 @@
  */
 ENTRY(Reset_Handler)
 
-_estack = 0x20020000;        /* end of SRAM (0x20000000 + 128K) */
+/* 主栈(MSP)置于 CCM 顶部：CCM 是 CPU 专用内存(0x10000000, 64K)，
+ * DMA 访问不到，正好给“纯 CPU、不与 DMA 交互”的主栈用；主 SRAM 让给
+ * UART/USB/SD 等 DMA 缓冲。CCM 顶部 _Min_Stack_Size(1K) 预留给 MSP。 */
+_estack = 0x10010000;        /* = CCM base 0x10000000 + 64K */
 _Min_Heap_Size = 0x200;
 _Min_Stack_Size = 0x400;
 
 MEMORY
 {
-  FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 1024K
-  RAM   (xrw) : ORIGIN = 0x20000000, LENGTH = 128K
+  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 1024K
+  RAM    (xrw) : ORIGIN = 0x20000000, LENGTH = 128K        /* 主 SRAM：.data/.bss/堆 + 所有 DMA 缓冲 */
+  CCMRAM (xrw) : ORIGIN = 0x10000000, LENGTH = 63K         /* 内核对象(任务栈/TCB池)；顶部 1K 留给 MSP */
 }
 
 SECTIONS
@@ -146,9 +150,22 @@ SECTIONS
     PROVIDE ( end = . );
     PROVIDE ( _end = . );
     . = . + _Min_Heap_Size;
-    . = . + _Min_Stack_Size;
     . = ALIGN(8);
   } >RAM
+
+  /* CCM BSS：RTOS 任务栈 + TCB 池等“仅 CPU 访问、永不被 DMA 触碰”的对象。
+   * 这些 static 数组本在 .bss，显式搬进 CCM 释放主 SRAM 给 DMA 缓冲。
+   * 由 RTOS_TASK_STACK 宏 与 g_task_pool 的 section(".ccm_bss") 属性收集。
+   * 启动代码(Reset_Handler)会按 __ccm_bss_start/end 将其清零。 */
+  .ccm_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __ccm_bss_start = .;
+    KEEP(*(.ccm_bss))
+    KEEP(*(.ccm_bss.*))
+    . = ALIGN(4);
+    __ccm_bss_end = .;
+  } >CCMRAM
 
   /DISCARD/ :
   {

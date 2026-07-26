@@ -94,6 +94,20 @@ LoopFillZerobss:
   cmp r2, r4
   bcc FillZerobss
 
+/* Zero fill the CCM bss segment (RTOS task stacks + TCB pool, in CCMRAM). */
+  ldr r2, =__ccm_bss_start
+  ldr r4, =__ccm_bss_end
+  movs r3, #0
+  b LoopFillCCMbss
+
+FillCCMbss:
+  str  r3, [r2]
+  adds r2, r2, #4
+
+LoopFillCCMbss:
+  cmp r2, r4
+  bcc FillCCMbss
+
 /* Call static constructors */
     bl __libc_init_array
 /* Call the application's entry point.*/
