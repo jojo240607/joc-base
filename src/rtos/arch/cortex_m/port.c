@@ -50,3 +50,17 @@ void rtos_arch_start(void) {
 irq_id_t rtos_arch_tick_id(void) {
     return (irq_id_t)SysTick_IRQn;
 }
+
+/* 使能 DWT 周期计数器（供 P4 收尾自测测量调度延迟 / 上半部有界性）。
+ * DWT 属 ARMv7-M ISA 特性，仅在 arch 层访问；可移植核心经 rtos_cycle_now() 只读计数。
+ * 幂等：已使能则直接返回，可安全地从 rtos_start() 与自测里多次调用。 */
+void rtos_cycle_init(void) {
+    if (!(DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk)) {
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;  /* 打开调试/跟踪矩阵时钟 */
+        DWT->CYCCNT = 0;
+        DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;             /* 开始计数 */
+    }
+}
+uint32_t rtos_cycle_now(void) {
+    return DWT->CYCCNT;
+}

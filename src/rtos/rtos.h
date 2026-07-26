@@ -173,6 +173,77 @@ int rtos_fpu_selftest(void);
  * 以及工作队列提交 -> 共享 worker 执行。见 docs/rtos-design.md 第 4 章(P3)。 */
 int rtos_bh_selftest(void);
 
+/* ===========================================================================
+ * 编译期段收集（见 docs/rtos-design.md 第 5 章 / P4）
+ *
+ * 用 RTOS_TASK / RTOS_MSGQ / RTOS_BH 宏把对象“定义”放进专用链接段
+ * (._rtos_tasks / ._rtos_ipc / ._rtos_bh)；rtos_instantiate_sections() 在
+ * rtos_start() 里遍历这些段，自动建任务 / IPC / 下半部任务。加功能只需在源
+ * 文件里放一个宏，无需编辑内核中央数组（对标 Zephyr 段收集 / init_array）。
+ *
+ * 栈缓冲不能放进 const 段，故由调用方另行声明（宏只收集“定义指针”）。
+ * ========================================================================= */
+typedef struct {
+    const char    *name;
+    void (*entry)(void *);
+    uint8_t        prio;
+    uint8_t       *stack;
+    size_t         stack_size;
+    void          *arg;
+} rtos_task_def_t;
+
+typedef struct {
+    const char *name;
+    rtos_mq_t  *mq;          /* 用户提供的 rtos_mq_t 对象（RAM） */
+    void       *buf;         /* 用户提供的环形缓冲（RAM） */
+    size_t      item_size;
+    size_t      cap;
+} rtos_mq_def_t;
+
+typedef struct {
+    const char    *name;
+    uint8_t        prio;
+    uint8_t       *stack;
+    size_t         stack_size;
+    void (*fn)(void *);
+    void          *ctx;
+} rtos_bh_def_t;
+
+extern const rtos_task_def_t __rtos_tasks_start[];
+extern const rtos_task_def_t __rtos_tasks_end[];
+extern const rtos_mq_def_t   __rtos_ipc_start[];
+extern const rtos_mq_def_t   __rtos_ipc_end[];
+extern const rtos_bh_def_t   __rtos_bh_start[];
+extern const rtos_bh_def_t   __rtos_bh_end[];
+
+#define RTOS_TASK(_sym, _name, _entry, _prio, _stack, _ssz, _arg)            \
+    static const rtos_task_def_t __attribute__((used,                         \
+        section("._rtos_tasks." #_sym))) _rtos_task_##_sym = {               \
+        .name = _name, .entry = _entry, .prio = _prio,                       \
+        .stack = (uint8_t *)(_stack), .stack_size = _ssz, .arg = (void *)(_arg) }
+
+#define RTOS_MSGQ(_sym, _name, _mq, _buf, _isz, _cap)                        \
+    static const rtos_mq_def_t __attribute__((used,                          \
+        section("._rtos_ipc." #_sym))) _rtos_mq_##_sym = {                   \
+        .name = _name, .mq = _mq, .buf = _buf, .item_size = _isz, .cap = _cap }
+
+#define RTOS_BH(_sym, _name, _prio, _stack, _ssz, _fn, _ctx)                 \
+    static const rtos_bh_def_t __attribute__((used,                          \
+        section("._rtos_bh." #_sym))) _rtos_bh_##_sym = {                    \
+        .name = _name, .prio = _prio, .stack = (uint8_t *)(_stack),          \
+        .stack_size = _ssz, .fn = _fn, .ctx = (void *)(_ctx) }
+
+/* 遍历上述三个链接段，自动实例化所有段收集到的对象（rtos_start() 调用一次）。 */
+void rtos_instantiate_sections(void);
+
+/* ---- 编译期段收集 + 收尾自测（从 RTOSP4 命令调用，并注册进 RTOSALL） ----
+ * 覆盖：(1) 段收集机制验证（宏→链接段→自动建对象且运行）；
+ *       (2) 调度延迟（DWT CYCCNT 测上半部触发→下半部运行的 wake latency）；
+ *       (3) 优先级反转（互斥量天花板协议防止 H 被 M 饿死）；
+ *       (4) 上半部有界性（模拟 ISR 快进快出路径的耗时上限）。
+ * 另：MPU 越权 Fault 自测独立注册为 "mpu" 条目，由 RTOSALL 一并运行。 */
+int rtos_p4_selftest(void);
+
 /* ---- 编译期自测注册表（链接器段收集，见 linker .rtos_selftests） ----
  * 各模块用 RTOS_SELFTEST_ADD("name", fn) 把自测注册进 .rtos_selftests.<name>
  * 段；rtos_selftest_run_all() 在运行时遍历该段依次执行，无需手动逐个调用。

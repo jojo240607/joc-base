@@ -1,6 +1,7 @@
 #include "rtos.h"
 #include "common/lock.h"
 #include "irq.h"
+#include "bh.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -177,7 +178,25 @@ void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
     ready_add(t);
 }
 
+/* 编译期段收集（P4，见 docs/rtos-design.md 第 5 章）：遍历 ._rtos_tasks /
+ * ._rtos_ipc / ._rtos_bh 段，自动建任务 / 消息队列 / 下半部任务。
+ * 一次性执行（加功能只需在源文件里放一个 RTOS_TASK/MSGQ/BH 宏，无需改此处）。
+ * 段起止符号由链接脚本 PROVIDE；空段（无宏）时范围相等、循环不执行。 */
+void rtos_instantiate_sections(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    for (const rtos_task_def_t *p = __rtos_tasks_start; p < __rtos_tasks_end; p++)
+        rtos_task_create(p->name, p->entry, p->arg, p->prio, p->stack, p->stack_size);
+    for (const rtos_mq_def_t *p = __rtos_ipc_start; p < __rtos_ipc_end; p++)
+        rtos_mq_init(p->mq, p->buf, p->item_size, p->cap);
+    for (const rtos_bh_def_t *p = __rtos_bh_start; p < __rtos_bh_end; p++)
+        rtos_bh_task_create(p->name, p->prio, p->stack, p->stack_size, p->fn, p->ctx);
+}
+
 void rtos_start(void) {
+    rtos_cycle_init();           /* 使能 DWT 周期计数器（P4 延迟/有界性测量用） */
+    rtos_instantiate_sections(); /* 编译期段收集：自动建任务/IPC/BH（P4） */
     task_t *first = ready_pick();
     if (!first) return;
     ready_remove(first);

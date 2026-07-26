@@ -157,7 +157,7 @@ static void app_main_task(void *arg)
     g_console = d_uart;        /* 默认控制台为 UART；USB CDC 收到命令时动态切换 */
     g_rtos_demo_ready = 1;
 
-    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSBH / RTOSALL\n");
+    log_printf(app_log(), LOG_INFO, "main", "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / RTOS / RTOSIPC / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSBH / RTOSP4 / RTOSALL\n");
 
     /* command loop (PC companion test exercises this). Console input is accepted
      * from BOTH the debug UART and the USB CDC-ACM port; the command response is
@@ -323,6 +323,13 @@ static void app_main_task(void *arg)
                     int sok = rtos_stress_selftest();
                     char out[32];
                     int n = snprintf(out, sizeof(out), "RTOSSTRESS %s\r\n", sok ? "PASS" : "FAIL");
+                    g_console->vtable->write(g_console, out, (size_t)n);
+                }
+                else if (strcmp(line, "RTOSP4") == 0)
+                {
+                    int p4ok = rtos_p4_selftest();
+                    char out[32];
+                    int n = snprintf(out, sizeof(out), "RTOSP4 %s\r\n", p4ok ? "PASS" : "FAIL");
                     g_console->vtable->write(g_console, out, (size_t)n);
                 }
                 else if (strcmp(line, "RTOSALL") == 0)

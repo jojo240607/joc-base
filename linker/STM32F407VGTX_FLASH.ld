@@ -90,6 +90,28 @@ SECTIONS
     PROVIDE_HIDDEN (__rtos_selftest_end = .);
   } >FLASH
 
+  /* 编译期段收集（P4，见 docs/rtos-design.md 第 5 章）：RTOS_TASK / RTOS_MSGQ /
+   * RTOS_BH 宏分别把对象定义放进 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段；
+   * rtos_start() 遍历这些段自动实例化。KEEP 防止被 GC；SORT 稳定排序。 */
+  ._rtos_tasks :
+  {
+    PROVIDE_HIDDEN (__rtos_tasks_start = .);
+    KEEP (*(SORT(._rtos_tasks.*)))
+    PROVIDE_HIDDEN (__rtos_tasks_end = .);
+  } >FLASH
+  ._rtos_ipc :
+  {
+    PROVIDE_HIDDEN (__rtos_ipc_start = .);
+    KEEP (*(SORT(._rtos_ipc.*)))
+    PROVIDE_HIDDEN (__rtos_ipc_end = .);
+  } >FLASH
+  ._rtos_bh :
+  {
+    PROVIDE_HIDDEN (__rtos_bh_start = .);
+    KEEP (*(SORT(._rtos_bh.*)))
+    PROVIDE_HIDDEN (__rtos_bh_end = .);
+  } >FLASH
+
   /* Pad total FLASH footprint to 16-byte boundary (ART prefetch requires
    * 128-bit row alignment — without this, non-16-byte-aligned firmware
    * sizes hang at boot due to prefetch fetching partial rows). */

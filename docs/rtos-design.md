@@ -305,7 +305,7 @@ linker/ 追加 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段
 2. **P1**：完整 IPC（sem/mutex/mq/event/bus 升级）+ `kobj` 注册表。
 3. **P2**：MPU（固定 region + 每任务栈 region + 栈哨兵 + SVC 校验）。
 4. **P3**：上半部/下半部机制（`bh.c`：BH 任务 + workqueue）+ 在 USB CDC 回环、sd_card、uart IRQ 模式下验证"驱动零改动"且不再卡死。
-5. **P4**：编译期段收集 + `rtos_config.h` 收口 + 写 RTOS 自测（调度延迟、优先级反转、MPU 越权 Fault、上半部有界性）。
+5. **P4**：编译期段收集（`RTOS_TASK`/`RTOS_MSGQ`/`RTOS_BH` 宏 + `._rtos_tasks`/`._rtos_ipc`/`._rtos_bh` 链接段 + `rtos_start()` 遍历 `rtos_instantiate_sections()` 自动实例化）+ 收尾自测（调度延迟 / 优先级反转 / 上半部有界性；MPU 越权 Fault 已由独立 `mpu` 条目覆盖）—— **已完成**（commit P4）。
 
 ---
 

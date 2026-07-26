@@ -36,4 +36,10 @@ void rtos_schedule_request(void);
  * 不直接依赖任何芯片 HAL（如 irq_hal_systick_id）。 */
 irq_id_t rtos_arch_tick_id(void);
 
+/* 周期计数器（Cortex-M DWT CYCCNT）：仅供收尾自测测量调度延迟 / 上半部有界性。
+ * DWT 属 ISA 特性，仅在 arch 层访问；可移植核心只通过本接口读取，绝不接触
+ * 0xE000xxxx 魔法地址（遵守核心/移植边界契约）。 */
+void     rtos_cycle_init(void);   /* 使能 CYCCNT（幂等，可多次调用） */
+uint32_t rtos_cycle_now(void);    /* 读取 32 位周期计数（随内核主频递增） */
+
 #endif /* JOC_RTOS_ARCH_H */
