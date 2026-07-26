@@ -321,6 +321,7 @@ typedef struct {
     uint8_t       *stack;
     size_t         stack_size;
     void          *arg;
+    uint8_t        priv;   /* 1=特权(默认), 0=非特权(用户态任务，须走 SVC 门) */
 } rtos_task_def_t;
 
 typedef struct {
@@ -347,11 +348,12 @@ extern const rtos_mq_def_t   __rtos_ipc_end[];
 extern const rtos_bh_def_t   __rtos_bh_start[];
 extern const rtos_bh_def_t   __rtos_bh_end[];
 
-#define RTOS_TASK(_sym, _name, _entry, _prio, _stack, _ssz, _arg)            \
+#define RTOS_TASK(_sym, _name, _entry, _prio, _stack, _ssz, _arg, _priv)    \
     static const rtos_task_def_t __attribute__((used,                         \
         section("._rtos_tasks." #_sym))) _rtos_task_##_sym = {               \
         .name = _name, .entry = _entry, .prio = _prio,                       \
-        .stack = (uint8_t *)(_stack), .stack_size = _ssz, .arg = (void *)(_arg) }
+        .stack = (uint8_t *)(_stack), .stack_size = _ssz,                    \
+        .arg = (void *)(_arg), .priv = (uint8_t)(_priv) }
 
 #define RTOS_MSGQ(_sym, _name, _mq, _buf, _isz, _cap)                        \
     static const rtos_mq_def_t __attribute__((used,                          \

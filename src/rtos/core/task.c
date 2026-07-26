@@ -107,7 +107,8 @@ void rtos_instantiate_sections(void) {
     if (done) return;
     done = 1;
     for (const rtos_task_def_t *p = __rtos_tasks_start; p < __rtos_tasks_end; p++)
-        rtos_task_create(p->name, p->entry, p->arg, p->prio, p->stack, p->stack_size);
+        rtos_task_create_ex(p->name, p->entry, p->arg, p->prio,
+                            p->stack, p->stack_size, p->priv);
     for (const rtos_mq_def_t *p = __rtos_ipc_start; p < __rtos_ipc_end; p++)
         rtos_mq_init(p->mq, p->buf, p->item_size, p->cap);
     for (const rtos_bh_def_t *p = __rtos_bh_start; p < __rtos_bh_end; p++)

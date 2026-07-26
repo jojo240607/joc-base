@@ -31,7 +31,7 @@ static void p4_demo_task(void *arg) {
     g_p4_task_heartbeat = 1;
     for (;;) { g_p4_task_heartbeat++; rtos_msleep(20); }   /* 心跳递增，证明被调度 */
 }
-RTOS_TASK(p4_demo, "p4_task", p4_demo_task, 18, g_p4_task_stack, sizeof(g_p4_task_stack), 0);
+RTOS_TASK(p4_demo, "p4_task", p4_demo_task, 18, g_p4_task_stack, sizeof(g_p4_task_stack), 0, 1);
 
 static rtos_mq_t g_p4_mq;
 static int       g_p4_mq_buf[8];

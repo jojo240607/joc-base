@@ -204,9 +204,9 @@ void usb_bh_fn(void *ctx) {
 
 **段收集**（对标 Zephyr `.init_array`，也契合本项目已有的 `init_array` 用法）：
 ```c
-/* RTOS_TASK(_sym, _name, _entry, _prio, _stack, _ssz, _arg) */
+/* RTOS_TASK(_sym, _name, _entry, _prio, _stack, _ssz, _arg, _priv) */
 static uint8_t g_netrx_stack[512];
-RTOS_TASK(net_rx_task, "net_rx", net_rx_entry, 5, g_netrx_stack, sizeof(g_netrx_stack), NULL);
+RTOS_TASK(net_rx_task, "net_rx", net_rx_entry, 5, g_netrx_stack, sizeof(g_netrx_stack), NULL, 1);
 /* RTOS_MSGQ(_sym, _name, _mq, _buf, _isz, _cap) */
 static int       g_can_buf[16];
 static rtos_mq_t g_can_mq;
