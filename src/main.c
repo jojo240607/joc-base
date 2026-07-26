@@ -47,10 +47,12 @@ static void io_demo_cb(io_xfer_t *x)
  * 必须给够。app_main_task 跑 BIST + printf，栈需求很大，给 8 KB；
  * blink/idle 很小，分别给 1 KB / 512 B。布局上 g_main_stack 紧邻
  * g_blink_stack 上方，栈向下生长，main 栈不够会踩坏 blink 栈导致 HardFault。 */
-static uint8_t g_main_stack[8192] __attribute__((aligned(8)));
-static uint8_t g_blink_stack[1024] __attribute__((aligned(8)));
-static uint8_t g_idle_stack[512]  __attribute__((aligned(8)));
-static uint8_t g_bist_stack[3072] __attribute__((aligned(8)));  /* BIST 后台任务栈 */
+/* 常驻任务栈用 RTOS_TASK_STACK：2 的幂+对齐，启用 MPU 每任务栈 region(R4) —
+ * 栈不可执行(XN) + (开启 RTOS_MPU_PROTECT_KERNEL_RAM 时) 栈底溢出哨兵。 */
+RTOS_TASK_STACK(g_main_stack, 8192);
+RTOS_TASK_STACK(g_blink_stack, 1024);
+RTOS_TASK_STACK(g_idle_stack, 512);
+RTOS_TASK_STACK(g_bist_stack, 3072);  /* BIST 后台任务栈 */
 
 static volatile uint32_t g_heartbeat = 0;       /* blink 任务心跳计数 */
 static volatile int      g_rtos_demo_ready = 0; /* BIST 完成后才允许 blink 动 LED */

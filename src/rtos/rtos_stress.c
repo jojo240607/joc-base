@@ -82,8 +82,8 @@ int rtos_stress_selftest(void) {
 
     static int       mq_buf[16];
     static rtos_mq_t mq; rtos_mq_init(&mq, mq_buf, sizeof(int), 16);
-    static uint8_t st_p[1024] __attribute__((aligned(8)));
-    static uint8_t st_c[1024] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(st_p, 1024);
+    RTOS_TASK_STACK(st_c, 1024);
     rtos_task_create("stress_prod", stress_prod, &mq, 23, st_p, sizeof(st_p));
     rtos_task_create("stress_cons", stress_cons, &mq, 24, st_c, sizeof(st_c));
 

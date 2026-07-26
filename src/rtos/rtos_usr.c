@@ -106,7 +106,7 @@ int rtos_usr_selftest(void) {
     memset(&g_usr, 0, sizeof(g_usr));
     log_printf(app_log(), LOG_INFO, "rtos", "[USR] self-test begin (unprivileged task via SVC gate)\n");
 
-    static uint8_t st[1024] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(st, 1024);
     /* 创建非特权任务（priv=0），优先级高于主任务使其先跑 */
     rtos_task_create_ex("usr", usr_entry, &g_usr, (uint8_t)(RTOS_PRIO_MAIN + 1),
                         st, sizeof(st), 0);

@@ -24,7 +24,7 @@
  * (1) 段收集演示对象：通过宏放进 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段，
  *     rtos_start() 会遍历并自动建好它们（无需在 core/task.c 里手动登记）。
  * ------------------------------------------------------------------------- */
-static uint8_t g_p4_task_stack[1024] __attribute__((aligned(8)));
+RTOS_TASK_STACK(g_p4_task_stack, 1024);
 static volatile uint32_t g_p4_task_heartbeat;
 static void p4_demo_task(void *arg) {
     (void)arg;
@@ -37,7 +37,7 @@ static rtos_mq_t g_p4_mq;
 static int       g_p4_mq_buf[8];
 RTOS_MSGQ(p4_demo_mq, "p4_mq", &g_p4_mq, g_p4_mq_buf, sizeof(int), 8);
 
-static uint8_t g_p4_bh_stack[1024] __attribute__((aligned(8)));
+RTOS_TASK_STACK(g_p4_bh_stack, 1024);
 static volatile uint32_t g_p4_bh_runs;
 static void p4_demo_bh_fn(void *arg) { (void)arg; g_p4_bh_runs++; }
 RTOS_BH(p4_demo_bh, "p4_bh", RTOS_PRIO_BH_HIGH, g_p4_bh_stack, sizeof(g_p4_bh_stack), p4_demo_bh_fn, 0);
@@ -46,7 +46,7 @@ RTOS_BH(p4_demo_bh, "p4_bh", RTOS_PRIO_BH_HIGH, g_p4_bh_stack, sizeof(g_p4_bh_st
  * (2)+(4) 调度延迟 / 上半部有界性 用的下半部与 ringbuffer
  * ------------------------------------------------------------------------- */
 static volatile uint32_t g_p4_lat_t0, g_p4_lat_t1;
-static uint8_t g_p4_lat_stack[768] __attribute__((aligned(8)));
+RTOS_TASK_STACK(g_p4_lat_stack, 768);
 static void p4_lat_bottom(void *arg) {
     (void)arg;
     g_p4_lat_t1 = rtos_cycle_now();    /* 下半部 fn 入口即记录到达时刻 */
@@ -62,7 +62,7 @@ static ringbuffer_config_t g_p4_rb_cfg = {
 static ringbuffer *g_p4_rb;
 static volatile uint32_t g_p4_th_status = 0xA5u;
 static volatile uint32_t g_p4_th_runs;
-static uint8_t  g_p4_th_stack[768] __attribute__((aligned(8)));
+RTOS_TASK_STACK(g_p4_th_stack, 768);
 static void p4_th_bottom(void *arg) { (void)arg; g_p4_th_runs++; }
 static bh_t *g_p4_th_bh;
 static uint32_t p4_top_half(void) {

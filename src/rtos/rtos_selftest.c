@@ -63,8 +63,8 @@ int rtos_ipc_selftest(void) {
     rtos_mutex_init(&g_ipc_mtx, RTOS_PRIO_BLINK);  /* 天花板高于所有使用者 */
     g_ipc_cnt = 0;
     rtos_sem_init(&g_ipc_done, 0, 8);
-    static uint8_t st_a[1024] __attribute__((aligned(8)));
-    static uint8_t st_b[1024] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(st_a, 1024);
+    RTOS_TASK_STACK(st_b, 1024);
     rtos_task_create("ipc_mA", ipc_mutex_worker, (void *)(intptr_t)500, 10, st_a, sizeof(st_a));
     rtos_task_create("ipc_mB", ipc_mutex_worker, (void *)(intptr_t)500, 11, st_b, sizeof(st_b));
     rtos_sem_wait(&g_ipc_done);
@@ -80,7 +80,7 @@ int rtos_ipc_selftest(void) {
     static int       mq_buf[10];
     static rtos_mq_t mq; rtos_mq_init(&mq, mq_buf, sizeof(int), 10);
     rtos_sem_init(&g_ipc_done, 0, 8);
-    static uint8_t st_p[1024] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(st_p, 1024);
     rtos_task_create("ipc_prod", ipc_mq_prod, &mq, 12, st_p, sizeof(st_p));
     {
         int sum = 0, got = 0, v = 0;
@@ -98,7 +98,7 @@ int rtos_ipc_selftest(void) {
     static rtos_event_t ev; rtos_event_init(&ev);
     g_ipc_ev_seen = 0;
     rtos_sem_init(&g_ipc_done, 0, 8);
-    static uint8_t st_e[768] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(st_e, 768);
     rtos_task_create("ipc_ew", ipc_ev_waiter, &ev, 13, st_e, sizeof(st_e));
     rtos_msleep(20);                  /* 让等待者先阻塞在事件上 */
     rtos_event_set(&ev, 0x1);         /* 置位唤醒 */
@@ -139,8 +139,8 @@ int rtos_rr_selftest(void) {
                (int)RTOS_TIME_SLICE);
 #if RTOS_TIME_SLICE
     g_rr_a = g_rr_b = 0; g_rr_stop = 0;
-    static uint8_t sta[768] __attribute__((aligned(8)));
-    static uint8_t stb[768] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(sta, 768);
+    RTOS_TASK_STACK(stb, 768);
     rtos_task_create("rr_a", rr_spin, (void *)&g_rr_a, 18, sta, sizeof(sta));
     rtos_task_create("rr_b", rr_spin, (void *)&g_rr_b, 18, stb, sizeof(stb));
     rtos_msleep(100);                 /* 让两个同优先级任务靠时间片交替运行 */
@@ -200,8 +200,8 @@ int rtos_bus_selftest(void) {
     /* (2) 广播：两个订阅者阻塞等 topic3，一个发布皆唤醒并取到 */
     g_bus_recv_cnt = 0;
     rtos_sem_init(&g_bus_done, 0, 8);
-    static uint8_t st_s1[1024] __attribute__((aligned(8)));
-    static uint8_t st_s2[1024] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(st_s1, 1024);
+    RTOS_TASK_STACK(st_s2, 1024);
     rtos_task_create("bus_s1", bus_sub_topic3, (void *)0, 14, st_s1, sizeof(st_s1));
     rtos_task_create("bus_s2", bus_sub_topic3, (void *)0, 15, st_s2, sizeof(st_s2));
     rtos_msleep(20);                 /* 让两个订阅者先阻塞在 topic3 */

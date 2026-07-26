@@ -1,4 +1,5 @@
 #include "rtos.h"
+#include "rtos_mpu.h"       /* rtos_mpu_set_task_stack_region：每任务栈 region(R4) */
 #include "irq.h"            /* irq_id_t */
 #include <stdint.h>
 
@@ -76,7 +77,8 @@ uint32_t rtos_cycle_now(void) {
 
 /* 按当前任务(priv 标志)设置 CONTROL.nPRIV。必须在 Handler 模式(PendSV/SVC)里调用，
  * 异常返回到线程模式时即按新 nPRIV 运行：特权任务 nPRIV=0，非特权任务 nPRIV=1。
- * 常态任务 priv=1，故对现行系统零影响；仅非特权任务(rtos_task_create_ex(...,0))会降权。 */
+ * 常态任务 priv=1，故对现行系统零影响；仅非特权任务(rtos_task_create_ex(...,0))会降权。
+ * 切换后顺便把每任务栈 region(R4)重编程到新任务栈（见 docs/rtos-design.md §6 R3）。 */
 extern task_t *g_running;
 void rtos_arch_apply_task_priv(void) {
     uint32_t c = __get_CONTROL();
@@ -84,6 +86,9 @@ void rtos_arch_apply_task_priv(void) {
     else                                c &= ~(uint32_t)0x1u;   /* 特权 */
     __set_CONTROL(c);
     __ISB();
+#if RTOS_MPU_PER_TASK_STACK
+    rtos_mpu_set_task_stack_region(g_running);   /* R4 = 新任务栈(unpriv RW + XN) */
+#endif
 }
 
 /* 当前是否运行在非特权态（仅用于自测断言）。 */

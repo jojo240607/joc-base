@@ -29,7 +29,7 @@
 
 - **高实时**：抢占式固定优先级调度 + 可选同优先级时间片；就绪队列 O(1) 选取最高就绪任务；上下文切换走 PendSV（最低优先级异常）；关键 ISR 可抢占内核。
 - **编译期可拓展**：参考 `FreeRTOSConfig.h` + Zephyr 段收集。任务/IPC 对象用宏放进专用链接段，内核启动遍历段自动收集，**加功能不碰中央数组**。
-- **MPU 保护**：内核/用户态隔离（Privileged/Unprivileged），无背景区（未映射即 Fault），每任务独立栈 + 溢出哨兵，外设与内核 RAM 仅特权可访问。（实现现状见第 6 章：目前**仅外设区**被 MPU 隔离，SRAM 尚未做内核/用户态隔离）
+- **MPU 保护**：内核/用户态隔离（Privileged/Unprivileged），无背景区（未映射即 Fault），每任务独立栈 + 溢出哨兵（MPU subregion + 软件双重），外设区与（opt-in）内核 RAM 仅特权可访问。每任务栈 region(R4) 在上下文切换时重编程（实现见第 6 章 §6）。
 - **统一驱动接口**：直接复用现有 `device` 框架，不另起炉灶。
 - **易用 IPC**：信号量 / 互斥量（优先级继承）/ 消息队列 / 事件标志组 / 发布订阅，全部 OOP 化、可经 MPU 校验。
 - **中断上下半部**：ISR 拆为"上半部（快速、不阻塞）"与"下半部（高优先级任务，处理耗时逻辑）"，见第 4 章。
@@ -226,10 +226,10 @@ Cortex-M4 MPU 仅 8 region，且无背景区（未映射即 Fault）。分配：
 | Region | 内容 | 权限 | 说明 |
 |---|---|---|---|
 | R0 | Flash 0x08000000 (1MB) | RO + 可执行 | 所有任务共享代码 |
-| R1 | 外设 0x40000000–0x50000000 | 特权 RW，XN | **用户任务不可直访外设**，必须经驱动/SVC |
-| R2 | 内核 RAM（.data/.bss/堆） | （规划：特权 RW；**当前未隔离**，见下） | 规划：用户任务不可读内核数据 |
-| R3 | 当前任务栈 + 私有数据 | （规划：用户 RW；**当前未隔离**，见下） | 规划：每任务切换重编程 + subregion 溢出哨兵 |
-| R4 | （可选）DMA 一致性区 | 特权/用户 RW，shareable | 给 DMA 缓冲 |
+| R1 | SRAM 0x20000000 (128KB) | 双方 RW + XN（默认）；`RTOS_MPU_PROTECT_KERNEL_RAM=1` 时改【特权 RW，XN】 | **内核 RAM 隔离（R2）**：开启后用户任务不可直读写内核 .data/.bss/堆/其它任务栈，仅能经自身栈 region(R4)+SVC 门访问（见下，opt-in） |
+| R2 | 外设 0x40000000–0x50000000 | 特权 RW，XN | **用户任务不可直访外设**，必须经驱动/SVC |
+| R3 | Flash BIST 备用扇区 | 特权 RW，XN | 烧录自检写闪存不被 R0 的 RO 拦截（高编号优先） |
+| R4 | 当前任务栈（每任务切换重编程） | 用户 RW + XN，subregion[0] 禁访作栈底哨兵 | **每任务栈 region（R3）已实现**：见下 |
 | R5–R7 | 每任务自定义（共享缓冲等） | 按任务 | 留给应用 |
 
 **内核/用户态隔离**：
@@ -239,11 +239,12 @@ Cortex-M4 MPU 仅 8 region，且无背景区（未映射即 Fault）。分配：
 
 **栈溢出保护**：任务栈 region 底部 subregion 设"不可访问"，溢出即 MemManage Fault，内核捕获后上报而非静默崩溃。
 
-> ⚠️ **实现现状（与上方 8-region 预算的偏差）**：当前 MPU **只配置了固定 region R0(Flash RO-X) / R1(外设 仅特权) / R2 / R3**（见 `src/rtos/arch/cortex_m/mpu.c`），其中**真正起隔离作用的是 R1 外设区——非特权任务不可直访外设**。`memmap.h` 中 `MEMMAP_SRAM_AP = 0b011`（AP 双方 RW），故**全部 SRAM（含内核 .data/.bss/堆、其它任务栈、所有 IPC 对象）对非特权任务同样可读写**——R2「内核 RAM 仅特权」与 R3「每任务栈 region 重编程 + subregion 溢出哨兵」**尚未实现**：
-> - 非特权任务当前可直接读写全部 SRAM（受 8-region 预算限制，做真正每任务栈隔离需占用多个 region，未排期）；
-> - 栈溢出靠**软件哨兵**（`rtos_stack_check_sentinel`，切换时查 4 字魔数）检测，而非 MPU subregion 触发 MemManage。
+> ✅ **实现现状（截至本版）**：MPU 固定 region 已扩展为 R0(Flash RO-X) / R1(SRAM) / R2(外设 仅特权) / R3(Flash BIST 仅特权)，并在**上下文切换时把 R4 重编程为当前任务栈 region**（见 `src/rtos/arch/cortex_m/mpu.c` 的 `rtos_mpu_set_task_stack_region` + `port.c` 的 `rtos_arch_apply_task_priv`）：
+> - **R3 每任务栈 region（已实现，默认开 `RTOS_MPU_PER_TASK_STACK`）**：R4 覆盖当前任务栈（unpriv RW + 不可执行 XN），并把最低 1/8 subregion 禁访作为**栈底溢出哨兵**。要求任务栈为 2 的幂大小且基址对齐到该大小——用 `RTOS_TASK_STACK()` 声明即可（常驻任务 main/blink/idle/bist/wq/bh 与 RTOS 各自测任务均已改用）；不满足对齐的任务栈自动退回软件哨兵（`rtos_stack_check_sentinel`），不误 fault。
+> - **R2 内核 RAM 仅特权（已实现，opt-in 默认关 `RTOS_MPU_PROTECT_KERNEL_RAM`）**：开启后整块 SRAM 设为【特权 RW】，非特权任务只能经自身栈 region(R4) + SVC 门访问内存，**真正的"内核/用户态 RAM 隔离"**；该哨兵(subregion[0])与内核全局对其不可达，非特权写内核全局或溢出到 guard 即 MemManage Fault。⚠ 默认关闭原因：当前系统"常态任务保持特权"且非特权任务仍与内核共享 IPC 全局对象，开启会让非特权任务碰这些共享全局即 fault——它是为"纯用户态任务(只经 SVC 门访问内核)"场景准备的开关。其机制由 `rtos_mpu_selftest` 的隔离子测试**临时开启并验证**（写内核全局 / 写栈底 guard 均触发 MemFault 并恢复）。
+> - 因此"内核/用户态隔离"现在覆盖**外设 + 每任务栈(XN) + (opt-in)内核 RAM**；栈溢出在默认配置下由软件哨兵活跃检测、在开启 R2 时由 MPU subregion 哨兵检测。SVC 门对**指针伪造**的校验始终有效。
 >
-> 因此"内核/用户态隔离"目前仅针对**外设访问**成立；RAM 隔离是已知工程取舍（8 region 不足），并非安全缺陷。若需真正 RAM 隔离，需重新规划 region（牺牲 R4–R7 自定义区）。SVC 门对**指针伪造**的校验仍有效（无论 RAM 是否隔离，未登记指针一律拒绝）。
+> 注：8-region 预算下无法给 16 个任务各分配独立 region，故采用"每任务重编程 1 个栈 region(R4)"的折中；R5–R7 仍留给应用自定义区。
 
 ---
 

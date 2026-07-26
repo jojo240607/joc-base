@@ -57,6 +57,18 @@ void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
                       uint8_t prio, void *stack, size_t stack_size);
 void rtos_start(void);  /* 选取首个任务并切换到任务模式（不再返回到原线程） */
 
+/* 声明一块“2 的幂大小 + 基址对齐到该大小”的任务栈，供 MPU 每任务栈 region(R4)
+ * 作为【栈底 subregion 溢出哨兵】使用（见 docs/rtos-design.md §6 R3）。
+ * 用法：  RTOS_TASK_STACK(my_stack, 768);
+ *         rtos_task_create(..., my_stack, sizeof(my_stack));  // sizeof = 对齐后的 2 的幂
+ * 不满足该对齐的任务栈会自动退回软件哨兵（见 RTOS_MPU_PER_TASK_STACK）。 */
+#define RTOS_STACK_ALIGN_UP(sz) \
+    (((sz) <= 256)  ? 256u  : (sz) <= 512  ? 512u  : (sz) <= 1024 ? 1024u : \
+     (sz) <= 2048   ? 2048u : (sz) <= 4096 ? 4096u : (sz) <= 8192 ? 8192u : 16384u)
+#define RTOS_TASK_STACK(name, sz) \
+    static uint8_t name[RTOS_STACK_ALIGN_UP(sz)] \
+        __attribute__((aligned(RTOS_STACK_ALIGN_UP(sz))))
+
 /* ---- 任务主动让出 / 延时 / 抢占点 ---- */
 void rtos_yield(void);
 void rtos_msleep(uint32_t ms);

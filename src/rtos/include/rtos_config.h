@@ -72,4 +72,34 @@
   #define RTOS_MAX_ZERO_LATENCY_IRQS 0
 #endif
 
+/* ---------------------------------------------------------------------------
+ * MPU SRAM 隔离（见 docs/rtos-design.md §6：R2 内核 RAM 仅特权 / R3 每任务栈 region）
+ *
+ * 8-region MPU 的硬约束：每任务无法独占多个 region（最多 16 任务、仅余 R4–R7）。
+ * 因此采用“固定区域 + 每任务重编程 1 个栈 region(R4)”的折中，具体两项：
+ *
+ *  (R3) 每任务栈 region：默认开启。上下文切换时把 region R4 重编程为“当前任务栈”
+ *       范围（unpriv RW、不可执行），并把最低 1/8 subregion 禁访 → 作为【栈底溢出
+ *       哨兵】，非特权任务向下溢出即 MemManage Fault（特权任务由软件哨兵兜底）。
+ *       要求任务栈为 2 的幂大小且基址对齐到该大小，请用 RTOS_TASK_STACK() 声明，
+ *       否则自动退回软件哨兵（不报错、不误 fault）。
+ *
+ *  (R2) 内核 RAM 仅特权：默认关闭。开启后整块 SRAM 设为“仅特权 RW”，非特权任务
+ *       只能访问自己的栈 region(R4) 与 SVC 门，无法直接读写内核 .data/.bss/堆/其它
+ *       任务栈——实现真正的“内核/用户态 RAM 隔离”。⚠ 注意：当前系统“常态任务保持
+ *       特权”、且非特权任务仍与内核共享 IPC 全局对象，开启此项会让非特权任务碰这些
+ *       共享全局即 fault。它是为“纯用户态任务(只经 SVC 门访问内核)”场景准备的开关，
+ *       默认关闭以保证与现行共享模型零回归；其机制由 rtos_mpu_selftest 的隔离子测试
+ *       临时开启并验证（写内核全局 → MemFault → 恢复）。
+ * ------------------------------------------------------------------------- */
+#ifndef RTOS_MPU_PER_TASK_STACK
+  #define RTOS_MPU_PER_TASK_STACK 1
+#endif
+#ifndef RTOS_MPU_PROTECT_KERNEL_RAM
+  #define RTOS_MPU_PROTECT_KERNEL_RAM 0
+#endif
+#ifndef RTOS_MPU_STACK_REGION
+  #define RTOS_MPU_STACK_REGION 4   /* 每任务栈 region 编号（R0-R3 已用于固定区） */
+#endif
+
 #endif /* JOC_RTOS_CONFIG_H */

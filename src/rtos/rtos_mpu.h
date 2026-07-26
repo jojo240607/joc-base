@@ -23,6 +23,12 @@ void rtos_mpu_disable(void);
 void rtos_stack_fill_sentinel(task_t *t);
 int  rtos_stack_check_sentinel(task_t *t);   /* 返回 1 = 栈底被踩(溢出) */
 
+/* 每任务栈 region（见 docs/rtos-design.md §6 R3）：把 region RTOS_MPU_STACK_REGION
+ * 重编程为“任务 t 的栈”范围（unpriv RW、不可执行），禁访最低 1/8 subregion 作为
+ * 栈底溢出哨兵。由 context.S 切换后在 rtos_arch_apply_task_priv 中调用（此时已切到
+ * 新任务）。栈不满足 2 的幂对齐时清空该 region（退回软件哨兵，不误 fault）。 */
+void rtos_mpu_set_task_stack_region(task_t *t);
+
 /* 故障处理：MemManage_Handler 把栈帧交给它；返回非 0 表示已“恢复”（自测用） */
 int  rtos_fault_handler(uint32_t *frame, uint32_t lr);
 

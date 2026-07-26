@@ -90,7 +90,7 @@ void rtos_bh_wait(bh_t *bh) {
  * (B) 工作队列（共享 worker 任务）
  * ========================================================================= */
 #define RTOS_WORKQ_STACK_WORDS 256    /* 256 字 = 1 KB 栈（worker 仅出队执行 fn） */
-static uint8_t      g_wq_stack[RTOS_WORKQ_STACK_WORDS * 4] __attribute__((aligned(8)));
+RTOS_TASK_STACK(g_wq_stack, RTOS_WORKQ_STACK_WORDS * 4);
 static rtos_work_t *g_wq_head;
 static rtos_work_t *g_wq_tail;
 static rtos_sem_t   g_wq_sem;
@@ -165,7 +165,7 @@ int rtos_bh_selftest(void) {
 
     /* (A) BH 任务：模拟 ISR 连续 trigger，下半部应被唤醒并执行对应次数 */
     g_bh_runs = 0;
-    static uint8_t bh_stack[1024] __attribute__((aligned(8)));
+    RTOS_TASK_STACK(bh_stack, 1024);
     g_bh_selftest_h = rtos_bh_task_create("bh_test", RTOS_PRIO_BH_HIGH,
                                           bh_stack, sizeof(bh_stack),
                                           bh_selftest_bottom, (void *)0);

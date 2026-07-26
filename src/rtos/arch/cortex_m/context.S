@@ -70,7 +70,12 @@ PendSV_Handler:
     bl     rtos_pendsv_switch /* r0 = 新任务的 sp（PSP）；g_running = nxt */
     cpsie  i
 
-    bl     rtos_arch_apply_task_priv   /* 按新任务 priv 设置 CONTROL.nPRIV */
+    /* 保存 PSP 到 r4（callee-saved，C 函数 rtos_arch_apply_task_priv 会保留它）：
+     * 该 C 函数可自由使用 r0-r3，会把 r0(此处即 PSP 栈帧指针) 改掉，故必须先存起来，
+     * 否则下方 ldmia r0! 会从垃圾地址取 EXC_RETURN -> BusFault。 */
+    mov    r4, r0
+    bl     rtos_arch_apply_task_priv   /* 按新任务 priv 设 nPRIV + 重编程 R4 栈 region */
+    mov    r0, r4            /* 恢复 PSP 栈帧指针 */
     ldmia  r0!, {r14}        /* 先恢复 EXC_RETURN（最低地址） */
     /* 恢复顺序必须与 SAVE 严格对称（SAVE 低→高 = EXC_RETURN, r4-r11, s16-s31）。
      * 注意：用过 FPU 的任务其帧中 r4-r11 位于 s16-s31 之下，故先恢复 r4-r11 再

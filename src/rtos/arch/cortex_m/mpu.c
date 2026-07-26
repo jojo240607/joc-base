@@ -42,14 +42,57 @@ static void mpu_set_region(uint32_t idx, uint32_t base,
               | ((size_log2 - 1u) << 1);        /* SIZE = log2-1 */
 }
 
+/* g_running 由调度器维护；此处仅用于每任务栈 region 编程 */
+extern task_t *g_running;
+
+/* ---- 每任务栈 region（§6 R3） ----
+ * 把 region RTOS_MPU_STACK_REGION 重编程为“当前任务栈”范围（unpriv RW、不可执行）。
+ * 该 region 让任务栈不可执行(XN)，属常态安全加固；并作为“每任务独立内存视图”的
+ * 一部分——开启 RTOS_MPU_PROTECT_KERNEL_RAM（整块 SRAM 仅特权）时，非特权任务仍能
+ * 经本 R4 栈 region 读写自己的栈，但无法触碰内核 .data/.bss/堆/其它任务栈。
+ * 注：栈底溢出哨兵此前尝试用 subregion[0] 禁访实现，但会导致任务正常使用的栈底（软件
+ * 哨兵魔数区 + 初始帧）被 BusFault 级踩坏，故改为【仅软件哨兵】检测栈溢出（rtos_config.h
+ * 与文档已注明），R4 不再禁用任何 subregion。
+ * 仅当栈大小是 2 的幂且基址对齐到该大小时才干净生效；否则清空 region（退回软件哨兵，
+ * 不误 fault）。在 context.S 切换后由 rtos_arch_apply_task_priv 调用。 */
+void rtos_mpu_set_task_stack_region(task_t *t) {
+#if RTOS_MPU_PER_TASK_STACK
+    MPU->RNR = RTOS_MPU_STACK_REGION;
+    if (!t || !t->stack_base || t->stack_size < 32) { MPU->RASR = 0; return; }
+    uint32_t base = (uint32_t)t->stack_base;
+    uint32_t size = (uint32_t)t->stack_size;
+    /* 必须 size 为 2 的幂且 base 对齐到 size，subregion[0] 才恰好等于栈底 guard */
+    if (((size & (size - 1u)) != 0) || ((base & (size - 1u)) != 0)) {
+        MPU->RASR = 0;                       /* 不满足：退回软件哨兵 */
+        return;
+    }
+    uint32_t size_log2 = 31u - (uint32_t)__builtin_clz(size);   /* log2(size) */
+    MPU->RBAR = (base & 0xFFFFFFE0u) | (1u << 4) | (RTOS_MPU_STACK_REGION & 0xFu);
+    MPU->RASR = (1u << 0)                       /* ENABLE */
+              | (1u << 28)                      /* XN = 1（栈不可执行） */
+              | (0b011u << 24)                  /* AP = 双方 RW（任务读写自身栈） */
+              | ((size_log2 - 1u) << 1);        /* SIZE = log2 - 1（先不禁用 subregion） */
+    __DSB();
+#else
+    (void)t;
+#endif
+}
+
 void rtos_mpu_init(void) {
     /* 关 MPU 再配置，避免半配置期间异常 */
     MPU->CTRL = 0;
 
     /* Region 0: Flash（只读 + 可执行）—— 保护代码不被改写。布局见 memmap.h */
     mpu_set_region(0, MEMMAP_FLASH_BASE,        MEMMAP_FLASH_SIZE_LOG2,        MEMMAP_FLASH_AP,        MEMMAP_FLASH_XN);
-    /* Region 1: SRAM（RW，不可执行） */
-    mpu_set_region(1, MEMMAP_SRAM_BASE,         MEMMAP_SRAM_SIZE_LOG2,         MEMMAP_SRAM_AP,         MEMMAP_SRAM_XN);
+    /* Region 1: SRAM。RTOS_MPU_PROTECT_KERNEL_RAM=1 时设为“仅特权 RW”，实现内核
+     * RAM 隔离（§6 R2）——非特权任务只能经自己的栈 region(R4) + SVC 门访问内存，
+     * 无法直接读写内核 .data/.bss/堆/其它任务栈。默认 0：整块 SRAM 双方 RW，与现行
+     * “常态任务保持特权 + 共享 IPC 全局”模型零回归（详见 rtos_config.h 注释）。 */
+#if RTOS_MPU_PROTECT_KERNEL_RAM
+    mpu_set_region(1, MEMMAP_SRAM_BASE, MEMMAP_SRAM_SIZE_LOG2, 0b001u, MEMMAP_SRAM_XN);
+#else
+    mpu_set_region(1, MEMMAP_SRAM_BASE, MEMMAP_SRAM_SIZE_LOG2, MEMMAP_SRAM_AP, MEMMAP_SRAM_XN);
+#endif
     /* Region 2: 外设（仅特权 RW，不可执行） */
     mpu_set_region(2, MEMMAP_PERIPH_BASE,       MEMMAP_PERIPH_SIZE_LOG2,       MEMMAP_PERIPH_AP,       MEMMAP_PERIPH_XN);
     /* Region 3: Flash BIST 备用扇区（仅特权 RW，不可执行）。
@@ -152,6 +195,63 @@ int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     for (;;) { __WFI(); }
 }
 
+/* ---- SRAM 隔离（§6 R2/R3）隔离子测试 ----
+ * 启动一个“对齐栈(RTOS_TASK_STACK)”任务，验证：
+ *  (a) 每任务栈 region(R4) 已编程：读回 RBAR/RASR 校验 base/size/AP/XN 正确；
+ *  (b) 内核 RAM 隔离(R2)：临时整块 SRAM 仅特权，非特权任务写内核全局(.bss)
+ *      应被 MPU 拦截并触发 MemFault，由故障处理器捕获恢复。
+ * 两者均通过（R4 正确编程 + R2 写入被拦截）即证明 §6 R2/R3 机制生效。 */
+static volatile int      g_mpuram_done, g_mpuram_ok;
+static volatile int      g_mpu_ram_r4_ok;
+static volatile int      g_mpu_ram_fired;
+static uint8_t           g_mpu_kram_scratch;          /* .bss 内核全局，用于 R2 测试 */
+RTOS_TASK_STACK(g_mpuram_stack, 1024);
+
+__attribute__((naked))
+static void rtos_mpu_do_bad_store(void *addr) {
+    __asm volatile (
+        "movs r3, #0x55\n"
+        "str  r3, [%0]\n"                 /* 非特权写受保护地址 -> MemFault */
+        "bx   lr\n"                       /* 被故障处理器跳过（PC=LR） */
+        : : "r"(addr) : "r3", "memory"
+    );
+}
+
+static void mpu_ram_test_task(void *arg) {
+    (void)arg;
+    /* (a) 每任务栈 region(R4) 已编程：读回 RBAR/RASR 校验 base/size/AP/XN 正确 */
+    MPU->RNR = RTOS_MPU_STACK_REGION;
+    uint32_t rbar = MPU->RBAR;
+    uint32_t rasr = MPU->RASR;
+    uint32_t base = (uint32_t)g_running->stack_base;
+    /* 注意：RBAR 的 VALID 位(bit4) 是只写位，读回恒为 0，故比较时须屏蔽它；
+     * 期望 base = (stack_base & ~0x1F) | region 编号（不含 VALID）。 */
+    uint32_t exp_cmp = (base & 0xFFFFFFE0u) | (RTOS_MPU_STACK_REGION & 0xFu);
+    uint32_t rb_cmp  = rbar & 0xFFFFFFEFu;     /* 屏蔽读回的 VALID 位 */
+    g_mpu_ram_r4_ok = (rasr & 1u)                          /* 已使能 */
+                     && (rb_cmp == exp_cmp)                /* base+region 命中当前任务栈 */
+                     && (((rasr >> 24) & 0x7u) == 0b011u)  /* AP = 双方 RW（任务读写自身栈） */
+                     && (((rasr >> 28) & 1u) == 1u);       /* XN = 1（栈不可执行） */
+
+    /* (b) 内核 RAM 隔离(R2)：临时整块 SRAM 仅特权，写内核全局应 MemFault 并恢复。
+     * 本任务栈由 R4(unpriv RW) 覆盖，故写自身栈不受影响；但 .bss 内核全局不在 R4 内，
+     * 受 R1(仅特权) 拦截。 */
+    MPU->RNR = 1; uint32_t saved_rasr = MPU->RASR;
+    MPU->RASR = (1u<<0) | (1u<<28) | (0b001u<<24) | ((MEMMAP_SRAM_SIZE_LOG2 - 1u) << 1);
+    __DSB(); __ISB();
+    g_mpu_violation = 0; g_mpu_test_active = 1;
+    __set_CONTROL(0x3u); __ISB();                 /* 降到非特权 */
+    rtos_mpu_do_bad_store((void *)&g_mpu_kram_scratch);  /* 写内核全局 -> fault */
+    __set_CONTROL(0x2u); __ISB();
+    g_mpu_test_active = 0;
+    int fired = g_mpu_violation;
+    MPU->RNR = 1; MPU->RASR = saved_rasr; __DSB(); __ISB();   /* 还原整块 SRAM */
+    g_mpu_kram_scratch = 0;
+    g_mpu_ram_fired = fired;
+    g_mpuram_ok   = (g_mpu_ram_r4_ok && fired);
+    g_mpuram_done = 1;
+}
+
 /* ---- 运行时自测 ---- */
 int rtos_mpu_selftest(void) {
     int ok = 1;
@@ -192,6 +292,25 @@ int rtos_mpu_selftest(void) {
     g_mpu_test_active = 0;
     if (g_mpu_violation) log_printf(app_log(), LOG_INFO, "rtos", "[MPU] violation caught: PASS\n");
     else { ok = 0; log_printf(app_log(), LOG_INFO, "rtos", "[MPU] violation caught: FAIL\n"); }
+
+    /* 4) SRAM 隔离（§6 R2/R3）：启动对齐栈任务，验证 (a) 每任务栈 region(R4) 已正确
+     *    编程（base/size/AP/XN）、(b) 临时开启内核 RAM 仅特权后非特权任务写内核全局
+     *    被 MPU 拦截并恢复。 */
+    {
+        g_mpuram_done = 0; g_mpuram_ok = 0;
+        rtos_task_create("mpuram", mpu_ram_test_task, (void *)0,
+                         (uint8_t)(RTOS_PRIO_MAIN), g_mpuram_stack, sizeof(g_mpuram_stack));
+        uint32_t to = 0;
+        while (!g_mpuram_done && to < 2000) { rtos_msleep(10); to += 10; }
+        if (g_mpuram_done && g_mpuram_ok) {
+            log_printf(app_log(), LOG_INFO, "rtos", "[MPU] sram-isolation(R2/R3): PASS\n");
+        } else {
+            ok = 0;
+            log_printf(app_log(), LOG_INFO, "rtos",
+                       "[MPU] sram-isolation(R2/R3): FAIL (r4_ok=%d fired=%d)\n",
+                       g_mpu_ram_r4_ok, g_mpu_ram_fired);
+        }
+    }
 
     log_printf(app_log(), LOG_INFO, "rtos", "[MPU] self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
