@@ -25,7 +25,8 @@
 #include "drv/usb.h"
 #include "drv/i2c.h"
 #include "drv/pinmux.h"
-#include "drv/exti.h"           /* BTN 命令：软件触发按键边沿以演示上下半部 */
+#include "drv/exti.h"           /* BTN/ BTN2 命令：软件触发按键边沿以演示上下半部 */
+#include "task/task_button_wq.h" /* BTN2C 命令：读工作队列版按键中断计数 */
 #include "rtos.h"
 #include "rtos/rtos_mpu.h"
 #include "console.h"
@@ -257,6 +258,27 @@ static void cmd_btnc(app_ctx_t *c, const char *line)
     c->console->vtable->write(c->console, out, (size_t)n);
 }
 
+static void cmd_btn2(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    /* 软件触发 btn2 的 EXTI 边沿：走真实 ISR -> 上半部(button2_isr_cb) ->
+     * 下半部(button2_work_fn，运行在共享 wq 任务) 全链路，无需物理按键
+     * （见 task_button_wq.c）。 */
+    device *btnd = device_manager_get("btn2");
+    if (!btnd) { usb_reply(c, "BTN2: no dev\r\n"); return; }
+    btnd->vtable->ioctl(btnd, EXTI_IOCTL_TRIGGER, NULL);
+    usb_reply(c, "BTN2: edge triggered (watch WORKQUEUE bottom-half log + LED)\r\n");
+}
+
+static void cmd_btn2c(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    char out[48];
+    int n = snprintf(out, sizeof(out), "BTN2C count=%lu\r\n",
+                     (unsigned long)button2_press_count());
+    c->console->vtable->write(c->console, out, (size_t)n);
+}
+
 static void cmd_ioxfer(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -315,6 +337,8 @@ static const cmd_entry_t g_cmds[] = {
     { "USBDBG",   cmd_usbdbg,   1 },
     { "BTN",      cmd_btn,      0 },
     { "BTNC",     cmd_btnc,     0 },
+    { "BTN2",     cmd_btn2,     0 },
+    { "BTN2C",    cmd_btn2c,    0 },
     { "IOXFER",   cmd_ioxfer,   0 },
 };
 

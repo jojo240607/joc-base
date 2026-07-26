@@ -117,8 +117,11 @@ static void rtos_workq_worker(void *arg) {
     }
 }
 
-/* 懒初始化：首个 submit 时建好 worker（仅一次） */
-static void rtos_workq_ensure(void) {
+/* 共享 worker 初始化：必须在 rtos_start()（任务上下文，切到首个任务之前）调用一次。
+ * 关键约束：绝不能在 ISR 里懒创建——rtos_work_submit 可由上半部(ISR)调用，若在此
+ * 首次提交才建任务，rtos_task_create 会在中断上下文执行，破坏调度器（实测会卡死）。
+ * 故 wq 在 rtos_start 里提前建好，rtos_work_submit 只做 ISR 安全的入队 + 唤醒。 */
+void rtos_workq_init(void) {
     if (g_wq_inited) return;
     rtos_sem_init(&g_wq_sem, 0, 1);
     rtos_task_create("wq", rtos_workq_worker, (void *)0, RTOS_PRIO_BH_MED,
@@ -128,7 +131,7 @@ static void rtos_workq_ensure(void) {
 
 void rtos_work_submit(rtos_work_t *w) {
     if (!w) return;
-    rtos_workq_ensure();
+    if (!g_wq_inited) return;          /* 防护：wq 未初始化（正常 rtos_start 已建好） */
     unsigned st = irq_lock();          /* ISR 安全：保护链表头/尾 */
     w->next = (rtos_work_t *)0;
     if (g_wq_tail) g_wq_tail->next = w;

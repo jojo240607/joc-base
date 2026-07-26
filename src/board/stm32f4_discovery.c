@@ -134,6 +134,10 @@ static const exti_config_t g_exti2 = { "exti2", "GPIOE_1", EXTI_EDGE_RISING, 2 }
  * 若要用真实 USER 按钮，需先把 adc0 通道 0 改到别的脚（见 README / companion_test）。
  * 用 BTN 命令软件触发边沿即可演示，无需物理按键。 */
 static const exti_config_t g_btn  = { "btn",   "GPIOA_2", EXTI_EDGE_RISING, 2 };
+/* 按键示例(工作队列版)设备：供 src/task/task_button_wq.c 演示"上半部 ISR ->
+ * 下半部由共享 wq worker 执行"（不新建专属任务）。用 PA3（EXTI line3 / IRQ9），
+ * 与 btn(PA2/line2)、exti0/1/2 的 line 都不冲突；PA3 未被任何驱动占用。 */
+static const exti_config_t g_btn2 = { "btn2",  "GPIOA_3", EXTI_EDGE_RISING, 2 };
 /* I2C master demo: i2c0 is I2C1 on PB6(SCL)/PB7(SDA), 100 kHz. There is no I2C
  * slave on the Discovery board, so this node exists to prove the driver + HAL
  * configure the CORRECT F4 I2C registers and that the polling state machine runs
@@ -261,6 +265,7 @@ static const board_node_t g_nodes[] = {
     { exti_create,        &g_exti1 },
     { exti_create,        &g_exti2 },
     { exti_create,        &g_btn },
+    { exti_create,        &g_btn2 },
     { i2c_create,         &g_i2c0 },
     { spi_create,         &g_spi0 },
     { sdio_create,        &g_sdio0 },

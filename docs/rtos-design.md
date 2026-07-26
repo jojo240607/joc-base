@@ -237,6 +237,18 @@ RTOS_BH(usb_bh, "bh_usb", RTOS_PRIO_BH_HIGH, g_bh_stack, sizeof(g_bh_stack), usb
 
   板子须注册名为 `btn` 的 exti 设备（见 `board.c`；**注意 PA0 已被 adc0 的 ADC1_IN0 占用**，故示例用空闲的 PA2）。控制台 `BTN` 命令用 `EXTI_IOCTL_TRIGGER` 软件触发边沿，即可在无物理按键时验证整条链路上半部→下半部（日志 `[button] bottom-half #N` + LED 翻转）。
 
+- **中断处理(工作队列版)示例**：`src/task/task_button_wq.c/.h`，演示下半部**不新建专属任务**、而是挂入 RTOS 共享工作队列，由内核自带的 `wq` worker 任务（`RTOS_PRIO_BH_MED`）执行。与 BH 任务版对称，仅引脚/设备名不同（`btn2` = PA3 / EXTI line3），适合"偶发、轻量、不要求最高优先级"的中断，省一个任务栈：
+
+  | 层 | 代码位置 | 说明 |
+  |---|---|---|
+  | 上半部（ISR） | `button2_isr_cb` | 仅 `rtos_work_submit(&g_btn2_work)`（ISR 安全） |
+  | 下半部（共享 wq 任务） | `button2_work_fn` | 运行在 `wq` 线程，翻转 LED / 计数 / 日志；可被更高优先级抢占 |
+  | 任务本体 | `button_wq_task` | 初始化 `rtos_work_t` 节点、open、`set_event_callback`、`enable`，之后阻塞让出 CPU |
+
+  关键点：下半部函数 `button2_work_fn` **不是被本任务调用的回调**，而是 `wq` worker 出队后执行——这正是"不新建任务"的由来。`rtos_work_t` 节点须长期存活（示例用静态 `g_btn2_work`）。控制台 `BTN2` / `BTN2C` 命令分别软件触发边沿与读计数，验证全链路（日志 `[button2] bottom-half via WORKQUEUE #N`）。
+
+  注意：共享 `wq` worker 由内核在 `rtos_start()` 里**统一创建**（`rtos_workq_init`），不是每次提交懒建。这样 `rtos_work_submit` 才能**安全地从 ISR 调用**——若在中断上下文首次提交才去 `rtos_task_create`，会破坏调度器（实测卡死）。所以"上半部直接 `rtos_work_submit`"是推荐且安全的写法。
+
 ---
 
 ## 6. MPU 保护设计（8 region 预算）

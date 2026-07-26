@@ -23,7 +23,8 @@ add_executable(${PROJECT_NAME}.elf
     src/task/task_blink.c    # blink 演示任务
     src/task/task_idle.c     # 空闲任务
     src/task/task_bist.c     # 板级自测后台任务
-    src/task/task_button.c   # 按键中断示例：上半部(ISR) -> 下半部(BH 任务)
+    src/task/task_button.c   # 按键中断示例(BH 任务版)：上半部(ISR) -> 下半部(专属 BH 任务)
+    src/task/task_button_wq.c # 按键中断示例(工作队列版)：上半部(ISR) -> 下半部(共享 wq 任务，不建新任务)
     src/task/task_template.c # 普通任务模板（复制改名即可新建任务）
     src/system_init.c        # 系统早期初始化（从 main.c 抽出）
     src/syscalls.c

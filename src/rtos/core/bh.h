@@ -54,6 +54,10 @@ typedef struct work {
 
 void rtos_work_submit(rtos_work_t *w);
 
+/* 共享 worker 初始化：由 rtos_start() 在任务上下文调用一次（提前建好 wq 任务），
+ * 使 rtos_work_submit 可安全地从 ISR 调用（不会在中断上下文建任务）。 */
+void rtos_workq_init(void);
+
 /* 运行时自测（RTOSBH 命令触发；并注册进 RTOSALL） */
 int rtos_bh_selftest(void);
 
