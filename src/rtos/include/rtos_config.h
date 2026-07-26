@@ -18,7 +18,7 @@
 
 /* 任务对象池容量（静态分配，无堆，确定性）。 */
 #ifndef RTOS_MAX_TASKS
-  #define RTOS_MAX_TASKS 16
+  #define RTOS_MAX_TASKS 32   /* 留余量：常驻任务(~7) + 自测动态任务(P4 创建 12 个) 仍安全 */
 #endif
 
 /* 预定义任务优先级（数值越小优先级越高）。 */

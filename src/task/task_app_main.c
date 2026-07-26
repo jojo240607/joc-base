@@ -69,7 +69,7 @@ void app_main_task(void *arg)
 
     log_printf(app_log(), LOG_INFO, "main",
                "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / "
-               "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / "
+               "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / BTN / "
                "RTOS / RTOSIPC / RTOSBUS / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSBH / "
                "RTOSP4 / RTOSUSR / RTOSRR / RTOSKOBJ / RTOSALL\n");
 

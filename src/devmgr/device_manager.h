@@ -19,7 +19,7 @@
  */
 /* 6 base + 14 timers + systick + 2 pwm + 3 exti + i2c + spi + sdio + sd_card
  * + dac + rtc + rng + crc = 33 on this board; size with headroom for more. */
-#define DEVICE_MANAGER_MAX 40
+#define DEVICE_MANAGER_MAX 48   /* 留余量：当前节点 ~40，新增 btn 等仍安全（见记忆 36069048） */
 
 /* Register a device under `name` (overwrites if the name already exists). */
 void device_manager_register(const char *name, device *dev);

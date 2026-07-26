@@ -123,11 +123,17 @@ static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM8, 168000000, 0, 1,
 /* External interrupt demo. exti0 (PE5) and exti1 (PE6) SHARE EXTI9_5 (IRQ23) —
  * same port E, different pin fields in SYSCFG EXTICR, so no conflict — which
  * exercises the multi-handler irq framework's sibling-guard on a shared line.
- * exti2 (PE0) uses a DEDICATED line (EXTI0, IRQ6). The self-test software-
+ * exti2 (PE1) uses a DEDICATED line (EXTI1, IRQ7). The self-test software-
  * triggers each to prove the ISR fires and siblings don't cross-trigger. */
 static const exti_config_t g_exti0 = { "exti0", "GPIOE_5", EXTI_EDGE_RISING, 2 };
 static const exti_config_t g_exti1 = { "exti1", "GPIOE_6", EXTI_EDGE_RISING, 2 };
-static const exti_config_t g_exti2 = { "exti2", "GPIOE_0", EXTI_EDGE_RISING, 2 };
+static const exti_config_t g_exti2 = { "exti2", "GPIOE_1", EXTI_EDGE_RISING, 2 }; /* 注意：须避开 line0(PA0 USER 按钮=btn)，故放 line1 */
+/* 按键示例设备：供 src/task/task_button.c 演示“上半部 ISR -> 下半部 BH 任务”。
+ * 注：板载真实 USER 按钮在 PA0，但 PA0 已被 adc0 的 ADC1_IN0 占用（pinmux 冲突），
+ * 故此处改用一个空闲引脚 PA2（EXTI line2 / IRQ8，不与 exti0/1/2 的 line 冲突）。
+ * 若要用真实 USER 按钮，需先把 adc0 通道 0 改到别的脚（见 README / companion_test）。
+ * 用 BTN 命令软件触发边沿即可演示，无需物理按键。 */
+static const exti_config_t g_btn  = { "btn",   "GPIOA_2", EXTI_EDGE_RISING, 2 };
 /* I2C master demo: i2c0 is I2C1 on PB6(SCL)/PB7(SDA), 100 kHz. There is no I2C
  * slave on the Discovery board, so this node exists to prove the driver + HAL
  * configure the CORRECT F4 I2C registers and that the polling state machine runs
@@ -254,6 +260,7 @@ static const board_node_t g_nodes[] = {
     { exti_create,        &g_exti0 },
     { exti_create,        &g_exti1 },
     { exti_create,        &g_exti2 },
+    { exti_create,        &g_btn },
     { i2c_create,         &g_i2c0 },
     { spi_create,         &g_spi0 },
     { sdio_create,        &g_sdio0 },

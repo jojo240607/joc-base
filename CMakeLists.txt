@@ -17,11 +17,14 @@ add_executable(${PROJECT_NAME}.elf
     startup/startup_stm32f407xx.s
     src/main.c
     src/app_shared.c         # 跨任务共享状态（g_app_ctx 实例 + 心跳/就绪标志）
-    src/task_app_main.c      # main 任务：设备拉起 + 起 BIST + 跑控制台
-    src/task_blink.c         # blink 演示任务（自管栈 + RTOS_TASK 注册）
-    src/task_idle.c          # 空闲任务（自管栈 + RTOS_TASK 注册）
-    src/task_bist.c          # 板级自测后台任务（自管栈 + RTOS_TASK 注册）
     src/console.c            # 命令解释器（命令表 + handler，从 main.c 抽出）
+    # 应用任务（每个任务一个 c/h，自管栈 + 自带 RTOS_TASK 段注册；见 src/task/）
+    src/task/task_app_main.c # main 任务：设备拉起 + 起 BIST + 跑控制台
+    src/task/task_blink.c    # blink 演示任务
+    src/task/task_idle.c     # 空闲任务
+    src/task/task_bist.c     # 板级自测后台任务
+    src/task/task_button.c   # 按键中断示例：上半部(ISR) -> 下半部(BH 任务)
+    src/task/task_template.c # 普通任务模板（复制改名即可新建任务）
     src/system_init.c        # 系统早期初始化（从 main.c 抽出）
     src/syscalls.c
     src/system_stm32f4xx.c

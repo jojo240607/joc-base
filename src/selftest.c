@@ -1399,7 +1399,7 @@ static int selftest_vexti(selftest *self)
     (void)self;
     int ok = 1;
 
-    /* --- single, dedicated line: exti2 = PE0 -> EXTI0 (IRQ6) --- */
+    /* --- single, dedicated line: exti2 = PE1 -> EXTI1 (IRQ7) --- */
     device *d0 = device_manager_get("exti2");
     if (!d0) { log_printf(app_log(), LOG_DEBUG, "selftest", "       exti2: MISSING\n"); ok = 0; }
     else {
@@ -1416,7 +1416,7 @@ static int selftest_vexti(selftest *self)
         d0->vtable->ioctl(d0, EXTI_IOCTL_GET_COUNT, &cnt);
         int ok_single = (cnt >= 2U) && (g_exti_cb_count >= 2U);
         if (!ok_single) ok = 0;
-        log_printf(app_log(), LOG_DEBUG, "selftest", "       exti2(PE0,IRQ6): count=%lu cb=%lu (%s)\n",
+        log_printf(app_log(), LOG_DEBUG, "selftest", "       exti2(PE1,IRQ7): count=%lu cb=%lu (%s)\n",
                (unsigned long)cnt, (unsigned long)g_exti_cb_count,
                ok_single ? "PASS" : "FAIL");
         e0->vtable->disable(e0);

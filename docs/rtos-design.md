@@ -217,6 +217,26 @@ RTOS_BH(usb_bh, "bh_usb", RTOS_PRIO_BH_HIGH, g_bh_stack, sizeof(g_bh_stack), usb
 ```
 宏把 `const task_def_t` / `const ipc_def_t` / `const bh_def_t` 放进链接段 `._rtos_tasks` / `._rtos_ipc` / `._rtos_bh`。`rtos_start()` 启动时遍历段自动 `task_create` / `ipc_create` / `bh_create`。加功能无需编辑内核中央数组。
 
+### 5.1 应用任务组织（`src/task/`）
+
+每个应用任务放在 `src/task/task_xxx.c/.h`，文件自管两件事、**不再写进 `main.c`**：
+
+- `RTOS_TASK_STACK(g_xxx_stack, N)` 声明自己的栈（2 的幂 + 对齐，启用每任务栈 region）；
+- `RTOS_TASK(xxx, "xxx", xxx_task, PRIO, g_xxx_stack, sizeof(g_xxx_stack), &g_app_ctx, priv)` 把任务定义放进段，由 `rtos_start()` 自动实例化。
+
+跨任务共享状态集中在 `src/app_shared.c`（`g_app_ctx` 实例 + 心跳/就绪标志），任务经 `RTOS_TASK` 的 `arg`（`&g_app_ctx`）拿到，不反向依赖 `main.c`。`main.c` 本身只剩 `system_early_init(); rtos_start();` 两行。
+
+- **普通任务模板**：`src/task/task_template.c/.h`（复制改名即可新建一个任务）。
+- **中断处理任务示例**：`src/task/task_button.c/.h`，演示"上半部 / 下半部"如何在一个任务文件里接线：
+
+  | 层 | 代码位置 | 约束 |
+  |---|---|---|
+  | 上半部（ISR，Handler 模式，永远特权） | exti 驱动的 `exti_isr` → 订阅回调 `button_isr_cb`（任务里注册） | 只清挂起位 + `rtos_bh_trigger()`（ISR 安全）。**绝不阻塞/忙等/耗时** |
+  | 下半部（高优先级 BH 任务，任务模式） | `button_bh_fn`（任务里定义） | 做翻转 LED、解析、发消息等耗时逻辑；可被任意更高优先级 IRQ/任务抢占 |
+  | 任务本体 | `button_task` | 建 BH、open 按键设备、订阅回调、`enable` 武装 NVIC；之后阻塞让出 CPU（不空转） |
+
+  板子须注册名为 `btn` 的 exti 设备（见 `board.c`；**注意 PA0 已被 adc0 的 ADC1_IN0 占用**，故示例用空闲的 PA2）。控制台 `BTN` 命令用 `EXTI_IOCTL_TRIGGER` 软件触发边沿，即可在无物理按键时验证整条链路上半部→下半部（日志 `[button] bottom-half #N` + LED 翻转）。
+
 ---
 
 ## 6. MPU 保护设计（8 region 预算）
