@@ -431,6 +431,18 @@ static int usb_run_ctrl_selftest(usb *u)
     USB_OTG_CORE_HANDLE *pdev = u->hal->pdev;
     USB_SETUP_REQ req;
 
+    /* Mask the USB ISR for the whole synthetic control-transfer sequence. CDC
+     * is normally LIVE (connected as a console), so the host keeps polling EP0;
+     * its real SETUP/IN tokens would otherwise interleave with our synchronous
+     * ST-request-engine calls and overwrite in_ep[0].xfer_buff (and advance it
+     * for multi-packet descriptors) between a request and its check below,
+     * making this host-free self-test racy. With the ISR masked the checks are
+     * deterministic; the host merely retries its own control transfer after we
+     * re-enable, so the live console is unaffected beyond a brief gap. */
+    irq_id_t id = usb_hal_irq_id(u->hal);
+    irq_manager_disable(id, usb_isr, u);
+    uint8_t saved_status = pdev->dev.device_status;   /* restored after SET_ADDRESS */
+
     /* (1) GET_DESCRIPTOR(device) */
     uint8_t s[8] = { 0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0xFF, 0x00 };
     memcpy(pdev->dev.setup_packet, s, 8);
@@ -499,7 +511,12 @@ static int usb_run_ctrl_selftest(usb *u)
     if (!ok_cls) ok = 0;
     log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl SET_CONTROL_LINE_STATE: DTR=%s", ok_cls ? "PASS" : "FAIL");
 
-    /* (7) SET_ADDRESS latched into DCFG.DAD */
+    /* (7) SET_ADDRESS latched into DCFG.DAD.
+     * ST's engine only honors a synthetic SET_ADDRESS while the device is NOT
+     * already CONFIGURED (a live host may have configured it). Force a
+     * non-configured state for this single request so the check is meaningful;
+     * the ISR is masked, so the live host never observes the transient. */
+    pdev->dev.device_status = USB_OTG_ADDRESSED;
     uint8_t sadd[8] = { 0x00, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00 };
     memcpy(pdev->dev.setup_packet, sadd, 8);
     USBD_ParseSetupRequest(pdev, &req);
@@ -508,7 +525,9 @@ static int usb_run_ctrl_selftest(usb *u)
     int ok_addr = (dad == 0x07);
     if (!ok_addr) ok = 0;
     log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl SET_ADDRESS(7): DAD=0x%02X %s", dad, ok_addr ? "PASS" : "FAIL");
+    pdev->dev.device_status = saved_status;          /* restore live state */
     DCD_EP_SetAddress(pdev, 0);        /* restore so real enumeration is clean */
+    irq_manager_enable(id, usb_isr, u);/* let the live host resume EP0 traffic */
 
     return ok ? 0 : -1;
 }
