@@ -41,9 +41,9 @@ static void task_stack_init(task_t *t) {
 }
 
 static void rtos_task_exit(void) {
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     if (g_running) g_running->state = TASK_DEAD;
-    irq_unlock(st);
+    rtos_crit_exit(st);
     /* 非特权任务返回时也需请求切换，但 rtos_schedule_request() 直接写 ICSR
      * (仅特权)，会导致 BusFault。改用 rtos_yield()：它在非特权态会经 SVC 门
      * (RTOS_SYS_YIELD) 在特权 Handler 模式里真正请求切换；特权任务则直连，

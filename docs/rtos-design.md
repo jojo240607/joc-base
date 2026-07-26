@@ -129,7 +129,7 @@ struct task {
 - ✅ **允许**：读/清外设状态（不清会重入！）、把数据推入 **SPSC `ringbuffer`**（ISR 写 head，下半部读 tail，零锁）、`osal_sem_give` / `k_event_set` / `k_work_submit`（均为 ISR 安全、不阻塞）、DQ 一个已就绪的 work item。
 - ❌ **禁止**：任何阻塞调用（`osal_sem_wait`、读消息队列、睡眠）、`malloc`（非确定性）、调用会触发 SVC 进入内核的对象校验慢路径、长时间循环。
 
-**如何兜底**：内核提供 `arch_in_isr()`（来自 `common/lock.h`）运行态探针；阻塞入口检测到"ISR/内核未启动"上下文时**退化为忙等**（保活、不死锁），而非 `assert`。这是有意的宽容策略——把"误在 ISR 里阻塞"从静默死锁变成可继续运行，但定位较难。后续可加 `g_ipc_misuse` 计数 + 诊断日志（行为不变，便于定位误用）；非特权任务经 SVC 门时该退化路径不触发（SVC 代表任务上下文，会正常阻塞）。
+**如何兜底**：内核提供 `arch_in_isr()`（来自 `common/lock.h`）运行态探针；阻塞入口检测到"ISR/内核未启动"上下文时**退化为忙等/非阻塞**（保活、不死锁），而非 `assert`。这是有意的宽容策略——把"误在 ISR 里阻塞"从静默死锁变成可继续运行，但定位较难。**已实现**：退化路径累加 `g_ipc_misuse` 计数（见 `core/ipc_*.c` 的 ISR/未启动分支 + `rtos_ipc_misuse_count()` 诊断 API），行为不变、便于事后定位误用；非特权任务经 SVC 门时该退化路径不触发（SVC 代表任务上下文，会正常阻塞）。
 
 ### 4.3 下半部两种机制
 
@@ -173,7 +173,7 @@ void usb_bh_fn(void *ctx) {
 - 划分**专用 BH 优先级带** `RTOS_PRIO_BH_HIGH / MED`，位于：
   - 之下：普通应用任务；
   - 之上：硬件 ISR（ISR 永远抢占任务，无需在 RTOS 优先级里表示）。
-  - 之上还可保留极少量"零延迟 IRQ"（`RTOS_MAX_ZERO_LATENCY_IRQS`，对应 Zephyr `CONFIG_ZERO_LATENCY_IRQS` / FreeRTOS `configMAX_SYSCALL_INTERRUPT_PRIORITY`），这类 ISR 不被内核屏蔽，用于处理抖动最敏感的硬件。
+  - 之上还可保留极少量"零延迟 IRQ"（`RTOS_MAX_ZERO_LATENCY_IRQS`，对应 Zephyr `CONFIG_ZERO_LATENCY_IRQS` / FreeRTOS `configMAX_SYSCALL_INTERRUPT_PRIORITY`），这类 ISR 不被内核屏蔽，用于处理抖动最敏感的硬件。**已实现**：`RTOS_MAX_ZERO_LATENCY_IRQS` 配置 + 内核临界区统一入口 `rtos_crit_enter/exit`（`core/rtos_internal.h`）——该值 `>0` 时改用 `BASEPRI` 仅屏蔽优先级 `>=` 阈值的异常（高于阈值的零延迟 ISR 永不被屏蔽），`=0`（默认）退化为 `PRIMASK` 全局关中断，行为与此前完全一致、零回归；`rtos_start()` 在启用时会把 SysTick/PendSV 置于可被屏蔽的优先级带。启用须遵守 FreeRTOS 式契约：所有调用内核 API 的 ISR 优先级必须 `>=` 该阈值（见 `src/rtos/include/rtos_config.h` 注释）。
 - **延迟预算**：
   - 上半部执行时间：须有界（建议 < 几 µs，用 `DWT CYCCNT` 在 BIST 里量）。
   - 下半部唤醒延迟 = 调度器延迟 + 所有**更高优先级 BH/任务**的剩余执行时间。因 BH 带集中在高优先级，唤醒很快，但要对 BH 任务自身的最坏执行时间心中有数。
@@ -195,7 +195,9 @@ void usb_bh_fn(void *ctx) {
 #define RTOS_TICK_HZ          1000
 #define RTOS_USE_MPU          1
 #define RTOS_MAX_TASKS        16
-#define RTOS_TIME_SLICE       1
+#define RTOS_TIME_SLICE       1     /* 同优先级时间片轮转（已实现，见 §1/§3） */
+#define RTOS_TIME_SLICE_TICKS 5     /* 每任务连续运行 5 节拍后让出 */
+#define RTOS_MAX_ZERO_LATENCY_IRQS 0 /* 零延迟 IRQ 数（0=关闭，见 §4.5；已实现） */
 #define RTOS_PRIO_BH_HIGH     4     /* 下半部高优先级带 */
 #define RTOS_PRIO_BH_MED      6
 ```

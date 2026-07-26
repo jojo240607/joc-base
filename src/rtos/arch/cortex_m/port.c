@@ -40,6 +40,15 @@ void rtos_arch_start(void) {
     /* PendSV 设为最低优先级，保证它只在“无更高优先级异常”时运行 */
     NVIC_SetPriority(PendSV_IRQn, 0xFF);
 
+#if RTOS_MAX_ZERO_LATENCY_IRQS > 0
+    /* 零延迟 IRQ（docs/rtos-design.md §4.5）：把节拍置于“可被内核 BASEPRI 屏蔽”
+     * 的优先级带(>= ceil)，使更高优先级的零延迟 ISR 永不被内核临界区屏蔽。
+     * 前提：所有调用内核 API 的 ISR 优先级必须 >= RTOS_MAX_ZERO_LATENCY_IRQS
+     *（FreeRTOS 同款契约），否则零延迟 ISR 可能抢占总被 BASEPRI 屏蔽的临界区。 */
+    NVIC_SetPriority(SysTick_IRQn,
+                     (uint32_t)RTOS_MAX_ZERO_LATENCY_IRQS << (8u - __NVIC_PRIO_BITS));
+#endif
+
     /* 触发首次切换（SVC 从线程模式进入 Handler 模式） */
     __asm__ volatile ("svc 0" : : : "memory");
     for (;;) { }   /* 不会返回到原线程 */

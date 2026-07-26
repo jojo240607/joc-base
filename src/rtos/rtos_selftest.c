@@ -111,12 +111,50 @@ int rtos_ipc_selftest(void) {
     }
     rtos_kobj_register("ipc_ev", KOBJ_EVENT, &ev);
 
+    log_printf(app_log(), LOG_INFO, "rtos", "[IPC] misuse-count=%lu (expect 0 in normal use)\n",
+               (unsigned long)rtos_ipc_misuse_count());
     log_printf(app_log(), LOG_INFO, "rtos", "[IPC] self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
 
 /* 编译期注册：RTOSALL 会遍历该段依次执行 */
 RTOS_SELFTEST_ADD("ipc", rtos_ipc_selftest);
+
+/* ===========================================================================
+ * 时间片轮转（Round-Robin）自测（docs/rtos-design.md §1/§3）。
+ * 两个同优先级、计算密集型（不阻塞）任务：若无时间片，先运行的会独占 CPU，
+ * 另一个永远饿死；开启 RTOS_TIME_SLICE 后两者应交替运行，计数都增长。
+ * 从 "RTOSRR" 命令触发 + 注册进 RTOSALL。
+ * ========================================================================= */
+static volatile uint32_t g_rr_a, g_rr_b;
+static volatile int       g_rr_stop;
+static void rr_spin(void *arg) {
+    volatile uint32_t *c = (volatile uint32_t *)arg;
+    uint32_t i = 0;
+    while (!g_rr_stop && i < 3000000UL) { (*c)++; i++; }
+}
+int rtos_rr_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[RR] self-test begin (RTOS_TIME_SLICE=%d)\n",
+               (int)RTOS_TIME_SLICE);
+#if RTOS_TIME_SLICE
+    g_rr_a = g_rr_b = 0; g_rr_stop = 0;
+    static uint8_t sta[768] __attribute__((aligned(8)));
+    static uint8_t stb[768] __attribute__((aligned(8)));
+    rtos_task_create("rr_a", rr_spin, (void *)&g_rr_a, 18, sta, sizeof(sta));
+    rtos_task_create("rr_b", rr_spin, (void *)&g_rr_b, 18, stb, sizeof(stb));
+    rtos_msleep(100);                 /* 让两个同优先级任务靠时间片交替运行 */
+    int lok = (g_rr_a > 0 && g_rr_b > 0);
+    if (!lok) ok = 0;
+    g_rr_stop = 1;                   /* 让自旋任务退出（变为 DEAD，池槽回收复用） */
+    log_printf(app_log(), LOG_INFO, "rtos", "[RR] round-robin: a=%lu b=%lu %s\n",
+               (unsigned long)g_rr_a, (unsigned long)g_rr_b, lok ? "PASS" : "FAIL");
+#else
+    log_printf(app_log(), LOG_INFO, "rtos", "[RR] skipped (RTOS_TIME_SLICE=0)\n");
+#endif
+    return ok;
+}
+RTOS_SELFTEST_ADD("rr", rtos_rr_selftest);
 
 /* ===========================================================================
  * 事件总线（RTOS 一等 IPC 原语）自测：从控制台 "RTOSBUS" 命令触发 + RTOSALL。

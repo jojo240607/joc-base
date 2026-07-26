@@ -14,14 +14,14 @@ void rtos_event_init(rtos_event_t *e) {
 }
 void rtos_event_clear(rtos_event_t *e, uint32_t bits) {
     if (!e) return;
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     e->flags &= ~bits;
-    irq_unlock(st);
+    rtos_crit_exit(st);
 }
 void rtos_event_set(rtos_event_t *e, uint32_t bits) {
     if (!e) return;
     if (rtos_need_svc()) { rtos_syscall(RTOS_SYS_EVENT_SET, (uint32_t)e, bits, 0); return; }
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     e->flags |= bits;
     int awoke = 0;
     task_t *t = (task_t *)e->waitq;
@@ -37,7 +37,7 @@ void rtos_event_set(rtos_event_t *e, uint32_t bits) {
         }
         t = nx;
     }
-    irq_unlock(st);
+    rtos_crit_exit(st);
     if (awoke) rtos_schedule_request();
 }
 
@@ -47,14 +47,14 @@ uint32_t rtos_event_wait(rtos_event_t *e, uint32_t mask, int wait_all, int block
         uint32_t flags = ((wait_all ? 1u : 0u) | ((block ? 1u : 0u) << 1));
         return rtos_syscall(RTOS_SYS_EVENT_WAIT, (uint32_t)e, mask, flags);
     }
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     int sat = wait_all ? ((e->flags & mask) == mask) : ((e->flags & mask) != 0);
     if (sat) { irq_unlock(st); return e->flags; }
     if (!block) { irq_unlock(st); return (uint32_t)-1; }
     rtos_running()->wait_mask = mask;
     rtos_running()->wait_mode = wait_all ? 1 : 0;
     rtos_pend(&e->waitq);
-    irq_unlock(st);
+    rtos_crit_exit(st);
     rtos_running()->wait_mask = 0; rtos_running()->wait_mode = 0;
     return e->flags;   /* 被唤醒即条件满足 */
 }

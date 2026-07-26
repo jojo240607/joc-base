@@ -68,7 +68,7 @@ def main():
     print("[verify] boot done; issuing commands\n")
 
     results = {}
-    for cmd in ("RTOSBUS", "RTOSUSR", "RTOSALL"):
+    for cmd in ("RTOSBUS", "RTOSUSR", "RTOSRR", "RTOSIPC", "RTOSP4", "RTOSALL"):
         print("==== %s ====" % cmd)
         st, _ = run_cmd(ser, cmd)
         results[cmd] = st

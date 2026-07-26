@@ -47,19 +47,19 @@ int rtos_bus_wait(rtos_bus_t *b, uint16_t topic, void *buf, size_t *len, uint32_
         return (int)rtos_syscall(RTOS_SYS_BUS_WAIT, (uint32_t)&a, 0, 0);
     }
     if (rtos_ipc_in_isr() || !rtos_is_started()) return -1;   /* ISR/未启动：不可阻塞 */
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     if (b->mpend[topic]) {            /* 已有待取消息：立即取走 */
         bus_copy_out(b, topic, buf, len);
-        irq_unlock(st);
+        rtos_crit_exit(st);
         return 0;
     }
     if (timeout_ms == 0) { irq_unlock(st); return -1; }   /* 非阻塞：无消息 */
     rtos_pend(&b->waitq[topic]);      /* 阻塞，直到该 topic 被发布后唤醒 */
-    irq_unlock(st);
+    rtos_crit_exit(st);
     /* 被唤醒：发布者已把数据放进邮箱 */
-    unsigned st2 = irq_lock();
+    unsigned st2 = rtos_crit_enter();
     bus_copy_out(b, topic, buf, len);
-    irq_unlock(st2);
+    rtos_crit_exit(st2);
     return 0;
 }
 
@@ -69,7 +69,7 @@ int rtos_bus_publish(rtos_bus_t *b, uint16_t topic, const void *data, size_t len
         rtos_bus_publish_args_t a = { b, topic, data, len };
         return (int)rtos_syscall(RTOS_SYS_BUS_PUBLISH, (uint32_t)&a, 0, 0);
     }
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     size_t n = (len > b->item_size) ? b->item_size : len;
     memcpy(b->mbuf + (size_t)topic * b->item_size, data, n);
     b->mlen[topic]  = (uint16_t)n;
@@ -81,7 +81,7 @@ int rtos_bus_publish(rtos_bus_t *b, uint16_t topic, const void *data, size_t len
         t->state = TASK_READY;
         ready_add(t);
     }
-    irq_unlock(st);
+    rtos_crit_exit(st);
     rtos_schedule_request();
     return 0;
 }

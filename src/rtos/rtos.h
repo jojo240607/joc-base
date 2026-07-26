@@ -57,9 +57,12 @@ void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
                       uint8_t prio, void *stack, size_t stack_size);
 void rtos_start(void);  /* 选取首个任务并切换到任务模式（不再返回到原线程） */
 
-/* ---- 任务主动让出 / 延时 ---- */
+/* ---- 任务主动让出 / 延时 / 抢占点 ---- */
 void rtos_yield(void);
 void rtos_msleep(uint32_t ms);
+/* 抢占点（见 docs/rtos-design.md §3）：仅当存在更高(或同优先级 FIFO 中更靠前)
+ * 的就绪任务时才让出 CPU；否则继续当前任务。区别于 rtos_yield（无条件让出）。 */
+void rtos_schedule(void);
 
 /* ---- 查询 ---- */
 task_t     *rtos_running(void);
@@ -207,6 +210,10 @@ int  rtos_kobj_validate(void *ptr, rtos_kobj_type_t type);
 /* 控制台诊断：把当前注册表 dump 出来（RTOSKOBJ 命令） */
 void rtos_kobj_dump(void);
 
+/* IPC 误用计数（见 docs/rtos-design.md §4.2）：阻塞式 IPC 在 ISR / 内核未启动
+ * 上下文被调用而退化为忙等/非阻塞的次数，供事后定位误用（行为不变）。 */
+uint32_t rtos_ipc_misuse_count(void);
+
 /* ---- 任务特权模式 + SVC 系统调用门（见 docs/rtos-design.md 第 6/8 章）----
  * 默认任务运行在特权态（驱动可直接访外设，零改造）。把 priv=0 的任务经
  * rtos_task_create_ex 创建为非特权：它不能直接碰外设（MPU 外设区仅特权），
@@ -265,6 +272,9 @@ int rtos_usr_selftest(void);
 
 /* ---- IPC 运行时自测（从 RTOSIPC 命令调用） ---- */
 int rtos_ipc_selftest(void);
+
+/* ---- 时间片轮转（Round-Robin）自测（从 RTOSRR 命令调用，并注册进 RTOSALL） ---- */
+int rtos_rr_selftest(void);
 
 /* ---- 事件总线（RTOS 一等 IPC 原语）自测（从 RTOSBUS 命令调用，并注册进 RTOSALL） ---- */
 int rtos_bus_selftest(void);

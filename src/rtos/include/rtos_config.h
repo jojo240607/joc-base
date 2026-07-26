@@ -52,4 +52,24 @@
   #define RTOS_USE_MPU 1
 #endif
 
+/* 同优先级时间片轮转（Round-Robin，见 docs/rtos-design.md §1/§3）。
+ * 开启后，同一优先级的多个就绪任务按 RTOS_TIME_SLICE_TICKS 个节拍轮流运行，
+ * 避免某个计算密集型任务饿死同优先级兄弟任务。跨优先级仍是纯抢占式。 */
+#ifndef RTOS_TIME_SLICE
+  #define RTOS_TIME_SLICE 1
+#endif
+#ifndef RTOS_TIME_SLICE_TICKS
+  #define RTOS_TIME_SLICE_TICKS 5   /* 每个任务连续运行 5 个节拍(5ms @1kHz)后让出 */
+#endif
+
+/* 零延迟 IRQ（见 docs/rtos-design.md §4.5）：高于该“优先级数”的极少数最高优先级
+ * ISR 永不被内核临界区屏蔽（用 BASEPRI 而非 PRIMASK 关中断）。默认 0 = 关闭，
+ * 内核临界区退化为全局关中断( PRIMASK )，行为与此前完全一致、零回归。
+ * 启用(>0)时须遵守 FreeRTOS 式契约：所有调用内核 API 的 ISR 优先级必须 >= 此值
+ *（否则零延迟 ISR 可能抢占总被 BASEPRI 屏蔽的临界区造成重入）；rtos_start 会把
+ * SysTick/PendSV 置于可被屏蔽的优先级带。 */
+#ifndef RTOS_MAX_ZERO_LATENCY_IRQS
+  #define RTOS_MAX_ZERO_LATENCY_IRQS 0
+#endif
+
 #endif /* JOC_RTOS_CONFIG_H */

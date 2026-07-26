@@ -33,6 +33,14 @@ static task_t *g_sleep_head;
 /* ---- 任务计数（TCB 池定义在 core/task.c） ---- */
 int g_task_count = 0;
 
+/* ---- IPC 误用计数（见 docs/rtos-design.md §4.2） ---- */
+volatile uint32_t g_ipc_misuse = 0;
+
+/* ---- 时间片轮转（Round-Robin，见 §1/§3）：当前运行任务剩余节拍数 ---- */
+#if RTOS_TIME_SLICE
+static uint32_t g_slice_ticks = RTOS_TIME_SLICE_TICKS;
+#endif
+
 /* ---- 就绪链表操作（调用方持锁） ---- */
 void ready_add(task_t *t) {
     int p = t->prio;
@@ -114,6 +122,9 @@ void rtos_init(void) {
     }
     g_sleep_head = (task_t *)0;
     g_task_count = 0;
+#if RTOS_TIME_SLICE
+    g_slice_ticks = RTOS_TIME_SLICE_TICKS;
+#endif
     /* 在 systick 共享线上注册 RTOS 节拍（与 systick 驱动 ISR 并存）。
      * 节拍中断 id 由 arch 层给出，核心不直接依赖任何芯片 HAL。 */
     irq_register(rtos_arch_tick_id(), rtos_tick_isr, (void *)0);
@@ -122,12 +133,12 @@ void rtos_init(void) {
 void rtos_yield(void) {
     if (!g_rtos_started) return;
     if (rtos_need_svc()) { rtos_syscall(RTOS_SYS_YIELD, 0, 0, 0); return; }
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     if (g_running && g_running->state == TASK_RUNNING) {
         g_running->state = TASK_READY;
         ready_add(g_running);
     }
-    irq_unlock(st);
+    rtos_crit_exit(st);
     rtos_schedule_request();
 }
 
@@ -136,13 +147,33 @@ void rtos_msleep(uint32_t ms) {
     if (rtos_need_svc()) { rtos_syscall(RTOS_SYS_MSLEEP, ms, 0, 0); return; }
     uint32_t ticks = (ms * RTOS_TICK_HZ + 999U) / 1000U;
     if (ticks == 0) ticks = 1;
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     g_running->state = TASK_SLEEPING;
     g_running->delay_ticks = ticks;
     sleep_add(g_running);
-    irq_unlock(st);
+    rtos_crit_exit(st);
     rtos_schedule_request();
 }
+
+/* 抢占点（docs/rtos-design.md §3）：仅当存在更高（或同优先级 FIFO 中更靠前）
+ * 的就绪任务时才让出 CPU；否则继续当前任务。常用于“临界区内插入调度点”。 */
+void rtos_schedule(void) {
+    if (!g_rtos_started) return;
+    if (rtos_need_svc()) { rtos_syscall(RTOS_SYS_YIELD, 0, 0, 0); return; }
+    unsigned st = rtos_crit_enter();
+    if (g_running && g_running->state == TASK_RUNNING) {
+        int p = g_running->prio;
+        /* 更高优先级有就绪，或同优先级 FIFO 里还有别的任务在前面 */
+        if ((g_ready_bmp & ~((1u << (p + 1)) - 1u)) || (g_ready_head[p] != (task_t *)0)) {
+            g_running->state = TASK_READY;
+            ready_add(g_running);
+        }
+    }
+    rtos_crit_exit(st);
+    rtos_schedule_request();
+}
+
+uint32_t rtos_ipc_misuse_count(void) { return g_ipc_misuse; }
 
 /* 由 PendSV 汇编调用（中断已关）：保存 old_sp，挑选下一任务，返回其 sp */
 void *rtos_pendsv_switch(void *old_sp) {
@@ -171,7 +202,7 @@ void *rtos_pendsv_switch(void *old_sp) {
 void rtos_tick_isr(void *ctx) {
     (void)ctx;
     if (!g_rtos_started) return;
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     g_tick++;
     int awoke = 0;
     task_t *t = g_sleep_head;
@@ -187,7 +218,23 @@ void rtos_tick_isr(void *ctx) {
         }
         t = nx;
     }
-    irq_unlock(st);
+#if RTOS_TIME_SLICE
+    /* 时间片轮转：同优先级有竞争者时倒计时，用尽则让出到 FIFO 尾部 */
+    if (g_running && g_running->state == TASK_RUNNING) {
+        uint8_t p = g_running->prio;
+        if (g_ready_head[p] != (task_t *)0) {
+            if (g_slice_ticks == 0) g_slice_ticks = RTOS_TIME_SLICE_TICKS;
+            if (--g_slice_ticks == 0) {
+                g_running->state = TASK_READY;
+                ready_add(g_running);   /* 加到同优先级 FIFO 尾部 */
+                awoke = 1;
+            }
+        } else {
+            g_slice_ticks = RTOS_TIME_SLICE_TICKS;   /* 无竞争者：续跑并重置片 */
+        }
+    }
+#endif
+    rtos_crit_exit(st);
     if (awoke) rtos_schedule_request();
 }
 

@@ -34,85 +34,91 @@ static void mq_pop(rtos_mq_t *q, void *item) {
 int rtos_mq_trysend(rtos_mq_t *q, const void *item) {
     if (!q) return -1;
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MQ_TRYSEND, (uint32_t)q, (uint32_t)item, 0);
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     if (q->count < q->cap) {
         mq_push(q, item);
         if (q->recv_waitq) {                  /* 有接收者空等：唤醒一个去取 */
             task_t *t = rtos_waitq_pop_highest(&q->recv_waitq);
             t->wait_obj = (void *)0; t->state = TASK_READY; ready_add(t);
-            irq_unlock(st);
+            rtos_crit_exit(st);
             rtos_schedule_request();
             return 0;
         }
-        irq_unlock(st);
+        rtos_crit_exit(st);
         return 0;
     }
-    irq_unlock(st);
+    rtos_crit_exit(st);
     return -1;
 }
 
 int rtos_mq_tryrecv(rtos_mq_t *q, void *item) {
     if (!q) return -1;
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MQ_TRYRECV, (uint32_t)q, (uint32_t)item, 0);
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     if (q->count > 0) {
         mq_pop(q, item);
         if (q->send_waitq) {                  /* 有发送者满等：唤醒一个去填 */
             task_t *t = rtos_waitq_pop_highest(&q->send_waitq);
             t->wait_obj = (void *)0; t->state = TASK_READY; ready_add(t);
-            irq_unlock(st);
+            rtos_crit_exit(st);
             rtos_schedule_request();
             return 0;
         }
-        irq_unlock(st);
+        rtos_crit_exit(st);
         return 0;
     }
-    irq_unlock(st);
+    rtos_crit_exit(st);
     return -1;
 }
 
 int rtos_mq_send(rtos_mq_t *q, const void *item) {
     if (!q) return -1;
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MQ_SEND, (uint32_t)q, (uint32_t)item, 0);
-    if (rtos_ipc_in_isr() || !rtos_is_started()) return rtos_mq_trysend(q, item);
+    if (rtos_ipc_in_isr() || !rtos_is_started()) {
+        g_ipc_misuse++;                       /* ISR/未启动：退化为非阻塞 try（见 §4.2） */
+        return rtos_mq_trysend(q, item);
+    }
     for (;;) {
-        unsigned st = irq_lock();
+        unsigned st = rtos_crit_enter();
         if (q->count < q->cap) {
             mq_push(q, item);
             if (q->recv_waitq) {
                 task_t *t = rtos_waitq_pop_highest(&q->recv_waitq);
                 t->wait_obj = (void *)0; t->state = TASK_READY; ready_add(t);
-                irq_unlock(st);
+                rtos_crit_exit(st);
                 rtos_schedule_request();
                 return 0;
             }
-            irq_unlock(st);
+            rtos_crit_exit(st);
             return 0;
         }
         rtos_pend(&q->send_waitq);   /* 满：阻塞，被接收者唤醒后重试 */
-        irq_unlock(st);
+        rtos_crit_exit(st);
     }
 }
 
 int rtos_mq_recv(rtos_mq_t *q, void *item) {
     if (!q) return -1;
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MQ_RECV, (uint32_t)q, (uint32_t)item, 0);
-    if (rtos_ipc_in_isr() || !rtos_is_started()) return rtos_mq_tryrecv(q, item);
+    if (rtos_ipc_in_isr() || !rtos_is_started()) {
+        g_ipc_misuse++;                       /* ISR/未启动：退化为非阻塞 try（见 §4.2） */
+        return rtos_mq_tryrecv(q, item);
+    }
     for (;;) {
-        unsigned st = irq_lock();
+        unsigned st = rtos_crit_enter();
         if (q->count > 0) {
             mq_pop(q, item);
             if (q->send_waitq) {
                 task_t *t = rtos_waitq_pop_highest(&q->send_waitq);
                 t->wait_obj = (void *)0; t->state = TASK_READY; ready_add(t);
-                irq_unlock(st);
+                rtos_crit_exit(st);
                 rtos_schedule_request();
                 return 0;
             }
-            irq_unlock(st);
+            rtos_crit_exit(st);
             return 0;
         }
         rtos_pend(&q->recv_waitq);   /* 空：阻塞，被发送者唤醒后重试 */
-        irq_unlock(st);
+        rtos_crit_exit(st);
     }
 }

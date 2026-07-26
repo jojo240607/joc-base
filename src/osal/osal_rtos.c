@@ -1,5 +1,6 @@
 #include "osal/osal.h"
 #include "rtos.h"
+#include "core/rtos_internal.h"   /* rtos_crit_enter/exit：统一内核临界区（零延迟 IRQ 接线） */
 #include "common/lock.h"
 #include <stdint.h>
 
@@ -25,32 +26,32 @@ void osal_sem_wait(osal_sem_t *s) {
     for (;;) {
         /* ISR 中或内核未启动：不能阻塞，退化为忙等 */
         if (osal_in_interrupt() || rtos_running() == (task_t *)0) {
-            unsigned st = irq_lock();
-            if (s->count > 0) { s->count--; irq_unlock(st); return; }
-            irq_unlock(st);
+            unsigned st = rtos_crit_enter();
+            if (s->count > 0) { s->count--; rtos_crit_exit(st); return; }
+            rtos_crit_exit(st);
             continue;
         }
-        unsigned st = irq_lock();
+        unsigned st = rtos_crit_enter();
         if (s->count > 0) {                 /* 有许可，直接取走 */
             s->count--;
-            irq_unlock(st);
+            rtos_crit_exit(st);
             return;
         }
-        /* 无许可：阻塞当前任务（请求切换；irq_unlock 后 PendSV 真正切换） */
+        /* 无许可：阻塞当前任务（请求切换；rtos_crit_exit 后 PendSV 真正切换） */
         rtos_pend(&s->wait);
-        irq_unlock(st);
+        rtos_crit_exit(st);
         /* 被唤醒后从此处继续，循环重取许可 */
     }
 }
 
 void osal_sem_give(osal_sem_t *s) {
     if (!s) return;
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     s->count++;
     if (rtos_running() != (task_t *)0) {
         rtos_post(&s->wait);   /* 唤醒最高优先级等待者并请求切换 */
     }
-    irq_unlock(st);
+    rtos_crit_exit(st);
 }
 
 unsigned osal_enter_critical(void) { return irq_lock(); }

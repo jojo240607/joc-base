@@ -34,34 +34,35 @@ void rtos_sem_init(rtos_sem_t *s, uint32_t initial, uint32_t limit) {
 int rtos_sem_trywait(rtos_sem_t *s) {
     if (!s) return -1;
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_SEM_TRYWAIT, (uint32_t)s, 0, 0);
-    unsigned st = irq_lock();
-    if (s->count > 0) { s->count--; irq_unlock(st); return 0; }
-    irq_unlock(st);
+    unsigned st = rtos_crit_enter();
+    if (s->count > 0) { s->count--; rtos_crit_exit(st); return 0; }
+    rtos_crit_exit(st);
     return -1;
 }
 
 int rtos_sem_wait(rtos_sem_t *s) {
     if (!s) return -1;
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_SEM_WAIT, (uint32_t)s, 0, 0);
-    /* ISR / 未启动：退化为忙等 */
+    /* ISR / 未启动：退化为忙等（计入误用计数，见 docs/rtos-design.md §4.2） */
     if (rtos_ipc_in_isr() || !rtos_is_started()) {
+        g_ipc_misuse++;
         for (;;) {
-            unsigned st = irq_lock();
-            if (s->count > 0) { s->count--; irq_unlock(st); return 0; }
-            irq_unlock(st);
+            unsigned st = rtos_crit_enter();
+            if (s->count > 0) { s->count--; rtos_crit_exit(st); return 0; }
+            rtos_crit_exit(st);
         }
     }
-    unsigned st = irq_lock();
-    if (s->count > 0) { s->count--; irq_unlock(st); return 0; }
+    unsigned st = rtos_crit_enter();
+    if (s->count > 0) { s->count--; rtos_crit_exit(st); return 0; }
     rtos_pend(&s->waitq);     /* 无许可：阻塞；被唤醒时许可已被本任务“占有” */
-    irq_unlock(st);
+    rtos_crit_exit(st);
     return 0;
 }
 
 void rtos_sem_give(rtos_sem_t *s) {
     if (!s) return;
     if (rtos_need_svc()) { rtos_syscall(RTOS_SYS_SEM_GIVE, (uint32_t)s, 0, 0); return; }
-    unsigned st = irq_lock();
+    unsigned st = rtos_crit_enter();
     task_t *t = (task_t *)s->waitq;
     if (t) {
         /* 有等待者：直接唤醒最高优先级者（不增 count，唤醒即“消费”） */
@@ -72,6 +73,6 @@ void rtos_sem_give(rtos_sem_t *s) {
     } else if (s->count < s->limit) {
         s->count++;
     }
-    irq_unlock(st);
+    rtos_crit_exit(st);
     if (t) rtos_schedule_request();
 }
