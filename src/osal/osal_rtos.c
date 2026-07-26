@@ -24,11 +24,17 @@ void osal_sem_init(osal_sem_t *s, int val) {
 void osal_sem_wait(osal_sem_t *s) {
     if (!s) return;
     for (;;) {
-        /* ISR 中或内核未启动：不能阻塞，退化为忙等 */
+        /* ISR 中或内核未启动：不能阻塞，退化为忙等。
+         * 注意：忙等阶段“绝不能”用 rtos_crit_enter（BASEPRI）关门——BASEPRI 会屏蔽
+         * 那个“负责给本信号量”的内核类 ISR（优先级 >= 阈值），导致它永远无法触发、
+         * 信号量永远拿不到、死循环且 BASEPRI 卡在阈值（连 UART TX 中断都被挡，串口
+         * 直接不输出）。正确做法：仅对“取走许可”这一瞬间用极短的 PRIMASK 关门保证原子，
+         * 两次取之间的自旋本身保持中断开启，让给信号量的 ISR 能在自旋间隙 firing，
+         * 与 ISR 实际优先级无关，BASEPRI 选择性屏蔽下也成立。 */
         if (osal_in_interrupt() || rtos_running() == (task_t *)0) {
-            unsigned st = rtos_crit_enter();
-            if (s->count > 0) { s->count--; rtos_crit_exit(st); return; }
-            rtos_crit_exit(st);
+            unsigned st = irq_lock();
+            if (s->count > 0) { s->count--; irq_unlock(st); return; }
+            irq_unlock(st);
             continue;
         }
         unsigned st = rtos_crit_enter();

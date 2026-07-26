@@ -38,16 +38,20 @@ void rtos_arch_start(void) {
                               |  (uint32_t)FPU_FPCCR_ASPEN_Msk
                               |  (uint32_t)FPU_FPCCR_LSPEN_Msk;
 
-    /* PendSV 设为最低优先级，保证它只在“无更高优先级异常”时运行 */
-    NVIC_SetPriority(PendSV_IRQn, 0xFF);
+    /* PendSV / SysTick 置【最低硬件优先级】(4-bit 时为 15)：这是 FreeRTOS 的
+     * configKERNEL_INTERRUPT_PRIORITY 约定——内核节拍与切换异常必须可被 BASEPRI
+     * 临界区屏蔽（priority 15 >= 阈值）。NVIC_SetPriority 接收【未移位】的优先级
+     * 数(0..15)，内部自行左移 (8-__NVIC_PRIO_BITS)；切勿再手动移位（否则二次移位
+     * 变成优先级 0，反而永不被 BASEPRI 屏蔽，会与临界区并发改写就绪/等待链表而出错）。 */
+    uint32_t lowest = (uint32_t)((1U << __NVIC_PRIO_BITS) - 1U);  /* 4-bit -> 15 */
+    NVIC_SetPriority(PendSV_IRQn, lowest);
 
 #if RTOS_MAX_ZERO_LATENCY_IRQS > 0
-    /* 零延迟 IRQ（docs/rtos-design.md §4.5）：把节拍置于“可被内核 BASEPRI 屏蔽”
-     * 的优先级带(>= ceil)，使更高优先级的零延迟 ISR 永不被内核临界区屏蔽。
-     * 前提：所有调用内核 API 的 ISR 优先级必须 >= RTOS_MAX_ZERO_LATENCY_IRQS
-     *（FreeRTOS 同款契约），否则零延迟 ISR 可能抢占总被 BASEPRI 屏蔽的临界区。 */
-    NVIC_SetPriority(SysTick_IRQn,
-                     (uint32_t)RTOS_MAX_ZERO_LATENCY_IRQS << (8u - __NVIC_PRIO_BITS));
+    /* 零延迟 IRQ（docs/rtos-design.md §4.5）：节拍置于最低优先级，故它落在
+     * “可被内核 BASEPRI 屏蔽”的带内（priority 15 >= 阈值 4），而优先级 < 阈值(=4)
+     * 的零延迟 ISR 永不被屏蔽。前提：所有调用内核 API 的 ISR 优先级必须 >= 阈值
+     *（FreeRTOS 同款契约），rtos_start 的 irq_manager_audit_priorities 会校验。 */
+    NVIC_SetPriority(SysTick_IRQn, lowest);
 #endif
 
     /* 触发首次切换（SVC 从线程模式进入 Handler 模式） */

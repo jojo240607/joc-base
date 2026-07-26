@@ -53,7 +53,7 @@ int rtos_bus_wait(rtos_bus_t *b, uint16_t topic, void *buf, size_t *len, uint32_
         rtos_crit_exit(st);
         return 0;
     }
-    if (timeout_ms == 0) { irq_unlock(st); return -1; }   /* 非阻塞：无消息 */
+    if (timeout_ms == 0) { rtos_crit_exit(st); return -1; }   /* 非阻塞：无消息 */
     rtos_pend(&b->waitq[topic]);      /* 阻塞，直到该 topic 被发布后唤醒 */
     rtos_crit_exit(st);
     /* 被唤醒：发布者已把数据放进邮箱 */

@@ -198,7 +198,7 @@ void usb_bh_fn(void *ctx) {
 #define RTOS_MAX_TASKS        16
 #define RTOS_TIME_SLICE       1     /* 同优先级时间片轮转（已实现，见 §1/§3） */
 #define RTOS_TIME_SLICE_TICKS 5     /* 每任务连续运行 5 节拍后让出 */
-#define RTOS_MAX_ZERO_LATENCY_IRQS 0 /* 零延迟 IRQ 数（0=关闭，见 §4.5；已实现） */
+#define RTOS_MAX_ZERO_LATENCY_IRQS 4 /* 零延迟 IRQ 阈值：启用 BASEPRI 选择性屏蔽（见 §4.5；已实现） */
 #define RTOS_PRIO_BH_HIGH     4     /* 下半部高优先级带 */
 #define RTOS_PRIO_BH_MED      6
 ```

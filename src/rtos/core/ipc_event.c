@@ -49,8 +49,8 @@ uint32_t rtos_event_wait(rtos_event_t *e, uint32_t mask, int wait_all, int block
     }
     unsigned st = rtos_crit_enter();
     int sat = wait_all ? ((e->flags & mask) == mask) : ((e->flags & mask) != 0);
-    if (sat) { irq_unlock(st); return e->flags; }
-    if (!block) { irq_unlock(st); return (uint32_t)-1; }
+    if (sat) { rtos_crit_exit(st); return e->flags; }
+    if (!block) { rtos_crit_exit(st); return (uint32_t)-1; }
     rtos_running()->wait_mask = mask;
     rtos_running()->wait_mode = wait_all ? 1 : 0;
     rtos_pend(&e->waitq);

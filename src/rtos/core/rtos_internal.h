@@ -18,20 +18,33 @@
  * 全局关中断（与此前行为完全一致）。两个分支返回类型相同（unsigned），调用方
  * 用 `unsigned st = rtos_crit_enter(); ... rtos_crit_exit(st);` 即可，无需感知分支。 */
 #if RTOS_MAX_ZERO_LATENCY_IRQS > 0
+/* BASEPRI 临界区原语——设计对标 FreeRTOS 的 portSET/CLEAR_INTERRUPT_MASK_FROM_ISR：
+ *   enter：先 `mrs` 读出【当前】BASEPRI 存进局部变量 saved（保存掩码），
+ *          再把 BASEPRI 提升到阈值（屏蔽优先级 >= 阈值的异常）；
+ *   exit ：直接 `msr BASEPRI, saved` 把【当初保存的那个值】原样恢复，绝不无条件清零。
+ * 关键：嵌套临界区（如 SVC/优先级更高异常夹在中间）里，内层 exit 只恢复到外层的值，
+ * 不会破坏外层屏蔽状态；否则临界区会在嵌套时失效，就绪/等待链表被并发改写、调度器损坏。
+ *
+ * BASEPRI 写入的是“已左移 (8-__NVIC_PRIO_BITS) 位的硬件优先级值”；NVIC_SetPriority
+ * 内部会再移位一次，故这里不走 NVIC_SetPriority，直接算好移位值写入。 */
 static inline unsigned rtos_crit_enter(void) {
-    sched_lock((uint8_t)RTOS_MAX_ZERO_LATENCY_IRQS);   /* BASEPRI = 阈值 */
-    return 0;
+    uint32_t saved;
+    __asm__ volatile("mrs %0, BASEPRI" : "=r"(saved));
+    __asm__ volatile("msr BASEPRI, %0" :
+                     : "r"((uint32_t)(RTOS_MAX_ZERO_LATENCY_IRQS
+                                      << (8U - __NVIC_PRIO_BITS)))
+                     : "memory");
+    return (unsigned)saved;            /* 保存原掩码，exit 时原样恢复 */
 }
 static inline void rtos_crit_exit(unsigned st) {
-    (void)st;
-    sched_unlock();
+    __asm__ volatile("msr BASEPRI, %0" : : "r"((uint32_t)st) : "memory");
 }
 #else
 static inline unsigned rtos_crit_enter(void) {
-    return irq_lock();                                 /* PRIMASK 全局关中断 */
+    return irq_lock();                                 /* PRIMASK 全局关中断（保存 PRIMASK） */
 }
 static inline void rtos_crit_exit(unsigned st) {
-    irq_unlock(st);
+    irq_unlock(st);                                    /* 从保存的 PRIMASK 值恢复，不直接开全局中断 */
 }
 #endif
 

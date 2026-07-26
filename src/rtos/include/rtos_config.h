@@ -62,14 +62,16 @@
   #define RTOS_TIME_SLICE_TICKS 5   /* 每个任务连续运行 5 个节拍(5ms @1kHz)后让出 */
 #endif
 
-/* 零延迟 IRQ（见 docs/rtos-design.md §4.5）：高于该“优先级数”的极少数最高优先级
- * ISR 永不被内核临界区屏蔽（用 BASEPRI 而非 PRIMASK 关中断）。默认 0 = 关闭，
- * 内核临界区退化为全局关中断( PRIMASK )，行为与此前完全一致、零回归。
- * 启用(>0)时须遵守 FreeRTOS 式契约：所有调用内核 API 的 ISR 优先级必须 >= 此值
- *（否则零延迟 ISR 可能抢占总被 BASEPRI 屏蔽的临界区造成重入）；rtos_start 会把
- * SysTick/PendSV 置于可被屏蔽的优先级带。 */
+/* 零延迟 IRQ / BASEPRI 阈值（见 docs/rtos-design.md §4.5）：高于该“优先级数”的极少
+ * 数最高优先级 ISR 永不被内核临界区屏蔽（用 BASEPRI 而非 PRIMASK 关中断）。
+ * 本项目默认 4 = 启用选择性屏蔽：配合语义带 IRQ_PRIO_KERNEL=5 / IRQ_PRIO_ZERO_LATENCY=2
+ * 满足 FreeRTOS 式契约——内核 ISR 优先级 5 >= 4 被 BASEPRI 屏蔽，零延迟 ISR 优先级
+ * 2 < 4 永不被屏蔽；rtos_start 会把 SysTick 置于可被屏蔽带、PendSV 恒为最低。
+ * 设为 0 则退化为全局关中断( PRIMASK )，行为与此前完全一致。
+ * 启用(>0)时须遵守契约：所有调用内核 API 的 ISR 优先级必须 >= 此值，否则
+ * rtos_start 的 irq_manager_audit_priorities 会打印违例。 */
 #ifndef RTOS_MAX_ZERO_LATENCY_IRQS
-  #define RTOS_MAX_ZERO_LATENCY_IRQS 0
+  #define RTOS_MAX_ZERO_LATENCY_IRQS 4
 #endif
 
 /* 配套的语义化优先级带（定义在 src/irq/irq.h，驱动经 irq_manager_set_priority 使用，
@@ -77,9 +79,9 @@
  *   IRQ_PRIO_KERNEL=5       调用内核 API 的 ISR（必须 >= 本阈值，才会被 BASEPRI 屏蔽）
  *   IRQ_PRIO_ZERO_LATENCY=2 零延迟 ISR（必须 < 本阈值，永不被内核临界区屏蔽）
  *   IRQ_PRIO_DEFAULT=8      普通 ISR（不调内核 API、非抖动敏感）
- * 启用零延迟时建议把本阈值设为 4：则 KERNEL(5) >= 4 被 BASEPRI 屏蔽、ZERO_LATENCY(2)
+ * 本项目即默认阈值 4：KERNEL(5) >= 4 被 BASEPRI 屏蔽、ZERO_LATENCY(2)
  * < 4 永不被屏蔽，两者都满足上面的契约；rtos_start 的 irq_manager_audit_priorities
- * 会在违例时打印错误。默认 0 时这些带仅作组织用途、不改变任何行为。 */
+ * 会在违例时打印错误。 */
 
 /* ---------------------------------------------------------------------------
  * MPU SRAM 隔离（见 docs/rtos-design.md §6：R2 内核 RAM 仅特权 / R3 每任务栈 region）
