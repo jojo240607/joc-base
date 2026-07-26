@@ -168,6 +168,11 @@ int rtos_stress_selftest(void);
  * 高频切换互相踩踏，若 s16-s31 未保存，累加器会被其它任务破坏，与期望值不符。 */
 int rtos_fpu_selftest(void);
 
+/* ---- 中断上下半部自测（从 RTOSBH 命令调用，并注册进 RTOSALL） ----
+ * 验证上半部(模拟 ISR) trigger -> 下半部高优先级任务被唤醒并执行；
+ * 以及工作队列提交 -> 共享 worker 执行。见 docs/rtos-design.md 第 4 章(P3)。 */
+int rtos_bh_selftest(void);
+
 /* ---- 编译期自测注册表（链接器段收集，见 linker .rtos_selftests） ----
  * 各模块用 RTOS_SELFTEST_ADD("name", fn) 把自测注册进 .rtos_selftests.<name>
  * 段；rtos_selftest_run_all() 在运行时遍历该段依次执行，无需手动逐个调用。

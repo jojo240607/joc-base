@@ -105,6 +105,7 @@ if(RTOS)
     src/rtos/rtos_ipc.c
     src/rtos/rtos_selftest.c
     src/rtos/rtos_stress.c
+    src/rtos/bh.c
     # arch 层（与底层硬件的唯一边界）：Cortex-M4 实现
     src/rtos/arch/cortex_m/port.c
     src/rtos/arch/cortex_m/context.S
