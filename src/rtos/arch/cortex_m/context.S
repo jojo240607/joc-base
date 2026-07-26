@@ -67,9 +67,10 @@ PendSV_Handler:
     stmdb  r0!, {r14}        /* EXC_RETURN 在最底部（最低地址） */
 
     cpsid  i                  /* 关中断，保护就绪/等待链表不被 ISR 并发改 */
-    bl     rtos_pendsv_switch /* r0 = 新任务的 sp（PSP） */
+    bl     rtos_pendsv_switch /* r0 = 新任务的 sp（PSP）；g_running = nxt */
     cpsie  i
 
+    bl     rtos_arch_apply_task_priv   /* 按新任务 priv 设置 CONTROL.nPRIV */
     ldmia  r0!, {r14}        /* 先恢复 EXC_RETURN（最低地址） */
     /* 恢复顺序必须与 SAVE 严格对称（SAVE 低→高 = EXC_RETURN, r4-r11, s16-s31）。
      * 注意：用过 FPU 的任务其帧中 r4-r11 位于 s16-s31 之下，故先恢复 r4-r11 再
@@ -96,15 +97,35 @@ PendSV_Handler:
  *   切到 PSP（线程模式），恢复 r4-r11，并以 EXC_RETURN=0xFFFFFFFD 返回。
  * ------------------------------------------------------------------------- */
 SVC_Handler:
+    /* 取触发 SVC 的任务栈帧（线程模式用 PSP，主线程用 MSP），读取 SVC 指令的 imm8。
+     * imm==0：首次启动首个任务（历史路径）；imm!=0：非特权任务的系统调用。 */
+    tst    lr, #4
+    ite    eq
+    mrseq  r2, MSP
+    mrsne  r2, PSP            /* r2 = 触发 SVC 的栈帧 */
+    ldr    r3, [r2, #24]      /* 栈帧中保存的 PC（r0..r3,r12,lr,pc = 偏移 24） */
+    ldrh   r3, [r3, #-2]      /* SVC 指令半字（PC 已指向下一条，故 -2） */
+    and    r3, r3, #0xFF      /* imm8 */
+    cbz    r3, .Lsvc_start    /* imm==0 -> 首次启动 */
+    /* 系统调用路径：frame=r2, 调用号=frame[0]（rtos_syscall 把调用号放在 r0，
+     * 而 SVC 指令固定为 svc 0x80，imm8 只是“这是系统调用”的标记，不是调用号；
+     * 若误用 imm8 作调用号，switch 永远落 default -> 所有系统调用返回 -1，非特权
+     * 任务的内核对象操作全部静默失效）。尾调用 C 分发器（lr 仍 = EXC_RETURN）。 */
+    mov    r0, r2
+    ldr    r1, [r2, #0]       /* nr = frame[0] = 调用号 */
+    b      rtos_svc_dispatch_entry
+
+.Lsvc_start:
     ldr    r0, =g_running
     ldr    r0, [r0]
     ldr    r1, [r0]           /* first->sp（指向 EXC_RETURN 槽） */
     add    r1, r1, #4         /* 跳过 EXC_RETURN 槽（首次启动不用，PendSV 才用） */
-    mov    r2, #2             /* CONTROL: SPSEL=1(用 PSP), nPRIV=0(特权) */
+    mov    r2, #2             /* CONTROL: SPSEL=1(用 PSP), nPRIV=0(暂定特权) */
     msr    CONTROL, r2
     isb
     ldmia  r1!, {r4-r11}      /* 弹出 r4-r11 */
     msr    PSP, r1            /* PSP 现在指向异常帧 */
+    bl     rtos_arch_apply_task_priv   /* 按 first->priv 设 nPRIV（特权任务保持 0） */
     ldr    lr, =0xFFFFFFFD    /* 返回线程模式、用 PSP、无 FPU 帧 */
     bx     lr
 

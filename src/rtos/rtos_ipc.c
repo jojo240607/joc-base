@@ -1,5 +1,7 @@
 #include "rtos.h"
 #include "common/lock.h"
+#include "log/log.h"
+#include "log/app_log.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -13,9 +15,13 @@
  * ------------------------------------------------------------------------- */
 
 /* 是否在中断上下文：透过 common/lock.h 的 arch_in_isr() 探测，
- * 不直接读写任何 ISA 魔法地址（0xE000ED04），保持核心可移植。 */
+ * 不直接读写任何 ISA 魔法地址（0xE000ED04），保持核心可移植。
+ * 注意：SVC 分发（g_in_svc==1）代表特权 Handler 模式“代替某任务”执行内核
+ * 调用，逻辑上仍属任务上下文——此刻若按 ISR 处理，阻塞式 API 会误走忙等/
+ * 直接返回分支，使非特权任务经 SVC 门时死循环（rtos_sem_wait）或静默失败
+ * （rtos_mutex_* 直接 -1）。故排除该态，仅“真 ISR + 非 SVC”才算 ISR。 */
 static int rtos_ipc_in_isr(void) {
-    return arch_in_isr();
+    return arch_in_isr() && !g_in_svc;
 }
 
 /* ===========================================================================
@@ -28,6 +34,7 @@ void rtos_sem_init(rtos_sem_t *s, uint32_t initial, uint32_t limit) {
     s->count = initial;
     s->limit = limit;
     s->waitq = (void *)0;
+    rtos_kobj_register((const char *)0, KOBJ_SEM, s);
 }
 
 int rtos_sem_trywait(rtos_sem_t *s) {
@@ -40,6 +47,7 @@ int rtos_sem_trywait(rtos_sem_t *s) {
 
 int rtos_sem_wait(rtos_sem_t *s) {
     if (!s) return -1;
+    if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_SEM_WAIT, (uint32_t)s, 0, 0);
     /* ISR / 未启动：退化为忙等 */
     if (rtos_ipc_in_isr() || !rtos_is_started()) {
         for (;;) {
@@ -57,6 +65,7 @@ int rtos_sem_wait(rtos_sem_t *s) {
 
 void rtos_sem_give(rtos_sem_t *s) {
     if (!s) return;
+    if (rtos_need_svc()) { rtos_syscall(RTOS_SYS_SEM_GIVE, (uint32_t)s, 0, 0); return; }
     unsigned st = irq_lock();
     task_t *t = (task_t *)s->waitq;
     if (t) {
@@ -80,10 +89,12 @@ void rtos_mutex_init(rtos_mutex_t *m, uint8_t ceil_prio) {
     m->owner = (task_t *)0;
     m->ceil_prio = ceil_prio;
     m->waitq = (void *)0;
+    rtos_kobj_register((const char *)0, KOBJ_MUTEX, m);
 }
 
 int rtos_mutex_trylock(rtos_mutex_t *m) {
     if (!m || !rtos_is_started() || rtos_ipc_in_isr()) return -1;
+    if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MUTEX_TRYLOCK, (uint32_t)m, 0, 0);
     unsigned st = irq_lock();
     if (m->owner == (task_t *)0) {
         m->owner = rtos_running();
@@ -98,6 +109,7 @@ int rtos_mutex_trylock(rtos_mutex_t *m) {
 
 int rtos_mutex_lock(rtos_mutex_t *m) {
     if (!m || !rtos_is_started() || rtos_ipc_in_isr()) return -1;
+    if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MUTEX_LOCK, (uint32_t)m, 0, 0);
     unsigned st = irq_lock();
     if (m->owner == rtos_running()) { irq_unlock(st); return -1; }   /* 不支持递归 */
     if (m->owner == (task_t *)0) {
@@ -115,6 +127,7 @@ int rtos_mutex_lock(rtos_mutex_t *m) {
 
 int rtos_mutex_unlock(rtos_mutex_t *m) {
     if (!m || !rtos_is_started() || rtos_ipc_in_isr()) return -1;
+    if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MUTEX_UNLOCK, (uint32_t)m, 0, 0);
     unsigned st = irq_lock();
     if (m->owner != rtos_running()) { irq_unlock(st); return -1; }
     /* 恢复自身优先级到原始值 */
@@ -148,6 +161,7 @@ void rtos_mq_init(rtos_mq_t *q, void *buf, size_t item_size, size_t cap) {
     q->head = 0;
     q->recv_waitq = (void *)0;
     q->send_waitq = (void *)0;
+    rtos_kobj_register((const char *)0, KOBJ_MQ, q);
 }
 
 static void mq_push(rtos_mq_t *q, const void *item) {
@@ -203,6 +217,7 @@ int rtos_mq_tryrecv(rtos_mq_t *q, void *item) {
 
 int rtos_mq_send(rtos_mq_t *q, const void *item) {
     if (!q) return -1;
+    if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MQ_SEND, (uint32_t)q, (uint32_t)item, 0);
     if (rtos_ipc_in_isr() || !rtos_is_started()) return rtos_mq_trysend(q, item);
     for (;;) {
         unsigned st = irq_lock();
@@ -225,6 +240,7 @@ int rtos_mq_send(rtos_mq_t *q, const void *item) {
 
 int rtos_mq_recv(rtos_mq_t *q, void *item) {
     if (!q) return -1;
+    if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MQ_RECV, (uint32_t)q, (uint32_t)item, 0);
     if (rtos_ipc_in_isr() || !rtos_is_started()) return rtos_mq_tryrecv(q, item);
     for (;;) {
         unsigned st = irq_lock();
@@ -252,6 +268,7 @@ void rtos_event_init(rtos_event_t *e) {
     if (!e) return;
     e->flags = 0;
     e->waitq = (void *)0;
+    rtos_kobj_register((const char *)0, KOBJ_EVENT, e);
 }
 void rtos_event_clear(rtos_event_t *e, uint32_t bits) {
     if (!e) return;
@@ -261,6 +278,7 @@ void rtos_event_clear(rtos_event_t *e, uint32_t bits) {
 }
 void rtos_event_set(rtos_event_t *e, uint32_t bits) {
     if (!e) return;
+    if (rtos_need_svc()) { rtos_syscall(RTOS_SYS_EVENT_SET, (uint32_t)e, bits, 0); return; }
     unsigned st = irq_lock();
     e->flags |= bits;
     int awoke = 0;
@@ -283,6 +301,10 @@ void rtos_event_set(rtos_event_t *e, uint32_t bits) {
 
 uint32_t rtos_event_wait(rtos_event_t *e, uint32_t mask, int wait_all, int block) {
     if (!e || rtos_ipc_in_isr() || !rtos_is_started()) return e ? e->flags : 0;
+    if (rtos_need_svc()) {
+        uint32_t flags = ((wait_all ? 1u : 0u) | ((block ? 1u : 0u) << 1));
+        return rtos_syscall(RTOS_SYS_EVENT_WAIT, (uint32_t)e, mask, flags);
+    }
     unsigned st = irq_lock();
     int sat = wait_all ? ((e->flags & mask) == mask) : ((e->flags & mask) != 0);
     if (sat) { irq_unlock(st); return e->flags; }
@@ -296,17 +318,20 @@ uint32_t rtos_event_wait(rtos_event_t *e, uint32_t mask, int wait_all, int block
 }
 
 /* ===========================================================================
- * 内核对象注册表（调试/按名查找）
+ * 内核对象注册表（调试/按名查找 + SVC 门指针校验）
+ * 所有 IPC 对象在 init 时自动登记（name 可 NULL，仅用于按指针校验），
+ * 任务在创建时登记（带名字，可按名查找）；SVC 门用 rtos_kobj_validate
+ * 校验“用户态传入的对象指针”确为已登记的内核对象，防伪造指针越权。
  * ========================================================================= */
-#define KOBJ_MAX 24
+#define KOBJ_MAX 64
 static struct { const char *name; rtos_kobj_type_t type; void *ptr; } g_kobj[KOBJ_MAX];
 static int g_kobj_n = 0;
 
 int rtos_kobj_register(const char *name, rtos_kobj_type_t type, void *ptr) {
-    if (!name || !ptr || g_kobj_n >= KOBJ_MAX) return 0;
-    for (int i = 0; i < g_kobj_n; i++)
-        if (strcmp(g_kobj[i].name, name) == 0) { g_kobj[i].ptr = ptr; return 1; }
-    g_kobj[g_kobj_n].name = name;
+    if (!ptr || g_kobj_n >= KOBJ_MAX) return 0;
+    for (int i = 0; i < g_kobj_n; i++)            /* 按 指针+类型 去重，避免重复登记 */
+        if (g_kobj[i].ptr == ptr && g_kobj[i].type == type) return 1;
+    g_kobj[g_kobj_n].name = name;                 /* 允许 NULL（仅按指针校验） */
     g_kobj[g_kobj_n].type = type;
     g_kobj[g_kobj_n].ptr  = ptr;
     g_kobj_n++;
@@ -315,11 +340,25 @@ int rtos_kobj_register(const char *name, rtos_kobj_type_t type, void *ptr) {
 void *rtos_kobj_lookup(const char *name) {
     if (!name) return (void *)0;
     for (int i = 0; i < g_kobj_n; i++)
-        if (strcmp(g_kobj[i].name, name) == 0) return g_kobj[i].ptr;
+        if (g_kobj[i].name && strcmp(g_kobj[i].name, name) == 0) return g_kobj[i].ptr;
     return (void *)0;
 }
 void rtos_kobj_foreach(void (*cb)(const char *name, rtos_kobj_type_t type, void *ptr)) {
     if (!cb) return;
     for (int i = 0; i < g_kobj_n; i++)
         cb(g_kobj[i].name, g_kobj[i].type, g_kobj[i].ptr);
+}
+/* SVC 门校验：指针确为某已登记的内核对象且类型匹配。 */
+int rtos_kobj_validate(void *ptr, rtos_kobj_type_t type) {
+    if (!ptr) return 0;
+    for (int i = 0; i < g_kobj_n; i++)
+        if (g_kobj[i].ptr == ptr && g_kobj[i].type == type) return 1;
+    return 0;
+}
+/* 控制台诊断（RTOSKOBJ 命令） */
+void rtos_kobj_dump(void) {
+    for (int i = 0; i < g_kobj_n; i++)
+        log_printf(app_log(), LOG_INFO, "rtos", "[KOBJ] %-16s type=%u ptr=%p\n",
+                   g_kobj[i].name ? g_kobj[i].name : "(anon)",
+                   (unsigned)g_kobj[i].type, g_kobj[i].ptr);
 }

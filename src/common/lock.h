@@ -68,11 +68,15 @@ static inline bool irq_is_disabled(void) {
     return (state & 0x1U) != 0U;
 }
 
-/* 是否处于中断上下文（Handler 模式）：读 Cortex-M 的 SCB->ICSR.VECTACTIVE。
- * 这是 ISA 级探测，集中放在本 port/lock 头里，避免各处散落 0xE000ED04 魔法地址。
- * 注意：本函数仅判断“是否在异常/ISR 中”，不区分具体是哪个中断。 */
+/* 是否处于中断上下文（Handler 模式）：用 MRS 读 IPSR（异常号）判断。
+ * 早期实现直接读内存映射的 SCB->ICSR(0xE000ED04)，但该寄存器在非特权态不可读，
+ * 会导致“非特权任务调用 rtos_need_svc()→arch_in_isr()”时触发 BusFault（见 Task#1
+ * 自测：USR 任务一进 SVC 判定就崩）。IPSR 是 xPSR 的一部分，任意特权级都可 MRS 读取，
+ * 且 IPSR[8:0] 与 ICSR.VECTACTIVE 等价（线程态为 0，异常态为异常号），故行为一致。 */
 static inline int arch_in_isr(void) {
-    return (((*(volatile uint32_t *)0xE000ED04u) & 0x1FFu) != 0u);
+    uint32_t ipsr;
+    __asm__ volatile("mrs %0, IPSR" : "=r"(ipsr));
+    return ((ipsr & 0x1FFu) != 0u);
 }
 
 #else  /* host / 非 arm：空操作桩，仅用于编译与逻辑自测 */

@@ -1,7 +1,0 @@
-0x0800ff1a in rtos_fault_handler (frame=<optimized out>, lr=<optimized out>) at D:/project/mcu/oop/joc-base/src/rtos/arch/cortex_m/mpu.c:133
-133	    for (;;) { __WFI(); }
-Unable to match requested speed 2000 kHz, using 1800 kHz
-Unable to match requested speed 2000 kHz, using 1800 kHz
-[stm32f4x.cpu] not halted
-[stm32f4x.cpu] context restore failed, aborting resume
-[stm32f4x.cpu] target was not halted when resume was requested

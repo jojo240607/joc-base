@@ -42,4 +42,9 @@ irq_id_t rtos_arch_tick_id(void);
 void     rtos_cycle_init(void);   /* 使能 CYCCNT（幂等，可多次调用） */
 uint32_t rtos_cycle_now(void);    /* 读取 32 位周期计数（随内核主频递增） */
 
+/* 按当前任务(priv 标志)设置 CONTROL.nPRIV（在 PendSV/SVC 的 Handler 模式里调用）。 */
+void rtos_arch_apply_task_priv(void);
+/* 当前是否运行在非特权态（供自测断言）。 */
+int  rtos_arch_in_unpriv(void);
+
 #endif /* JOC_RTOS_ARCH_H */

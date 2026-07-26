@@ -64,3 +64,27 @@ void rtos_cycle_init(void) {
 uint32_t rtos_cycle_now(void) {
     return DWT->CYCCNT;
 }
+
+/* 按当前任务(priv 标志)设置 CONTROL.nPRIV。必须在 Handler 模式(PendSV/SVC)里调用，
+ * 异常返回到线程模式时即按新 nPRIV 运行：特权任务 nPRIV=0，非特权任务 nPRIV=1。
+ * 常态任务 priv=1，故对现行系统零影响；仅非特权任务(rtos_task_create_ex(...,0))会降权。 */
+extern task_t *g_running;
+void rtos_arch_apply_task_priv(void) {
+    uint32_t c = __get_CONTROL();
+    if (g_running && !g_running->priv) c |=  (uint32_t)0x1u;   /* 非特权 */
+    else                                c &= ~(uint32_t)0x1u;   /* 特权 */
+    __set_CONTROL(c);
+    __ISB();
+}
+
+/* 当前是否运行在非特权态（仅用于自测断言）。 */
+int rtos_arch_in_unpriv(void) {
+    return (__get_CONTROL() & 0x1u) ? 1 : 0;
+}
+
+/* 非特权任务触发 SVC：r0=调用号, r1..r3=参数；特权 Handler 模式执行后 r0 带回返回值。
+ * 仅非特权路径使用；特权任务/ISR 直接调内核，不经此函数。 */
+__attribute__((naked))
+uint32_t rtos_syscall(uint32_t nr, uint32_t a0, uint32_t a1, uint32_t a2) {
+    __asm volatile ("svc 0x80\n bx lr" : : : "memory", "r0", "r1", "r2", "r3");
+}

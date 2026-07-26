@@ -32,6 +32,7 @@ struct task {
     const char    *name;
     uint8_t        prio;        /* 有效优先级（可能被互斥量提升） */
     uint8_t        base_prio;   /* 创建时的原始优先级（解锁/恢复用） */
+    uint8_t        priv;        /* 1=特权(默认), 0=非特权；非特权任务须经 SVC 门访问内核对象 */
     task_state_t   state;
     uint8_t       *stack_base;
     size_t         stack_size;
@@ -149,13 +150,68 @@ void rtos_event_clear(rtos_event_t *e, uint32_t bits);
  * 成功返回当前 flags；非阻塞且未满足返回 (uint32_t)-1。 */
 uint32_t rtos_event_wait(rtos_event_t *e, uint32_t mask, int wait_all, int block);
 
-/* ---- 内核对象注册表（调试/按名查找） ---- */
+/* ---- 内核对象注册表（调试/按名查找 + SVC 门指针校验） ---- */
 typedef enum {
     KOBJ_SEM = 0, KOBJ_MUTEX, KOBJ_MQ, KOBJ_EVENT, KOBJ_TASK, KOBJ_OTHER
 } rtos_kobj_type_t;
 int  rtos_kobj_register(const char *name, rtos_kobj_type_t type, void *ptr);
 void *rtos_kobj_lookup(const char *name);
 void rtos_kobj_foreach(void (*cb)(const char *name, rtos_kobj_type_t type, void *ptr));
+/* SVC 门用它校验“用户态传入的内核对象指针”是否真实登记过，防伪造指针越权访问。 */
+int  rtos_kobj_validate(void *ptr, rtos_kobj_type_t type);
+/* 控制台诊断：把当前注册表 dump 出来（RTOSKOBJ 命令） */
+void rtos_kobj_dump(void);
+
+/* ---- 任务特权模式 + SVC 系统调用门（见 docs/rtos-design.md 第 6/8 章）----
+ * 默认任务运行在特权态（驱动可直接访外设，零改造）。把 priv=0 的任务经
+ * rtos_task_create_ex 创建为非特权：它不能直接碰外设（MPU 外设区仅特权），
+ * 一切内核对象操作（IPC/延时/创建任务）必须走 SVC 门，由特权 Handler 模式
+ * 代为执行并先用 rtos_kobj_validate 校验指针。常态任务保持特权，故对现有
+ * BIST/自测零回归；非特权能力是“按需 opt-in”并通过 RTOSUSR 自测验证。 */
+typedef enum {
+    RTOS_SYS_GET_TICK = 1,   /* a0: -        -> 返回 g_tick */
+    RTOS_SYS_YIELD,          /* 让出 CPU */
+    RTOS_SYS_MSLEEP,         /* a0: ms */
+    RTOS_SYS_SEM_GIVE,       /* a0: rtos_sem_t* */
+    RTOS_SYS_SEM_WAIT,       /* a0: rtos_sem_t* -> 0/-1 */
+    RTOS_SYS_MUTEX_LOCK,     /* a0: rtos_mutex_t* -> 0/-1 */
+    RTOS_SYS_MUTEX_UNLOCK,   /* a0: rtos_mutex_t* -> 0/-1 */
+    RTOS_SYS_MUTEX_TRYLOCK,  /* a0: rtos_mutex_t* -> 0/-1 */
+    RTOS_SYS_MQ_SEND,        /* a0: rtos_mq_t*, a1: item* -> 0/-1 */
+    RTOS_SYS_MQ_RECV,        /* a0: rtos_mq_t*, a1: item* -> 0/-1 */
+    RTOS_SYS_EVENT_SET,      /* a0: rtos_event_t*, a1: bits */
+    RTOS_SYS_EVENT_WAIT,     /* a0: rtos_event_t*, a1: mask, a2: wait_all, a3: block -> flags/-1 */
+    RTOS_SYS_TASK_CREATE     /* a0: rtos_task_create_args_t* */
+} rtos_syscall_nr_t;
+
+/* 非特权任务调用：从用户态触发 SVC，回到特权 Handler 模式执行系统调用。
+ * 约定：r0=调用号, r1..r3=参数；返回值经 r0 带回。仅非特权路径使用。 */
+uint32_t rtos_syscall(uint32_t nr, uint32_t a0, uint32_t a1, uint32_t a2);
+
+/* 当前运行任务是否“需要走 SVC 门”：非特权 + 非 ISR + 非 SVC 重入。 */
+int  rtos_need_svc(void);
+/* SVC 分发进行中（特权 Handler 模式代表某任务执行内核调用，非真正 ISR）。
+ * IPC 原语的“是否在中断上下文”判定须排除该态，否则阻塞式 API 会误走
+ * 忙等/直接返回分支，导致非特权任务经 SVC 门时死循环或静默失败。 */
+extern volatile int g_in_svc;
+/* 当前是否运行在非特权态（arch 探针，仅用于自测断言）。 */
+int  rtos_arch_in_unpriv(void);
+
+/* 创建任务并指定特权模式；rtos_task_create() 是其“特权”封装。 */
+typedef struct {
+    const char    *name;
+    void (*entry)(void *);
+    void          *arg;
+    uint8_t        prio;
+    void          *stack;
+    size_t         stack_size;
+    uint8_t        priv;     /* 1=特权, 0=非特权 */
+} rtos_task_create_args_t;
+void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
+                         uint8_t prio, void *stack, size_t stack_size, uint8_t priv);
+
+/* 非特权任务经 SVC 门使用内核对象的端到端自测（RTOSUSR 命令 + RTOSALL） */
+int rtos_usr_selftest(void);
 
 /* ---- IPC 运行时自测（从 RTOSIPC 命令调用） ---- */
 int rtos_ipc_selftest(void);
