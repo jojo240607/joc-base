@@ -283,7 +283,7 @@ static int uart_dev_open(device *self)
      * STM32 interrupt directly. The ISR (uart_isr) reads DR and fills the ring
      * buffer; read()/getc() then drain it. */
     irq_id_t id = uart_hal_irq_id(u->hal);
-    irq_set_priority(id, 0);
+    irq_manager_set_priority(id, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
     if (u->parent.mode == STREAM_MODE_IRQ)
         uart_hal_enable_rx_irq(u->hal);     /* RX ISR only in IRQ mode */
     irq_manager_attach(id, uart_isr, u);    /* register handler via the manager */

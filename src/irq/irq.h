@@ -64,6 +64,42 @@ void irq_disable(irq_id_t id);
 /* Set the preemption priority (platform-defined; on STM32 0 = highest). */
 void irq_set_priority(irq_id_t id, uint32_t prio);
 
+/* ---------------------------------------------------------------------------
+ * 集中式优先级治理（取代各驱动里散落的魔法数字；详见 irq_manager.h）
+ *
+ * ISR 类别：供启动期契约校验（FreeRTOS 式 BASEPRI 屏蔽）判断一个 ISR 能否被内核
+ * 临界区安全屏蔽。
+ *   IRQ_CLASS_KERNEL       调用内核 API（rtos_* 等内核 API / IPC / 工作队列 / BH 触发等），临界区
+ *                          必须能屏蔽它 => 其 NVIC 优先级数必须 >= 阈值；
+ *   IRQ_CLASS_ZERO_LATENCY 不调用内核 API、且对抖动极敏感，需永不被内核临界区屏蔽
+ *                          => 其优先级数必须 < 阈值（落在阈值之下的零延迟带）；
+ *   IRQ_CLASS_NORMAL       其它（不调内核 API、非抖动敏感）。
+ *
+ * 语义化优先级带（数值越小优先级越高，0 = 最高）：
+ *   IRQ_PRIO_ZERO_LATENCY  零延迟带（默认 2）
+ *   IRQ_PRIO_KERNEL        内核类 ISR 带（默认 5）
+ *   IRQ_PRIO_DEFAULT       普通带（默认 8）
+ * 真正启用 BASEPRI 选择性屏蔽（RTOS_MAX_ZERO_LATENCY_IRQS > 0）时，必须保证
+ *   IRQ_PRIO_KERNEL >= 阈值 且 IRQ_PRIO_ZERO_LATENCY < 阈值，否则 rtos_start 的
+ *   启动期审计（irq_manager_audit_priorities）会报违例。默认关闭时这些带仅作组织
+ *   用途、不改变任何行为。
+ * ------------------------------------------------------------------------- */
+typedef enum irq_class {
+    IRQ_CLASS_NORMAL = 0,
+    IRQ_CLASS_KERNEL,
+    IRQ_CLASS_ZERO_LATENCY
+} irq_class_t;
+
+#ifndef IRQ_PRIO_ZERO_LATENCY
+  #define IRQ_PRIO_ZERO_LATENCY 2
+#endif
+#ifndef IRQ_PRIO_KERNEL
+  #define IRQ_PRIO_KERNEL 5
+#endif
+#ifndef IRQ_PRIO_DEFAULT
+  #define IRQ_PRIO_DEFAULT 8
+#endif
+
 /* Clear a pending interrupt (write the NVIC ICPR). */
 void irq_clear_pending(irq_id_t id);
 

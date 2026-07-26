@@ -120,7 +120,7 @@ device *systick_create(const void *config)
     /* register the ISR through the PLATFORM-INDEPENDENT irq framework — no
      * vector-table / NVIC code lives in this driver. */
     irq_id_t id = irq_hal_systick_id();
-    irq_set_priority(id, 0);
+    irq_manager_set_priority(id, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
     irq_manager_attach(id, systick_isr, s);   /* register handler */
     irq_manager_enable(id, systick_isr, s);   /* arm NVIC */
 

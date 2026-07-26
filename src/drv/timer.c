@@ -96,7 +96,7 @@ static int timer_dev_open(device *self)
     tim_hal_config(t->hal, t->timer_clk_hz, t->tick_hz);
     tim_hal_set_repetition(t->hal, t->repetition);   /* RCR (adv TIM; no-op on GP) */
     tim_hal_enable_update_irq(t->hal);   /* peripheral UIE (gated by class) */
-    irq_set_priority(t->irq, 1);
+    irq_manager_set_priority(t->irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
     irq_manager_attach(t->irq, timer_isr, t);   /* register handler */
     return 0;
 }

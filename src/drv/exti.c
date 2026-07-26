@@ -114,7 +114,7 @@ static int exti_dev_open(device *self)
     exti_hal_select_source(e->hal);   /* route port -> EXTI line (SYSCFG) */
     exti_hal_set_edge(e->hal, e->edge);
     exti_hal_unmask(e->hal);          /* line live (NVIC still armed by enable) */
-    irq_set_priority(e->irq, 1);
+    irq_manager_set_priority(e->irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
     irq_manager_attach(e->irq, exti_isr, e);   /* register handler */
     e->count = 0;                     /* fresh counter each open (the device struct
                                        * is created once at board-init and survives

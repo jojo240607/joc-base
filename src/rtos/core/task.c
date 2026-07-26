@@ -2,6 +2,7 @@
 #include "rtos_internal.h"
 #include "common/lock.h"
 #include "irq.h"
+#include "irq_manager.h"   /* irq_manager_audit_priorities：启动期中断优先级契约校验 */
 #include "bh.h"
 #include <string.h>
 
@@ -119,6 +120,12 @@ void rtos_start(void) {
     rtos_cycle_init();           /* 使能 DWT 周期计数器（P4 延迟/有界性测量用） */
     rtos_instantiate_sections(); /* 编译期段收集：自动建任务/IPC/BH（P4） */
     rtos_workq_init();            /* 提前建好共享工作队列 worker（任务上下文，避免 ISR 内建任务） */
+
+    /* 启动期中断优先级契约审计：启用零延迟 IRQ（RTOS_MAX_ZERO_LATENCY_IRQS>0）时，
+     * 任何调用内核 API 的 ISR 必须落在可被 BASEPRI 屏蔽的优先级带（prio >= 阈值），
+     * 否则会在切换临界区里抢占就绪表造成重入。违例会被审计函数逐个打印；默认阈值=0
+     * 不触发任何违例，行为与此前完全一致、零回归。 */
+    irq_manager_audit_priorities((uint8_t)RTOS_MAX_ZERO_LATENCY_IRQS);
     task_t *first = ready_pick();
     if (!first) return;
     ready_remove(first);

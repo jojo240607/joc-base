@@ -398,7 +398,7 @@ static int usb_dev_open(device *self)
     USBD_Init(u->hal->pdev, USB_OTG_FS_CORE_ID, &g_usr_device, &USBD_CDC_cb, &g_cdc_usr_cb);
 
     irq_id_t id = usb_hal_irq_id(u->hal);
-    irq_set_priority(id, 1);
+    irq_manager_set_priority(id, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
     irq_manager_attach(id, usb_isr, u);
     irq_manager_enable(id, usb_isr, u);
 

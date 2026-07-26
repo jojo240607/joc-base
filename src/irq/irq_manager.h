@@ -47,6 +47,8 @@ typedef struct {
     void *         ctx;        /* per-registration context */
     int            registered; /* irq_register() was called (handler present) */
     int            enabled;    /* NVIC armed for this handler (line live) */
+    uint8_t        prio;       /* recorded NVIC priority (IRQ_PRIO_*; 0xFF = unset) */
+    irq_class_t    cls;        /* IRQ_CLASS_* — kernel / zero-latency classification */
 } irq_mgr_entry_t;
 
 /* Register (ADD) a handler for an interrupt source. Records the attachment in
@@ -70,6 +72,21 @@ void irq_manager_disable(irq_id_t id, irq_callback_t cb, void *ctx);
 /* Detach a SPECIFIC handler: mask the NVIC (if it was the last enabled on the
  * line) and uninstall the callback. */
 int irq_manager_detach(irq_id_t id, irq_callback_t cb, void *ctx);
+
+/* Set an IRQ line's NVIC priority THROUGH the manager. Records prio + class so the
+ * boot-time contract check and irq_manager_dump() can see it. cls declares whether
+ * the ISR calls kernel API (IRQ_CLASS_KERNEL) or needs zero-latency
+ * (IRQ_CLASS_ZERO_LATENCY); it is the basis of the FreeRTOS-style BASEPRI contract.
+ * Line-based: applied to every handler registered on that id. */
+void irq_manager_set_priority(irq_id_t id, uint8_t prio, irq_class_t cls);
+
+/* Boot-time contract check (FreeRTOS-style): every IRQ_CLASS_KERNEL entry must have
+ * prio >= zero_latency_threshold (so the critical section can mask it); every
+ * IRQ_CLASS_ZERO_LATENCY entry must have prio < threshold (so it is never masked).
+ * Returns the number of violations (0 = safe). Called from rtos_start() with
+ * RTOS_MAX_ZERO_LATENCY_IRQS as the threshold; logs each violation. Default
+ * (threshold = 0) reports no violations, behaviour identical to before. */
+int irq_manager_audit_priorities(uint8_t zero_latency_threshold);
 
 /* Print the manager's state table (for BIST / console debugging). */
 void irq_manager_dump(void);

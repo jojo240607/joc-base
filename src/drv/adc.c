@@ -210,7 +210,7 @@ static int adc_dev_ioctl(device *self, int cmd, void *arg)
         if (m == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
         a->parent.mode = m;
         if (m == STREAM_MODE_IRQ) {
-            irq_set_priority(a->eoc_irq, 1);
+            irq_manager_set_priority(a->eoc_irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
             adc_hal_enable_eoc_irq(a->hal);
             irq_manager_enable(a->eoc_irq, adc_isr, a);    /* arm NVIC (cb attached) */
         } else {
@@ -260,7 +260,7 @@ static void adc_hw_init(adc *self)
      * enabled when the stream is in STREAM_MODE_IRQ (here, if it already is, or
      * later via STREAM_IOCTL_SET_MODE). */
     self->eoc_irq = adc_hal_irq_id(self->hal);
-    irq_set_priority(self->eoc_irq, 1);
+    irq_manager_set_priority(self->eoc_irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
     if (self->parent.mode == STREAM_MODE_IRQ)
         adc_hal_enable_eoc_irq(self->hal);      /* peripheral EOC IE (gated by mode) */
     irq_manager_attach(self->eoc_irq, adc_isr, self);  /* register handler */

@@ -72,6 +72,15 @@
   #define RTOS_MAX_ZERO_LATENCY_IRQS 0
 #endif
 
+/* 配套的语义化优先级带（定义在 src/irq/irq.h，驱动经 irq_manager_set_priority 使用，
+ * 取代散落的魔法数字）：
+ *   IRQ_PRIO_KERNEL=5       调用内核 API 的 ISR（必须 >= 本阈值，才会被 BASEPRI 屏蔽）
+ *   IRQ_PRIO_ZERO_LATENCY=2 零延迟 ISR（必须 < 本阈值，永不被内核临界区屏蔽）
+ *   IRQ_PRIO_DEFAULT=8      普通 ISR（不调内核 API、非抖动敏感）
+ * 启用零延迟时建议把本阈值设为 4：则 KERNEL(5) >= 4 被 BASEPRI 屏蔽、ZERO_LATENCY(2)
+ * < 4 永不被屏蔽，两者都满足上面的契约；rtos_start 的 irq_manager_audit_priorities
+ * 会在违例时打印错误。默认 0 时这些带仅作组织用途、不改变任何行为。 */
+
 /* ---------------------------------------------------------------------------
  * MPU SRAM 隔离（见 docs/rtos-design.md §6：R2 内核 RAM 仅特权 / R3 每任务栈 region）
  *

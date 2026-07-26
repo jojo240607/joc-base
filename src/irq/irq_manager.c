@@ -77,6 +77,8 @@ int irq_manager_attach(irq_id_t id, irq_callback_t cb, void *ctx)
     e->ctx        = ctx;
     e->registered = 1;
     e->enabled    = 0;            /* attach alone does not arm the NVIC */
+    e->prio       = 0xFF;         /* priority not yet set via the manager */
+    e->cls        = IRQ_CLASS_NORMAL;
     return 0;
 }
 
@@ -120,6 +122,54 @@ int irq_manager_detach(irq_id_t id, irq_callback_t cb, void *ctx)
     return 0;
 }
 
+void irq_manager_set_priority(irq_id_t id, uint8_t prio, irq_class_t cls)
+{
+    /* program the NVIC (framework -> chip HAL) */
+    irq_set_priority(id, (uint32_t)prio);
+    /* record prio + class for every handler registered on this line, so the
+     * boot-time contract check and irq_manager_dump() can see the assignment. */
+    for (int i = 0; i < IRQ_MGR_POOL; i++) {
+        if (g_mgr[i].registered && g_mgr[i].id == id) {
+            g_mgr[i].prio = prio;
+            g_mgr[i].cls  = cls;
+        }
+    }
+}
+
+int irq_manager_audit_priorities(uint8_t zero_latency_threshold)
+{
+    int viol = 0;
+    for (int i = 0; i < IRQ_MGR_POOL; i++) {
+        irq_mgr_entry_t *e = &g_mgr[i];
+        if (!e->registered || !e->enabled)
+            continue;             /* only live, kernel-reachable ISRs matter */
+        if (e->cls == IRQ_CLASS_KERNEL && e->prio < zero_latency_threshold) {
+            /* A kernel ISR above the BASEPRI threshold would preempt the switch
+             * critical section and corrupt the ready/wait lists. */
+            log_printf(app_log(), LOG_ERROR, "irq",
+                "PRIORITY VIOLATION: kernel ISR irq %d prio %u < threshold %u "
+                "(would preempt the kernel critical section)",
+                (int)e->id, (unsigned)e->prio, (unsigned)zero_latency_threshold);
+            viol++;
+        } else if (e->cls == IRQ_CLASS_ZERO_LATENCY &&
+                   e->prio >= zero_latency_threshold) {
+            /* Declared zero-latency but pinned at/below the threshold: it WILL be
+             * masked by BASEPRI (defeating the purpose) and is unsafe if it ever
+             * calls a kernel API. */
+            log_printf(app_log(), LOG_ERROR, "irq",
+                "PRIORITY MISCONFIG: zero-latency ISR irq %d prio %u >= threshold %u "
+                "(will be masked / unsafe if it calls kernel API)",
+                (int)e->id, (unsigned)e->prio, (unsigned)zero_latency_threshold);
+            viol++;
+        }
+    }
+    if (viol > 0)
+        log_printf(app_log(), LOG_ERROR, "irq",
+            "irq_manager_audit_priorities: %d violation(s) found "
+            "(enable RTOS_MAX_ZERO_LATENCY_IRQS only after fixing these)", viol);
+    return viol;
+}
+
 const irq_mgr_entry_t *irq_manager_get(irq_id_t id)
 {
     int idx = irq_hal_index(id);
@@ -139,10 +189,12 @@ void irq_manager_dump(void)
         if (!g_mgr[i].registered)
             continue;
         n++;
-        log_printf(app_log(), LOG_DEBUG, "irq", "  irq %3d : reg=%d en=%d cb=%s",
+        log_printf(app_log(), LOG_DEBUG, "irq", "  irq %3d : reg=%d en=%d prio=%2u cls=%d cb=%s",
                (int)g_mgr[i].id,
                g_mgr[i].registered,
                g_mgr[i].enabled,
+               (unsigned)g_mgr[i].prio,
+               (int)g_mgr[i].cls,
                g_mgr[i].cb ? "yes" : "no");
     }
     log_printf(app_log(), LOG_DEBUG, "irq", "  (%d handler(s) attached)", n);

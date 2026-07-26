@@ -8,8 +8,10 @@
  * jOS 调度核心（core/sched.c）：TCB 全局、就绪位图、睡眠链表、等待队列、
  * 调度切换、节拍、pend/post、有效优先级调整。
  *
- * 所有链表修改都假定调用方已关中断（PRIMASK）或处于 PendSV（cpsid i），
- * 因此本文件内不另加锁；对外 API（rtos_yield/rtos_msleep/rtos_pend/post）
+ * 所有链表修改都假定调用方已处于临界区（rtos_crit_enter 的 PRIMASK 或 BASEPRI
+ * 屏蔽），因此本文件内不另加锁；尤其 rtos_pendsv_switch 内部已用 rtos_crit_enter
+ * 包住整段切换，故 PendSV 汇编不再需要 cpsid i。对外 API（rtos_yield/rtos_msleep/
+ * rtos_pend/post）
  * 在调用修改链表的逻辑前自行 irq_lock。
  *
  * 任务生命周期 / TCB 池 / rtos_start 见 core/task.c；
@@ -177,6 +179,13 @@ uint32_t rtos_ipc_misuse_count(void) { return g_ipc_misuse; }
 
 /* 由 PendSV 汇编调用（中断已关）：保存 old_sp，挑选下一任务，返回其 sp */
 void *rtos_pendsv_switch(void *old_sp) {
+    /* 临界区：保护就绪/等待链表不被“调用了内核 API 的更高优先级 ISR”并发改写。
+     * 用统一入口 rtos_crit_enter/exit（见 rtos_internal.h）：
+     *   RTOS_MAX_ZERO_LATENCY_IRQS>0 时 BASEPRI 仅屏蔽优先级>=阈值(内核)的异常，
+     *     零延迟 ISR 在切换窗口内仍可达（FreeRTOS/Zephyr 式选择性屏蔽，降低中断抖动）；
+     *   否则退化为 PRIMASK 全局关中断，与原 PendSV 内 cpsid i 行为一致、零回归。
+     * 因此 context.S 的 PendSV_Handler 不再需要 cpsid i/cpsie i。 */
+    unsigned st = rtos_crit_enter();
     task_t *cur = g_running;
     if (cur) {
         cur->sp = old_sp;
@@ -195,6 +204,7 @@ void *rtos_pendsv_switch(void *old_sp) {
         nxt->state = TASK_RUNNING;
         g_running = nxt;
     }
+    rtos_crit_exit(st);
     return nxt ? nxt->sp : old_sp;
 }
 

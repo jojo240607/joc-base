@@ -66,9 +66,10 @@ PendSV_Handler:
     stmdb  r0!, {r4-r11}
     stmdb  r0!, {r14}        /* EXC_RETURN 在最底部（最低地址） */
 
-    cpsid  i                  /* 关中断，保护就绪/等待链表不被 ISR 并发改 */
+    /* 临界区已收口到 rtos_pendsv_switch 内部（rtos_crit_enter/exit：
+     * ZERO_LATENCY>0 时 BASEPRI 选择性屏蔽，否则 PRIMASK），故此处不再粗暴关全中断。
+     * 寄存器保存/恢复与 FPU 懒栈本来就运行在中断开启状态，只有“选下一任务”这一小段被保护。 */
     bl     rtos_pendsv_switch /* r0 = 新任务的 sp（PSP）；g_running = nxt */
-    cpsie  i
 
     /* 保存 PSP 到 r4（callee-saved，C 函数 rtos_arch_apply_task_priv 会保留它）：
      * 该 C 函数可自由使用 r0-r3，会把 r0(此处即 PSP 栈帧指针) 改掉，故必须先存起来，
