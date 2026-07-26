@@ -29,7 +29,7 @@
 
 - **高实时**：抢占式固定优先级调度 + 可选同优先级时间片；就绪队列 O(1) 选取最高就绪任务；上下文切换走 PendSV（最低优先级异常）；关键 ISR 可抢占内核。
 - **编译期可拓展**：参考 `FreeRTOSConfig.h` + Zephyr 段收集。任务/IPC 对象用宏放进专用链接段，内核启动遍历段自动收集，**加功能不碰中央数组**。
-- **MPU 保护**：内核/用户态隔离（Privileged/Unprivileged），无背景区（未映射即 Fault），每任务独立栈 + 溢出哨兵，外设与内核 RAM 仅特权可访问。
+- **MPU 保护**：内核/用户态隔离（Privileged/Unprivileged），无背景区（未映射即 Fault），每任务独立栈 + 溢出哨兵，外设与内核 RAM 仅特权可访问。（实现现状见第 6 章：目前**仅外设区**被 MPU 隔离，SRAM 尚未做内核/用户态隔离）
 - **统一驱动接口**：直接复用现有 `device` 框架，不另起炉灶。
 - **易用 IPC**：信号量 / 互斥量（优先级继承）/ 消息队列 / 事件标志组 / 发布订阅，全部 OOP 化、可经 MPU 校验。
 - **中断上下半部**：ISR 拆为"上半部（快速、不阻塞）"与"下半部（高优先级任务，处理耗时逻辑）"，见第 4 章。
@@ -41,11 +41,11 @@
 
 ```
 应用任务 (main → "main" task, net_rx, logger, bh_usb, ...)
-        │  统一驱动接口(device/vtable)  +  IPC 对象(k_sem/mq/...)
+        │  统一驱动接口(device/vtable)  +  IPC 对象(rtos_sem/mq/bus/...)
         ▼
 ┌─────────────────────────────────────────────────────────┐
 │  jOS 内核  src/rtos/                                      │
-│   sched · task · ipc(sem/mutex/mq/event) · kobj registry  │
+│   sched · task · ipc(sem/mutex/mq/event/bus) · kobj registry  │
 │   syscalls(SVC 门 + 对象校验) · bh(上半部/下半部调度)       │
 └───────────────┬───────────────────────┬─────────────────┘
                 │ arch glue              │ MPU 编程
@@ -59,7 +59,7 @@
       现有 device 框架 + devmgr + 各 drv/hal
 ```
 
-内核之下的 `irq` / `device` / `devmgr` / `drv` / `hal` **全部不动**。驱动以特权态运行，ISR 经 `irq` 框架收口；ISR 通过 `osal_sem_give` / `k_event_set` / `ringbuffer` 推送唤醒下半部任务。
+内核之下的 `irq` / `device` / `devmgr` / `drv` / `hal` **全部不动**。驱动以特权态运行，ISR 经 `irq` 框架收口；ISR 通过 `osal_sem_give` / `rtos_event_set` / `ringbuffer` 推送唤醒下半部任务。
 
 ---
 
@@ -75,23 +75,30 @@
 - 实际切换延迟到 **PendSV**（Cortex-M 最低优先级异常）执行，保证 ISR 不被切换打断（`startup` 的 `PendSV_Handler` 弱符号接管）。
 - `rtos_yield()`（主动让出）、`rtos_schedule()`（抢占点）。
 
-**TCB（OOP 风格对象）**：
+**TCB（实际结构体，见 `src/rtos/rtos.h`）**：
 ```c
-typedef struct task {
-    const struct taskVtable *vtable;   /* 与其它框架一致的多态风格 */
-    const char *name;                  /* 可经 task_get("net_rx") 按名取，复用 devmgr 思路 */
-    void       *sp;                    /* 当前栈指针(PSP) */
-    uint8_t     prio;
-    task_state_t state;                /* READY/RUNNING/BLOCKED/... */
-    struct task *sched_next, *sched_prev; /* 就绪/阻塞链表 */
-    void       *wait_obj;              /* 阻塞在哪个 IPC 对象上 */
-    uint32_t    delay_ticks;
-    uint8_t    *stack_base;
-    size_t      stack_size;
-    mpu_ctx_t   mpu;                   /* 该任务的 MPU 上下文(region 表) */
-    uint32_t    runtime_ticks;
-} task_t;
+typedef struct task task_t;
+struct task {
+    void          *sp;          /* 当前栈指针(PSP)，必须位于 offset 0（SVC 汇编直接取） */
+    const char    *name;
+    uint8_t        prio;        /* 有效优先级（可能被互斥量提升） */
+    uint8_t        base_prio;   /* 创建时原始优先级（解锁/恢复用） */
+    uint8_t        priv;        /* 1=特权(默认), 0=非特权；非特权须走 SVC 门 */
+    task_state_t   state;
+    uint8_t       *stack_base;
+    size_t         stack_size;
+    void         (*entry)(void *);
+    void          *arg;
+    task_t        *sched_next, *sched_prev;  /* 就绪/阻塞侵入式链表 */
+    task_t        *wait_next, *wait_prev;    /* 阻塞在某对象上的等待链表 */
+    uint32_t       delay_ticks;
+    uint32_t       runtime;     /* 累计运行 tick（统计用） */
+    void          *wait_obj;    /* 阻塞在哪个对象上（调试用） */
+    uint32_t       wait_mask;   /* 事件标志等待条件（仅 event 使用） */
+    uint8_t        wait_mode;   /* 1=ALL, 0=ANY */
+};
 ```
+> 说明：实现采用统一的 `rtos_*` 函数式 API，而非每对象分发的 `taskVtable` 多态；MPU 为**固定 region 表**（无每任务 `mpu` 上下文字段），故 TCB 不含 `vtable` / `mpu` 字段。
 
 **上下文切换**（Cortex-M4，含 FPU）：
 - 触发 PendSV 后保存 `r4–r11`、`s16–s31`（若 `FPCCR.LSPEN` 懒栈存则按需）、`lr(EXC_RETURN)`；恢复下一任务。
@@ -122,7 +129,7 @@ typedef struct task {
 - ✅ **允许**：读/清外设状态（不清会重入！）、把数据推入 **SPSC `ringbuffer`**（ISR 写 head，下半部读 tail，零锁）、`osal_sem_give` / `k_event_set` / `k_work_submit`（均为 ISR 安全、不阻塞）、DQ 一个已就绪的 work item。
 - ❌ **禁止**：任何阻塞调用（`osal_sem_wait`、读消息队列、睡眠）、`malloc`（非确定性）、调用会触发 SVC 进入内核的对象校验慢路径、长时间循环。
 
-**如何强制**：内核提供 `osal_in_interrupt()` 运行态探针；在 `osal_sem_wait` / `k_mq_recv` 等阻塞入口加调试断言——若在中断上下文调用直接 `assert` 触发 HardFault 上报，把"误在 ISR 里阻塞"变成可定位的错误而非静默死锁。
+**如何兜底**：内核提供 `arch_in_isr()`（来自 `common/lock.h`）运行态探针；阻塞入口检测到"ISR/内核未启动"上下文时**退化为忙等**（保活、不死锁），而非 `assert`。这是有意的宽容策略——把"误在 ISR 里阻塞"从静默死锁变成可继续运行，但定位较难。后续可加 `g_ipc_misuse` 计数 + 诊断日志（行为不变，便于定位误用）；非特权任务经 SVC 门时该退化路径不触发（SVC 代表任务上下文，会正常阻塞）。
 
 ### 4.3 下半部两种机制
 
@@ -175,32 +182,36 @@ void usb_bh_fn(void *ctx) {
 ### 4.6 MPU 视角
 
 - 上半部跑在 **Handler 模式（特权）**，可直接碰外设——无需 MPU 介入。
-- 下半部跑在 **任务模式（Unprivileged）**，按第 6 章 MPU 规则，**不能直接访问外设**，必须经由 `device` 接口 + SVC 门。这恰好强制"耗时外设操作走受保护接口"，与统一驱动接口的设计自洽。
+- 下半部跑在 **任务模式**。**实现现状**：BH / 工作队列任务经 `rtos_task_create`（默认 `priv=1` 特权）创建，可直接碰外设（驱动零改造）；非特权隔离是"按需 opt-in"——若需严格隔离，可建 `priv=0` 的 BH 任务并令其经 `device` 接口 + SVC 门访问外设。这与项目"常态任务保持特权"的整体决策一致，RTOSUSR 自测已验证非特权路径。
 - 上下半部之间的数据传递走 `ringbuffer`/消息队列（位于任务允许访问的 RAM region），不经过特权内存，避免 MPU 越权。
 
 ---
 
 ## 5. 编译期可拓展（配置 + 段收集）
 
-**配置头**（对标 `FreeRTOSConfig.h`）：`src/rtos/include/rtos_config.h`
+**配置头**（对标 `FreeRTOSConfig.h`）：`src/rtos/rtos_config.h`
 ```c
 #define RTOS_MAX_PRIORITIES   32
 #define RTOS_TICK_HZ          1000
 #define RTOS_USE_MPU          1
 #define RTOS_MAX_TASKS        16
-#define RTOS_MAX_MQ           8
-#define RTOS_MAX_MUTEX        8
 #define RTOS_TIME_SLICE       1
 #define RTOS_PRIO_BH_HIGH     4     /* 下半部高优先级带 */
-#define RTOS_PRIO_BH_MED      8
-#define RTOS_MAX_ZERO_LATENCY_IRQS 2
+#define RTOS_PRIO_BH_MED      6
 ```
 
 **段收集**（对标 Zephyr `.init_array`，也契合本项目已有的 `init_array` 用法）：
 ```c
-RTOS_TASK(net_rx_task, "net_rx", 256, STACK_512, PRIO_5);
-RTOS_MSGQ(can_mq,      "can_rx", 64, 16);
-RTOS_BH(usb_bh,        "bh_usb", STACK_1K, RTOS_PRIO_BH_HIGH, usb_bh_fn);
+/* RTOS_TASK(_sym, _name, _entry, _prio, _stack, _ssz, _arg) */
+static uint8_t g_netrx_stack[512];
+RTOS_TASK(net_rx_task, "net_rx", net_rx_entry, 5, g_netrx_stack, sizeof(g_netrx_stack), NULL);
+/* RTOS_MSGQ(_sym, _name, _mq, _buf, _isz, _cap) */
+static int       g_can_buf[16];
+static rtos_mq_t g_can_mq;
+RTOS_MSGQ(can_mq, "can_rx", &g_can_mq, g_can_buf, sizeof(int), 16);
+/* RTOS_BH(_sym, _name, _prio, _stack, _ssz, _fn, _ctx) */
+static uint8_t g_bh_stack[1024];
+RTOS_BH(usb_bh, "bh_usb", RTOS_PRIO_BH_HIGH, g_bh_stack, sizeof(g_bh_stack), usb_bh_fn, NULL);
 ```
 宏把 `const task_def_t` / `const ipc_def_t` / `const bh_def_t` 放进链接段 `._rtos_tasks` / `._rtos_ipc` / `._rtos_bh`。`rtos_start()` 启动时遍历段自动 `task_create` / `ipc_create` / `bh_create`。加功能无需编辑内核中央数组。
 
@@ -214,17 +225,23 @@ Cortex-M4 MPU 仅 8 region，且无背景区（未映射即 Fault）。分配：
 |---|---|---|---|
 | R0 | Flash 0x08000000 (1MB) | RO + 可执行 | 所有任务共享代码 |
 | R1 | 外设 0x40000000–0x50000000 | 特权 RW，XN | **用户任务不可直访外设**，必须经驱动/SVC |
-| R2 | 内核 RAM（.data/.bss/堆） | 特权 RW，XN | 用户任务不可读内核数据 |
-| R3 | 当前任务栈 + 私有数据 | 用户 RW，XN | **每任务切换时重编程**；底部留 subregion 作溢出哨兵 |
+| R2 | 内核 RAM（.data/.bss/堆） | （规划：特权 RW；**当前未隔离**，见下） | 规划：用户任务不可读内核数据 |
+| R3 | 当前任务栈 + 私有数据 | （规划：用户 RW；**当前未隔离**，见下） | 规划：每任务切换重编程 + subregion 溢出哨兵 |
 | R4 | （可选）DMA 一致性区 | 特权/用户 RW，shareable | 给 DMA 缓冲 |
 | R5–R7 | 每任务自定义（共享缓冲等） | 按任务 | 留给应用 |
 
 **内核/用户态隔离**：
 - 内核与 ISR 跑 **Privileged**；普通任务跑 **Unprivileged**。
 - 任务调驱动/IPC 内核对象 → 走 **SVC 系统调用门**（接管 `startup` 的 `SVC_Handler`）。
-- 采用 Zephyr 风格的 kobject + syscall 校验精简版：SVC handler 先校验"对象指针是否落在允许区 + 是否登记在内核对象表"，通过才以特权执行。
+- 采用 Zephyr 风格的 kobject + syscall 校验精简版：SVC handler 先校验"对象指针是否登记在内核对象表 + 类型匹配"，通过才以特权执行。
 
 **栈溢出保护**：任务栈 region 底部 subregion 设"不可访问"，溢出即 MemManage Fault，内核捕获后上报而非静默崩溃。
+
+> ⚠️ **实现现状（与上方 8-region 预算的偏差）**：当前 MPU **只配置了固定 region R0(Flash RO-X) / R1(外设 仅特权) / R2 / R3**（见 `src/rtos/arch/cortex_m/mpu.c`），其中**真正起隔离作用的是 R1 外设区——非特权任务不可直访外设**。`memmap.h` 中 `MEMMAP_SRAM_AP = 0b011`（AP 双方 RW），故**全部 SRAM（含内核 .data/.bss/堆、其它任务栈、所有 IPC 对象）对非特权任务同样可读写**——R2「内核 RAM 仅特权」与 R3「每任务栈 region 重编程 + subregion 溢出哨兵」**尚未实现**：
+> - 非特权任务当前可直接读写全部 SRAM（受 8-region 预算限制，做真正每任务栈隔离需占用多个 region，未排期）；
+> - 栈溢出靠**软件哨兵**（`rtos_stack_check_sentinel`，切换时查 4 字魔数）检测，而非 MPU subregion 触发 MemManage。
+>
+> 因此"内核/用户态隔离"目前仅针对**外设访问**成立；RAM 隔离是已知工程取舍（8 region 不足），并非安全缺陷。若需真正 RAM 隔离，需重新规划 region（牺牲 R4–R7 自定义区）。SVC 门对**指针伪造**的校验仍有效（无论 RAM 是否隔离，未登记指针一律拒绝）。
 
 ---
 
@@ -239,15 +256,15 @@ Cortex-M4 MPU 仅 8 region，且无背景区（未映射即 Fault）。分配：
 
 ## 8. 任务间通讯（IPC）
 
-在现有积木上构建，全部 OOP + 可 MPU 校验：
+在现有积木上构建，全部 OOP + 可 MPU 校验。命名采用 `rtos_` 前缀（`rtos_sem_t` / `rtos_mutex_t` / `rtos_mq_t` / `rtos_event_t` / `rtos_bus_t`，见 `src/rtos/rtos.h`；文档早期草稿里的 `k_` 前缀为规划别名）。
 
-1. **信号量** `k_sem`：升级现有 `osal_sem`——加阻塞/唤醒、ISR 安全（`give_from_isr`）。保持 `osal_sem_*` 签名兼容。
-2. **互斥量** `k_mutex`：带**优先级继承**，消除优先级反转（硬实时必需）。
-3. **消息队列** `k_mq`：底层用现成 `ringbuffer`，套阻塞等待（MPMC 用短临界区保护 head/tail）。
-4. **事件标志组** `k_event`：32 位 bitmask，任务可等"任一/全部"置位（对标 Zephyr `k_poll` / FreeRTOS `xEventGroup`）。
-5. **发布/订阅** `bus`：把现有 `src/bus/bus.h` 提升为一等 IPC 原语——ISR/任务 publish，订阅者可阻塞等待对应 topic。
+1. **信号量** `rtos_sem_t`：升级现有 `osal_sem`——加阻塞/唤醒、ISR 安全（`give`）。保持 `osal_sem_*` 签名兼容。
+2. **互斥量** `rtos_mutex_t`：带**优先级天花板协议**，消除优先级反转（硬实时必需）。
+3. **消息队列** `rtos_mq_t`：底层用现成 `ringbuffer`，套阻塞等待（MPMC 用短临界区保护 head/tail）。
+4. **事件标志组** `rtos_event_t`：32 位 bitmask，任务可等"任一/全部"置位（对标 Zephyr `k_poll` / FreeRTOS `xEventGroup`）。
+5. **发布/订阅** `rtos_bus_t`：已实现为与前述四件并列的**第五个一等 IPC 原语**（见 `src/rtos/rtos.h`，实现见 `src/rtos/core/ipc_bus.c`）。它是**阻塞式 topic 邮箱 + 广播唤醒**：订阅者 `rtos_bus_wait(topic, buf)` 阻塞等待，发布者 `rtos_bus_publish(topic, data)` 把数据放进该 topic 邮箱并唤醒**所有**等待者（pub/sub 语义）；每 topic 一个固定大小邮箱，最新一条覆盖旧条；ISR 安全；非特权任务经 SVC 门（KOBJ_BUS 校验指针）使用。它与 `src/bus/bus.h` 的**同步回调式 pub/sub**（logging 多 sink 后端，零 RTOS 依赖）互补——后者不变，前者是面向任务异步解耦的 RTOS 原语。自测：`RTOSBUS` 命令 + `RTOSALL` 的 `bus` 条目。
 
-所有 IPC 对象登记进**内核对象注册表 `kobj`**（名字 + 类型 + 指针 + 允许区域），既支持"按名获取"，又供 SVC 校验用户态传入指针是否合法。
+所有 IPC 对象登记进**内核对象注册表 `kobj`**（名字 + 类型 + 指针），既支持"按名获取"，又供 SVC 校验用户态传入指针是否合法（含 `KOBJ_BUS`）。
 
 ---
 
@@ -263,25 +280,40 @@ Reset_Handler → data/bss 拷贝（已有）
 
 ---
 
-## 10. 目录结构（新增 `src/rtos/`）
+## 10. 目录结构（实际 `src/rtos/`）
 ```
 src/rtos/
-  rtos.h                   // 公开 API: k_task_*/k_sem_*/k_mq_*/k_mutex_*/k_event_*/k_bh_*
-  include/rtos_config.h    // 编译期配置
-  core/
-    sched.c/.h             // 调度器 + 就绪位图 + 切换触发
-    task.c/.h              // TCB、创建/启动、段收集
+  rtos.h                   // 公开 API: rtos_task_*/rtos_sem_*/rtos_mq_*/rtos_mutex_*/rtos_event_*/rtos_bus_*
+  include/
+    rtos_config.h          // 编译期配置（对标 FreeRTOSConfig.h）
+  core/                    // 内核核心（按职责拆分，详见下）
+    rtos_internal.h        // 内部共享头：跨 core/ 各 .c 的调度器全局 + 辅助函数
+    sched.c                // 就绪位图 + 睡眠链表 + 等待队列 + PendSV 切换 + 节拍 + pend/post + 有效优先级
+    task.c                 // TCB 静态池 + 初始栈帧 + 任务创建/退出 + rtos_start + 段收集实例化 + 查询 API
+    kobj.c                 // 内核对象注册表（按名查找 + SVC 门指针校验）
+    syscalls.c             // SVC 门分发（rtos_need_svc / rtos_svc_dispatch / rtos_svc_dispatch_entry）
     bh.c/.h                // 上半部/下半部：BH 任务 + 工作队列
-    ipc_sem.c  ipc_mutex.c  ipc_mq.c  ipc_event.c
-    kobj.c/.h              // 内核对象注册表 + MPU 校验
-    syscalls.c             // SVC 分发 + 参数校验
+    ipc_sem.c              // 信号量（含 rtos_ipc_in_isr 内部判定，供所有 ipc_*.c 共用）
+    ipc_mutex.c            // 互斥量（优先级天花板协议）
+    ipc_mq.c               // 消息队列（定长项环形缓冲）
+    ipc_event.c            // 事件标志组（32 位 ANY/ALL）
+    ipc_bus.c              // 事件总线（阻塞式 topic 邮箱 + 广播唤醒，第五个一等 IPC 原语）
+  rtos_selftest.c          // IPC/FPU 自测 + RTOS_SELFTEST_ADD 段收集运行器
+  rtos_stress.c            // 多任务并发压力自测
+  rtos_usr.c               // 非特权 + SVC 门端到端自测（RTOSUSR）
+  rtos_p4.c                // 段收集 + 收尾自测（RTOSP4）
+  rtos_mpu.h               // MPU 自测声明
   arch/cortex_m/
-    port.c                 // 时基/切换/yield 的 arch 胶水
-    mpu.c/.h               // 8-region 编程 + 每任务上下文
-    context.S              // PendSV/SVC 汇编 + 寄存器保存恢复
+    port.c                 // 时基/切换/yield 的 arch 胶水 + DWT 周期计数
+    mpu.c/.h               // 8-region 固定编程 + MemManage 恢复（无每任务重编程）+ 栈哨兵
+    context.S              // PendSV/SVC 汇编 + 寄存器保存恢复（含 FPU s16-s31）
+    cortex_m.h memmap.h rtos_arch.h  // per-chip 端口旋钮 / SRAM-外设 AP 权限 / 移植契约
 osal/osal_rtos.c           // 替换 osal_baremetal.c，把 osal_sem 接到内核
-linker/ 追加 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段
+linker/ 追加 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段 + .rtos_selftests 段
 ```
+> 注：核心按职责拆分进 `core/`（sched/task/kobj/syscalls/bh/ipc_*），内部跨文件符号经
+> `core/rtos_internal.h` 共享；公开 API 仍在 `rtos.h`。自测合并进 `rtos_selftest.c` 等文件，
+> 通过 `RTOS_SELFTEST_ADD` 链接段收集，由 `RTOSALL` 统一遍历运行。
 
 ---
 
@@ -294,7 +326,7 @@ linker/ 追加 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段
 ## 12. 风险与取舍
 - **MPU 仅 8 region**：每任务实际独享自定义区很少。对策——Flash/外设/内核RAM 用共享固定 region，每任务只重编程自己的栈 region（+至多 1 自定义）。
 - **上下文切换开销**：M4 有 FPU，用 `FPCCR.LSPEN` 懒栈存，任务不用 FPU 就不存 `s16–s31`，降低切换成本。
-- **Syscall 校验开销**：对象表查表 + 指针边界检查必须 O(1)，否则伤实时；表用定长数组 + 名字哈希。
+- **Syscall 校验开销**：对象表查表 + 指针校验须高效；当前 `kobj` 表用定长数组（`KOBJ_MAX=64`）**线性扫描**校验"指针 + 类型"，规模 64 下开销可忽略（若对象数增到数百需改哈希/索引）。
 - **SRAM 128KB 上限**：每任务独立栈吃内存。对策——栈尺寸编译期显式配置；BH 任务优先给实时关键驱动，其余用共享 workqueue；必要时引导到外部 RAM（FSMC 扩展）。
 - **下半部优先级爆炸**：BH 任务不能全设最高优先级。对策——专用 BH 优先级带 + 共享 workqueue 兜底（见 4.5）。
 
@@ -302,7 +334,7 @@ linker/ 追加 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段
 
 ## 13. 实施路线（分阶段，每阶段可独立验证）
 1. **P0**：`osal_rtos.c` + 裸调度器（PendSV/SVC 汇编 + 就绪位图），把 `main` 跑成第一个任务，BIST PASS。
-2. **P1**：完整 IPC（sem/mutex/mq/event/bus 升级）+ `kobj` 注册表。
+2. **P1**：完整 IPC（sem/mutex/mq/event + `rtos_bus_t` 第五原语，均已实现）+ `kobj` 注册表（含 `KOBJ_BUS`）。
 3. **P2**：MPU（固定 region + 每任务栈 region + 栈哨兵 + SVC 校验）。
 4. **P3**：上半部/下半部机制（`bh.c`：BH 任务 + workqueue）+ 在 USB CDC 回环、sd_card、uart IRQ 模式下验证"驱动零改动"且不再卡死。
 5. **P4**：编译期段收集（`RTOS_TASK`/`RTOS_MSGQ`/`RTOS_BH` 宏 + `._rtos_tasks`/`._rtos_ipc`/`._rtos_bh` 链接段 + `rtos_start()` 遍历 `rtos_instantiate_sections()` 自动实例化）+ 收尾自测（调度延迟 / 优先级反转 / 上半部有界性；MPU 越权 Fault 已由独立 `mpu` 条目覆盖）—— **已完成**（commit P4）。

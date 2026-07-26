@@ -24,6 +24,7 @@ typedef struct {
     int mq_ok;
     int ev_ok;
     int mtx_ok;
+    int try_ok;
     int reject_ok;
     int hs_ok;
     int blocked_on_hs;   /* usr 已阻塞在 hs 上，主任务可跨特权唤醒 */
@@ -70,10 +71,25 @@ static void usr_entry(void *arg) {
     c->mtx_ok = (rtos_mutex_lock(&c->mtx) == 0);     /* -> SVC */
     if (c->mtx_ok) c->mtx_ok = (rtos_mutex_unlock(&c->mtx) == 0);  /* -> SVC */
 
+    /* try* 变体也应经 SVC 门（kobj 校验通过，非特权不直接碰 SRAM 对象字段） */
+    rtos_sem_init(&c->sem, 1, 1);          /* 预置 1 许可 */
+    rtos_kobj_register("usr_sem", KOBJ_SEM, &c->sem);
+    int tw1 = rtos_sem_trywait(&c->sem);   /* -> SVC, 有许可 -> 0 */
+    int tw2 = rtos_sem_trywait(&c->sem);   /* -> SVC, 空 -> -1 */
+    rtos_mq_init(&c->mq, c->mqbuf, sizeof(int), 4);
+    rtos_kobj_register("usr_mq", KOBJ_MQ, &c->mq);
+    int x = 7;
+    int ts  = rtos_mq_trysend(&c->mq, &x);           /* -> SVC, 可发 -> 0 */
+    int tr1 = rtos_mq_tryrecv(&c->mq, &got);         /* -> SVC, 取到 7 -> 0 */
+    int tr2 = rtos_mq_tryrecv(&c->mq, &got);         /* -> SVC, 空 -> -1 */
+    c->try_ok = (tw1 == 0 && tw2 == -1 && ts == 0 && tr1 == 0 && got == 7 && tr2 == -1);
+
     /* 越权指针校验：未登记的对象指针经 SVC 门必须被拒绝（返回 -1，不越权访问） */
     int dummy = 0;
     rtos_sem_t *fake = (rtos_sem_t *)&dummy;
-    c->reject_ok = (rtos_sem_wait(fake) == -1);   /* -> SVC, validate 失败 */
+    int r1 = rtos_sem_wait(fake);       /* -> SVC, validate 失败 -> -1 */
+    int r2 = rtos_sem_trywait(fake);    /* -> SVC, validate 失败 -> -1 */
+    c->reject_ok = (r1 == -1 && r2 == -1);
 
     /* 跨特权唤醒：本非特权任务阻塞在 hs 上，由特权(主)任务 give 唤醒 */
     rtos_sem_init(&c->hs, 0, 1);
@@ -117,6 +133,7 @@ int rtos_usr_selftest(void) {
     USR_CHK(mq_ok,     "mq via SVC");
     USR_CHK(ev_ok,     "event via SVC");
     USR_CHK(mtx_ok,    "mutex via SVC");
+    USR_CHK(try_ok,    "try* via SVC");
     USR_CHK(reject_ok, "kobj validate rejects bad ptr");
     USR_CHK(hs_ok,     "cross-privilege wakeup");
     #undef USR_CHK

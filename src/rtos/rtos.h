@@ -70,7 +70,7 @@ const char *rtos_task_name(int i);
 uint8_t     rtos_task_prio(int i);
 task_state_t rtos_task_state(int i);
 
-/* ---- 内部：等待队列（供 osal_rtos.c / rtos_ipc.c 复用） ---- */
+/* ---- 内部：等待队列（供 osal_rtos.c / core/ipc_*.c 复用） ---- */
 void  rtos_waitq_add(void **head, task_t *t);
 task_t *rtos_waitq_pop_highest(void **head);
 void  rtos_waitq_remove(void **head, task_t *t);
@@ -150,9 +150,54 @@ void rtos_event_clear(rtos_event_t *e, uint32_t bits);
  * 成功返回当前 flags；非阻塞且未满足返回 (uint32_t)-1。 */
 uint32_t rtos_event_wait(rtos_event_t *e, uint32_t mask, int wait_all, int block);
 
+/* ---- 事件总线（RTOS 一等 IPC 原语：阻塞式 topic 邮箱 + 广播唤醒）----
+ * 与 src/bus/bus.c 的“同步回调式 pub/sub”（logging 后端）互补：本原语面向
+ * 任务间异步解耦，订阅者以“阻塞等待某 topic”方式接收，发布时唤醒该 topic
+ * 上所有等待任务（广播，pub/sub 语义）。每 topic 一个固定大小邮箱，最新一条
+ * 覆盖旧条。经 SVC 门校验指针（KOBJ_BUS），非特权任务可安全使用。
+ * 注意：本原语不实现超时（与 sem/mutex/mq/event 一致，阻塞即无限等待），
+ * timeout_ms 仅用于区分“非阻塞(timeout_ms==0)”与“阻塞(非 0)”。 */
+typedef struct {
+    uint16_t  max_topics;     /* topic 数（0..max_topics-1） */
+    uint16_t  item_size;      /* 每 topic 邮箱载荷最大字节数 */
+    uint8_t  *mbuf;           /* max_topics*item_size：每 topic 一个最新邮箱 */
+    uint16_t *mlen;           /* max_topics：每 topic 邮箱有效长度 */
+    uint16_t *mpend;          /* max_topics：每 topic 是否有待取消息(0/1) */
+    void    **waitq;          /* max_topics：每 topic 阻塞等待队列(任务链表头) */
+} rtos_bus_t;
+/* 计算 rtos_bus_init 所需后备缓冲字节数（静态分配用） */
+#define RTOS_BUS_BUF_SIZE(MAX_TOPICS, ITEM_SIZE)                              \
+    ((size_t)(MAX_TOPICS) * (size_t)(ITEM_SIZE)                              \
+     + (size_t)(MAX_TOPICS) * sizeof(uint16_t)                              \
+     + (size_t)(MAX_TOPICS) * sizeof(uint16_t)                              \
+     + (size_t)(MAX_TOPICS) * sizeof(void *))
+void rtos_bus_init(rtos_bus_t *b, uint16_t max_topics, size_t item_size,
+                   void *buf, size_t buf_size);
+/* 阻塞等待 topic：有消息则立即拷贝返回 0；无消息且 timeout_ms==0 返回 -1（非阻塞）；
+ * 否则阻塞直到该 topic 被发布，唤醒后拷贝返回 0。buf/len 为输出（载荷及其长度）。*/
+int  rtos_bus_wait(rtos_bus_t *b, uint16_t topic, void *buf, size_t *len, uint32_t timeout_ms);
+/* 发布 topic：拷贝 data(len) 进该 topic 邮箱并广播唤醒所有等待者；返回 0。
+ * 截断到 item_size。ISR 安全（仅拷贝+唤醒，不阻塞）。*/
+int  rtos_bus_publish(rtos_bus_t *b, uint16_t topic, const void *data, size_t len);
+
+/* SVC 门参数块（非特权任务经 rtos_syscall 传入，避免越过 3 个参数寄存器限制） */
+typedef struct {
+    rtos_bus_t *bus;
+    uint16_t    topic;
+    void       *buf;       /* out: 载荷 */
+    size_t     *len;       /* out: 载荷长度 */
+    uint32_t    timeout_ms;
+} rtos_bus_wait_args_t;
+typedef struct {
+    rtos_bus_t       *bus;
+    uint16_t          topic;
+    const void       *data;
+    size_t            len;
+} rtos_bus_publish_args_t;
+
 /* ---- 内核对象注册表（调试/按名查找 + SVC 门指针校验） ---- */
 typedef enum {
-    KOBJ_SEM = 0, KOBJ_MUTEX, KOBJ_MQ, KOBJ_EVENT, KOBJ_TASK, KOBJ_OTHER
+    KOBJ_SEM = 0, KOBJ_MUTEX, KOBJ_MQ, KOBJ_EVENT, KOBJ_BUS, KOBJ_TASK, KOBJ_OTHER
 } rtos_kobj_type_t;
 int  rtos_kobj_register(const char *name, rtos_kobj_type_t type, void *ptr);
 void *rtos_kobj_lookup(const char *name);
@@ -179,8 +224,13 @@ typedef enum {
     RTOS_SYS_MUTEX_TRYLOCK,  /* a0: rtos_mutex_t* -> 0/-1 */
     RTOS_SYS_MQ_SEND,        /* a0: rtos_mq_t*, a1: item* -> 0/-1 */
     RTOS_SYS_MQ_RECV,        /* a0: rtos_mq_t*, a1: item* -> 0/-1 */
+    RTOS_SYS_SEM_TRYWAIT,    /* a0: rtos_sem_t* -> 0/-1 */
+    RTOS_SYS_MQ_TRYSEND,     /* a0: rtos_mq_t*, a1: item* -> 0/-1 */
+    RTOS_SYS_MQ_TRYRECV,     /* a0: rtos_mq_t*, a1: item* -> 0/-1 */
     RTOS_SYS_EVENT_SET,      /* a0: rtos_event_t*, a1: bits */
     RTOS_SYS_EVENT_WAIT,     /* a0: rtos_event_t*, a1: mask, a2: wait_all, a3: block -> flags/-1 */
+    RTOS_SYS_BUS_WAIT,       /* a0: rtos_bus_wait_args_t* */
+    RTOS_SYS_BUS_PUBLISH,    /* a0: rtos_bus_publish_args_t* */
     RTOS_SYS_TASK_CREATE     /* a0: rtos_task_create_args_t* */
 } rtos_syscall_nr_t;
 
@@ -215,6 +265,9 @@ int rtos_usr_selftest(void);
 
 /* ---- IPC 运行时自测（从 RTOSIPC 命令调用） ---- */
 int rtos_ipc_selftest(void);
+
+/* ---- 事件总线（RTOS 一等 IPC 原语）自测（从 RTOSBUS 命令调用，并注册进 RTOSALL） ---- */
+int rtos_bus_selftest(void);
 
 /* ---- 多任务并发压力自测（从 RTOSSTRESS 命令调用） ---- */
 int rtos_stress_selftest(void);

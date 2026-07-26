@@ -1,5 +1,5 @@
 #include "rtos.h"
-#include "bh.h"
+#include "core/bh.h"
 #include "common/lock.h"
 #include "common/ringbuffer.h"
 #include "log/log.h"
@@ -22,7 +22,7 @@
 
 /* ---------------------------------------------------------------------------
  * (1) 段收集演示对象：通过宏放进 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段，
- *     rtos_start() 会遍历并自动建好它们（无需在 rtos_core.c 里手动登记）。
+ *     rtos_start() 会遍历并自动建好它们（无需在 core/task.c 里手动登记）。
  * ------------------------------------------------------------------------- */
 static uint8_t g_p4_task_stack[1024] __attribute__((aligned(8)));
 static volatile uint32_t g_p4_task_heartbeat;

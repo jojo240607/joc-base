@@ -19,7 +19,7 @@ void rtos_mpu_init(void);     /* 配置 3 个固定区域并使能 MPU + MemMana
 void rtos_mpu_enable(void);
 void rtos_mpu_disable(void);
 
-/* 栈哨兵（由 rtos_core.c 在创建/切换任务时调用） */
+/* 栈哨兵（由 core/sched.c 在创建/切换任务时调用） */
 void rtos_stack_fill_sentinel(task_t *t);
 int  rtos_stack_check_sentinel(task_t *t);   /* 返回 1 = 栈底被踩(溢出) */
 

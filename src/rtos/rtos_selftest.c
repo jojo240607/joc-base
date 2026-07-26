@@ -2,6 +2,7 @@
 #include "log/log.h"
 #include "log/app_log.h"
 #include <stdint.h>
+#include <string.h>
 
 /* ---------------------------------------------------------------------------
  * jOS IPC 运行时自测：从控制台 "RTOSIPC" 命令触发。
@@ -116,6 +117,70 @@ int rtos_ipc_selftest(void) {
 
 /* 编译期注册：RTOSALL 会遍历该段依次执行 */
 RTOS_SELFTEST_ADD("ipc", rtos_ipc_selftest);
+
+/* ===========================================================================
+ * 事件总线（RTOS 一等 IPC 原语）自测：从控制台 "RTOSBUS" 命令触发 + RTOSALL。
+ * 覆盖：(1) 非阻塞等待（无消息 / 有消息）；(2) 广播：一个发布多订阅者皆唤醒并
+ *       取到数据；(3) 内核对象注册（KOBJ_BUS 校验指针）。
+ * ======================================================================== */
+#define BUS_TOPICS 4
+#define BUS_ITEM   16
+static rtos_bus_t  g_bus_selftest;
+static uint8_t     g_bus_buf[RTOS_BUS_BUF_SIZE(BUS_TOPICS, BUS_ITEM)];
+static rtos_sem_t  g_bus_done;
+static volatile int g_bus_recv_cnt;
+
+static void bus_sub_topic3(void *arg) {
+    (void)arg;
+    uint8_t buf[BUS_ITEM]; size_t len = 0;
+    if (rtos_bus_wait(&g_bus_selftest, 3, buf, &len, 1) == 0
+        && len == 9 && memcmp(buf, "hello-bus", 9) == 0)
+        g_bus_recv_cnt++;
+    rtos_sem_give(&g_bus_done);
+}
+
+int rtos_bus_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[BUS] self-test begin\n");
+    rtos_bus_init(&g_bus_selftest, BUS_TOPICS, BUS_ITEM, g_bus_buf, sizeof(g_bus_buf));
+    if (!rtos_kobj_validate(&g_bus_selftest, KOBJ_BUS)) {
+        ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos", "[BUS] kobj register: FAIL\n");
+    } else {
+        log_printf(app_log(), LOG_INFO, "rtos", "[BUS] kobj register: PASS\n");
+    }
+
+    /* (1) 非阻塞等待：无消息应返回 -1 */
+    uint8_t b0[BUS_ITEM]; size_t l0 = 0;
+    if (rtos_bus_wait(&g_bus_selftest, 1, b0, &l0, 0) != -1) ok = 0;
+
+    /* (1b) 发布后非阻塞等待应取到 */
+    rtos_bus_publish(&g_bus_selftest, 1, "ping", 4);
+    if (rtos_bus_wait(&g_bus_selftest, 1, b0, &l0, 0) != 0 || l0 != 4 || memcmp(b0, "ping", 4))
+        ok = 0;
+
+    /* (2) 广播：两个订阅者阻塞等 topic3，一个发布皆唤醒并取到 */
+    g_bus_recv_cnt = 0;
+    rtos_sem_init(&g_bus_done, 0, 8);
+    static uint8_t st_s1[1024] __attribute__((aligned(8)));
+    static uint8_t st_s2[1024] __attribute__((aligned(8)));
+    rtos_task_create("bus_s1", bus_sub_topic3, (void *)0, 14, st_s1, sizeof(st_s1));
+    rtos_task_create("bus_s2", bus_sub_topic3, (void *)0, 15, st_s2, sizeof(st_s2));
+    rtos_msleep(20);                 /* 让两个订阅者先阻塞在 topic3 */
+    rtos_bus_publish(&g_bus_selftest, 3, "hello-bus", 9);  /* 广播发布 */
+    rtos_sem_wait(&g_bus_done);      /* 等第一个订阅者 */
+    rtos_sem_wait(&g_bus_done);      /* 等第二个订阅者 */
+    {
+        int lok = (g_bus_recv_cnt == 2);
+        if (!lok) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos", "[BUS] broadcast: recv=%d (expect 2) %s\n",
+                   g_bus_recv_cnt, lok ? "PASS" : "FAIL");
+    }
+
+    log_printf(app_log(), LOG_INFO, "rtos", "[BUS] self-test: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+RTOS_SELFTEST_ADD("bus", rtos_bus_selftest);
 
 /* ===========================================================================
  * FPU 上下文保存自测（从 RTOSFPU 命令调用）。

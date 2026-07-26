@@ -9,7 +9,7 @@
  *
  * 这是“可移植内核核心”与“芯片 / ISA 相关实现”之间的【唯一边界】。
  *
- * 内核核心（rtos_core.c / rtos_ipc.c / rtos_selftest.c / rtos_stress.c）
+ * 内核核心（core/ 下各 .c / rtos_selftest.c / rtos_stress.c）
  * 只透过本文件声明的符号与底层交互：
  *   - 绝不 #include 任何芯片/厂商头文件（如 stm32f4xx.h）；
  *   - 绝不直接读写 SCB / MPU / FPU / NVIC 等寄存器；

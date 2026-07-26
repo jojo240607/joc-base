@@ -101,11 +101,19 @@ option(RTOS "Build with jOS RTOS" ON)
 if(RTOS)
   target_sources(${PROJECT_NAME}.elf PRIVATE
     src/osal/osal_rtos.c
-    src/rtos/rtos_core.c
-    src/rtos/rtos_ipc.c
+    # 内核核心（core/ 拆分实现，见 docs/rtos-design.md §10）
+    src/rtos/core/sched.c
+    src/rtos/core/task.c
+    src/rtos/core/kobj.c
+    src/rtos/core/syscalls.c
+    src/rtos/core/bh.c
+    src/rtos/core/ipc_sem.c
+    src/rtos/core/ipc_mutex.c
+    src/rtos/core/ipc_mq.c
+    src/rtos/core/ipc_event.c
+    src/rtos/core/ipc_bus.c
     src/rtos/rtos_selftest.c
     src/rtos/rtos_stress.c
-    src/rtos/bh.c
     src/rtos/rtos_p4.c
     src/rtos/rtos_usr.c
     # arch 层（与底层硬件的唯一边界）：Cortex-M4 实现
@@ -114,7 +122,8 @@ if(RTOS)
     src/rtos/arch/cortex_m/mpu.c)
   target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/rtos
-    src/rtos/include)
+    src/rtos/include
+    src/rtos/core)
   target_compile_definitions(${PROJECT_NAME}.elf PRIVATE JOC_RTOS=1)
 else()
   target_sources(${PROJECT_NAME}.elf PRIVATE
