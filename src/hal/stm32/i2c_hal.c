@@ -139,8 +139,22 @@ int i2c_hal_master_write(i2c_hal_handle_t *h, uint16_t addr,
     return 0;
 }
 
+int i2c_hal_master_start_addr(i2c_hal_handle_t *h, uint16_t addr, int is_write)
+{
+    if (!h || addr > 0x7FU) return -1;
+    I2C_TypeDef *r = h->reg;
+    if (!i2c_wait_bus_free(r)) return -1;
+    r->CR1 |= I2C_CR1_START;
+    if (!i2c_wait_sr1(r, I2C_SR1_SB)) { r->CR1 |= I2C_CR1_STOP; return -1; }
+    r->DR = (uint8_t)((addr << 1) | (is_write ? 0U : 1U));
+    if (!i2c_wait_sr1(r, I2C_SR1_ADDR | I2C_SR1_AF)) { r->CR1 |= I2C_CR1_STOP; return -1; }
+    if (r->SR1 & I2C_SR1_AF) { r->CR1 |= I2C_CR1_STOP; return -1; }
+    /* ADDR still pending — caller clears it (read SR2) at the correct moment. */
+    return 0;
+}
+
 int i2c_hal_master_read(i2c_hal_handle_t *h, uint16_t addr,
-                         uint8_t *buf, uint16_t len)
+                        uint8_t *buf, uint16_t len)
 {
     if (!h || addr > 0x7FU) return -1;
     I2C_TypeDef *r = h->reg;
@@ -236,6 +250,20 @@ void i2c_hal_clear_sr1_af(i2c_hal_handle_t *h)    { if (h) { (void)h->reg->SR1; 
 void i2c_hal_nvic_enable(int irq)                  { if (irq >= 0) NVIC_EnableIRQ((IRQn_Type)irq); }
 void i2c_hal_nvic_disable(int irq)                 { if (irq >= 0) NVIC_DisableIRQ((IRQn_Type)irq); }
 
+void i2c_hal_dma_enable(i2c_hal_handle_t *h, int on)
+    { if (h) { if (on) h->reg->CR2 |= I2C_CR2_DMAEN; else h->reg->CR2 &= ~I2C_CR2_DMAEN; } }
+void i2c_hal_set_dma_last(i2c_hal_handle_t *h, int on)
+    { if (h) { if (on) h->reg->CR2 |= I2C_CR2_LAST; else h->reg->CR2 &= ~I2C_CR2_LAST; } }
+void *i2c_hal_get_dr_addr(i2c_hal_handle_t *h)      { return h ? (void *)&h->reg->DR : NULL; }
+
+int i2c_hal_wait_btf(i2c_hal_handle_t *h, uint32_t timeout)
+{
+    if (!h) return 0;
+    volatile uint32_t n = timeout;
+    while (n--) { if (h->reg->SR1 & I2C_SR1_BTF) return 1; }
+    return 0;
+}
+
 /* =========================================================================
  * I2C ISR state machine — placed in i2c_hal.c to keep its .text section
  * separate from i2c.c (prevents layout-shift boot hang).
@@ -260,60 +288,66 @@ void i2c_hal_nvic_disable(int irq)                 { if (irq >= 0) NVIC_DisableI
 void i2c_hal_ev_isr(void *ctx)
 {
     i2c *p = (i2c *)ctx;
+    if (p->parent.mode != STREAM_MODE_IRQ) return;   /* only the IRQ engine uses this ISR */
+    i2c_irq_t *e = (i2c_irq_t *)p->eng;
+    if (!e) return;
     uint32_t sr1 = i2c_hal_read_sr1(p->hal);
-    int is_write = (p->tx_buf != NULL);
+    int is_write = (e->tx_buf != NULL);
 
-    if ((sr1 & I2CS_SB) && p->irq_state == I2C_S_SB) {
-        i2c_hal_write_dr(p->hal, (uint8_t)((p->addr << 1) | (is_write ? 0U : 1U)));
-        p->irq_state = I2C_S_ADDR; return;
+    if ((sr1 & I2CS_SB) && e->irq_state == I2C_S_SB) {
+        i2c_hal_write_dr(p->hal, (uint8_t)((e->addr << 1) | (is_write ? 0U : 1U)));
+        e->irq_state = I2C_S_ADDR; return;
     }
-    if ((sr1 & I2CS_ADDR) && p->irq_state == I2C_S_ADDR) {
+    if ((sr1 & I2CS_ADDR) && e->irq_state == I2C_S_ADDR) {
         if (!is_write) {
-            uint16_t l = p->xfer_len;
-            if (l == 0) { (void)i2c_hal_read_sr2(p->hal); i2c_hal_set_stop(p->hal); p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return; }
+            uint16_t l = e->xfer_len;
+            if (l == 0) { (void)i2c_hal_read_sr2(p->hal); i2c_hal_set_stop(p->hal); e->irq_result = 0; e->irq_state = I2C_S_DONE; e->xfer_done = 1; return; }
             if (l == 1) { i2c_hal_set_ack(p->hal, 0); i2c_hal_set_stop(p->hal); }
             else if (l == 2) i2c_hal_set_pos(p->hal, 1);
         }
         (void)i2c_hal_read_sr2(p->hal);
-        p->xfer_pos = 0; p->irq_state = I2C_S_DATA; return;
+        e->xfer_pos = 0; e->irq_state = I2C_S_DATA; return;
     }
-    if ((sr1 & I2CS_TXE) && is_write && p->irq_state == I2C_S_DATA) {
-        uint16_t pos = p->xfer_pos;
-        if (pos < p->xfer_len) { i2c_hal_write_dr(p->hal, p->tx_buf[pos]); p->xfer_pos = pos + 1; }
-        if (pos + 1 >= p->xfer_len) p->irq_state = I2C_S_BTF;
+    if ((sr1 & I2CS_TXE) && is_write && e->irq_state == I2C_S_DATA) {
+        uint16_t pos = e->xfer_pos;
+        if (pos < e->xfer_len) { i2c_hal_write_dr(p->hal, e->tx_buf[pos]); e->xfer_pos = pos + 1; }
+        if (pos + 1 >= e->xfer_len) e->irq_state = I2C_S_BTF;
         return;
     }
-    if ((sr1 & I2CS_BTF) && p->irq_state == I2C_S_BTF) {
+    if ((sr1 & I2CS_BTF) && e->irq_state == I2C_S_BTF) {
         if (!is_write) {
-            if (p->xfer_len == 2) {
+            if (e->xfer_len == 2) {
                 uint8_t b0 = i2c_hal_read_dr(p->hal), b1 = i2c_hal_read_dr(p->hal);
-                if (p->rx_buf) { p->rx_buf[0] = b0; p->rx_buf[1] = b1; }
+                if (e->rx_buf) { e->rx_buf[0] = b0; e->rx_buf[1] = b1; }
                 i2c_hal_set_stop(p->hal); i2c_hal_set_pos(p->hal, 0);
-                p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return;
+                e->irq_result = 0; e->irq_state = I2C_S_DONE; e->xfer_done = 1; return;
             }
-            uint16_t pos = p->xfer_pos;
-            if (pos < p->xfer_len && p->rx_buf) p->rx_buf[pos] = i2c_hal_read_dr(p->hal);
-            p->xfer_pos = pos + 1; p->irq_state = I2C_S_DATA; return;
+            uint16_t pos = e->xfer_pos;
+            if (pos < e->xfer_len && e->rx_buf) e->rx_buf[pos] = i2c_hal_read_dr(p->hal);
+            e->xfer_pos = pos + 1; e->irq_state = I2C_S_DATA; return;
         }
         i2c_hal_set_stop(p->hal);
-        p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return;
+        e->irq_result = 0; e->irq_state = I2C_S_DONE; e->xfer_done = 1; return;
     }
-    if ((sr1 & I2CS_RXNE) && !is_write && p->irq_state == I2C_S_DATA) {
-        uint16_t pos = p->xfer_pos;
+    if ((sr1 & I2CS_RXNE) && !is_write && e->irq_state == I2C_S_DATA) {
+        uint16_t pos = e->xfer_pos;
         uint8_t d = i2c_hal_read_dr(p->hal);
-        if (pos < p->xfer_len && p->rx_buf) p->rx_buf[pos] = d;
-        pos++; p->xfer_pos = pos;
-        if (p->xfer_len == 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return; }
-        if (p->xfer_len >= 3 && pos >= p->xfer_len - 1) { p->irq_result = 0; p->irq_state = I2C_S_DONE; p->xfer_done = 1; return; }
-        if (p->xfer_len >= 3 && pos == p->xfer_len - 2) { i2c_hal_set_ack(p->hal, 0); p->irq_state = I2C_S_BTF; }
+        if (pos < e->xfer_len && e->rx_buf) e->rx_buf[pos] = d;
+        pos++; e->xfer_pos = pos;
+        if (e->xfer_len == 1) { e->irq_result = 0; e->irq_state = I2C_S_DONE; e->xfer_done = 1; return; }
+        if (e->xfer_len >= 3 && pos >= e->xfer_len - 1) { e->irq_result = 0; e->irq_state = I2C_S_DONE; e->xfer_done = 1; return; }
+        if (e->xfer_len >= 3 && pos == e->xfer_len - 2) { i2c_hal_set_ack(p->hal, 0); e->irq_state = I2C_S_BTF; }
         return;
     }
 }
 void i2c_hal_er_isr(void *ctx)
 {
     i2c *p = (i2c *)ctx;
+    if (p->parent.mode != STREAM_MODE_IRQ) return;
+    i2c_irq_t *e = (i2c_irq_t *)p->eng;
+    if (!e) return;
     if (i2c_hal_read_sr1(p->hal) & I2CS_AF) {
         (void)i2c_hal_read_sr1(p->hal); i2c_hal_set_stop(p->hal);
-        p->irq_result = -1; p->irq_state = I2C_S_DONE; p->xfer_done = 1;
+        e->irq_result = -1; e->irq_state = I2C_S_DONE; e->xfer_done = 1;
     }
 }

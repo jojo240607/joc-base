@@ -774,6 +774,18 @@ static int selftest_vi2c(selftest *self)
     log_printf(app_log(), LOG_DEBUG, "selftest", "       STREAM read  1B from 0x50 -> %d (%s)\n",
            rret, ok_srd ? "PASS" : "FAIL");
 
+    /* (4) DMA engine plumbing: switching to DMA must acquire the hard-wired
+     * TX/RX streams and allocate the per-engine state; switching back to POLL
+     * must tear it down. (No I2C slave on the Discovery board, so no data
+     * transfer here — this proves the route + acquire/release path works.) */
+    stream_xfer_mode_t dma_m = STREAM_MODE_DMA, poll_m = STREAM_MODE_POLL;
+    int dma_set  = (i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &dma_m) == 0);
+    int dma_back = (i2cd->vtable->ioctl(i2cd, STREAM_IOCTL_SET_MODE, &poll_m) == 0);
+    int ok_dma = (dma_set && dma_back);
+    if (!ok_dma) ok = 0;
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       DMA engine: set=%s back=%s (%s)\n",
+           dma_set ? "PASS" : "FAIL", dma_back ? "PASS" : "FAIL", ok_dma ? "PASS" : "FAIL");
+
     i2cd->vtable->close(i2cd);
     return ok;
 }
@@ -899,6 +911,18 @@ static int selftest_vsdio(selftest *self)
     log_printf(app_log(), LOG_DEBUG, "selftest", "         CLKDIV=%lu(118? %s) CLKEN=%s WIDBUS=4bit(%s)\n",
            (unsigned long)(clkcr & SDIO_CLKCR_CLKDIV), ok_div ? "PASS" : "FAIL",
            ok_cken ? "on" : "OFF", ok_wid ? "PASS" : "FAIL");
+
+    /* (2) DMA engine plumbing: switching to DMA must acquire the hard-wired SDIO
+     * stream and allocate the per-engine state; switching back to POLL must tear
+     * it down. (No SD card on the Discovery board, so no data transfer here —
+     * this proves the route + acquire/release path works.) */
+    stream_xfer_mode_t dma_m = STREAM_MODE_DMA, poll_m = STREAM_MODE_POLL;
+    int dma_set  = (sd->vtable->ioctl(sd, STREAM_IOCTL_SET_MODE, &dma_m) == 0);
+    int dma_back = (sd->vtable->ioctl(sd, STREAM_IOCTL_SET_MODE, &poll_m) == 0);
+    int ok_dma = (dma_set && dma_back);
+    if (!ok_dma) ok = 0;
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       DMA engine: set=%s back=%s (%s)\n",
+           dma_set ? "PASS" : "FAIL", dma_back ? "PASS" : "FAIL", ok_dma ? "PASS" : "FAIL");
 
     sd->vtable->close(sd);
     return ok;

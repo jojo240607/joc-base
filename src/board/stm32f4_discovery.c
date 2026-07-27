@@ -167,7 +167,8 @@ static const exti_config_t g_btn2 = { "btn2",  "GPIOA_3", EXTI_EDGE_RISING, 2 };
  * configure the CORRECT F4 I2C registers and that the polling state machine runs
  * (and bus-scans) without hanging. PCLK1 = 42 MHz (APB1). */
 static const i2c_config_t g_i2c0 = { "i2c0", (void *)I2C1, 42000000, 100000,
-                                     "I2C1_SCL_PB6", "I2C1_SDA_PB7" };
+                                     "I2C1_SCL_PB6", "I2C1_SDA_PB7",
+                                     DMA_REQ_I2C1_TX, DMA_REQ_I2C1_RX };
 /* SPI master demo: spi0 is SPI1 on PA5(SCK)/PA6(MISO)/PA7(MOSI), ~1 MHz SCK. */
 static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
                                      "SPI1_SCK_PA5", "SPI1_MISO_PA6",
@@ -178,7 +179,8 @@ static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
 static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
                                      "SDIO_CK", "SDIO_CMD",
                                      "SDIO_D0", "SDIO_D1",
-                                     "SDIO_D2", "SDIO_D3" };
+                                     "SDIO_D2", "SDIO_D3",
+                                     DMA_REQ_SDIO };
 /* SD Card: uses sdio0 bus device (no direct pin/HAL access). */
 static const sd_card_config_t g_sd_card0 = { "sd_card0", "sdio0", 0 };
 /* DAC: dac0 is DAC1 channel 1 on PA4 (DAC_OUT1), 12-bit analog output.

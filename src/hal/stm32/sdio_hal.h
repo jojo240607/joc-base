@@ -42,6 +42,23 @@ void sdio_hal_write_fifo(sdio_hal_handle_t *h, const uint32_t *buf, int word_cou
 /* Status */
 uint32_t sdio_hal_get_sta(sdio_hal_handle_t *h);
 void     sdio_hal_clear_icr(sdio_hal_handle_t *h, uint32_t mask);
+/* Wait for the data phase to finish (DATAEND) or error (DTIMEOUT/DCRCFAIL).
+ * Returns 0 on DATAEND, -1 on timeout/error (status cleared on error). Used by
+ * the driver's DMA path to detect transfer completion. */
+int      sdio_hal_wait_data_end(sdio_hal_handle_t *h, uint32_t timeout);
+
+/* DMA data path: enable DMA on the data transfer (DCTRL.DMAEN) and expose the
+ * FIFO address so the driver can configure its DMA stream. The SDIO host has a
+ * SINGLE DMA request; direction is taken from `dir` (0=read P2M, 1=write M2P),
+ * matching the DCTRL.DTDIR the driver already programmed. `sdio_hal_dma_enable`
+ * toggles DMAEN independently (so it can be cleared after a transfer). */
+void sdio_hal_data_config_dma(sdio_hal_handle_t *h, uint32_t dir,
+                              uint32_t blk_size, uint32_t count);
+void sdio_hal_dma_enable(sdio_hal_handle_t *h, int on);   /* DCTRL.DMAEN */
+void *sdio_hal_get_fifo_addr(sdio_hal_handle_t *h);        /* (void *)&FIFO */
+/* Clear the data-phase interrupt flags (DATAEND / DCRCFAIL / DTIMEOUT) after a
+ * block transfer. Kept in the HAL so the driver never names chip constants. */
+void sdio_hal_clear_data_icr(sdio_hal_handle_t *h);
 /* Wait for ANY of mask bits in STA, timeout. Returns 1 on match, 0 on timeout. */
 int      sdio_hal_wait_sta(sdio_hal_handle_t *h, uint32_t mask, uint32_t timeout);
 

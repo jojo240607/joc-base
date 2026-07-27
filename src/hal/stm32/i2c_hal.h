@@ -43,6 +43,14 @@ int i2c_hal_master_write(i2c_hal_handle_t *h, uint16_t addr,
 int i2c_hal_master_read(i2c_hal_handle_t *h, uint16_t addr,
                         uint8_t *buf, uint16_t len);
 
+/* Begin a master transfer up to (and including) the address phase: wait bus
+ * free, generate START, send addr (W/R), wait for ADDR (ACK) or AF (NACK).
+ * Returns 0 on ACK (ADDR still PENDING — caller must clear it by reading SR2 at
+ * the right moment, e.g. BEFORE arming RX DMA for a single-byte transfer), -1 on
+ * NACK/timeout/busy. Used by the driver's DMA path so the CPU handles only the
+ * handshake and the DMA controller moves the data bytes. */
+int i2c_hal_master_start_addr(i2c_hal_handle_t *h, uint16_t addr, int is_write);
+
 /* --- Interrupt mode helpers --- */
 
 /* I2C ISR callbacks (implemented in i2c_hal.c to keep the state machine
@@ -67,6 +75,19 @@ void     i2c_hal_set_pos(i2c_hal_handle_t *h, int on);
 void     i2c_hal_clear_sr1_af(i2c_hal_handle_t *h);
 void     i2c_hal_nvic_enable(int irq);    /* raw NVIC ISER write (bypasses irq.c) */
 void     i2c_hal_nvic_disable(int irq);   /* raw NVIC ICER write */
+
+/* --- DMA mode helpers ---
+ * The F1-style I2C exposes a DMA request (CR2.DMAEN) for the data phase; for a
+ * multi-byte RX the hardware auto-NACKs the final byte when CR2.LAST is set, so
+ * the driver sets LAST for the last transfer and then issues STOP itself. These
+ * let the driver keep the START/ADDR handshake (with timeout guards) on the CPU
+ * and offload only the byte movement to the DMA controller. */
+void     i2c_hal_dma_enable(i2c_hal_handle_t *h, int on);   /* CR2.DMAEN */
+void     i2c_hal_set_dma_last(i2c_hal_handle_t *h, int on); /* CR2.LAST */
+void    *i2c_hal_get_dr_addr(i2c_hal_handle_t *h);          /* (void *)&DR */
+/* Wait until BTF (byte-transfer-finished) is set or timeout expires. Used by the
+ * driver's DMA TX path to know the last byte has shifted out before STOP. */
+int      i2c_hal_wait_btf(i2c_hal_handle_t *h, uint32_t timeout);
 
 /* readback helpers for self-test verification (F1 registers) */
 uint32_t i2c_hal_get_ccr(i2c_hal_handle_t *h);

@@ -4,6 +4,7 @@
 #include "iface/stream_device.h"
 #include "iface/device.h"
 #include "i2c_hal.h"
+#include "drv/dma.h"              /* dma / dma_stream_t (DMA engine) + dma_req_id_t */
 #include "pinmux_hal.h"
 #include "osal/osal.h"
 #include "irq.h"
@@ -12,18 +13,42 @@
 /*
  * I2C driver — a STREAM device wrapping the F1-style I2C in MASTER mode.
  *
- * Supports POLL and IRQ modes via STREAM_IOCTL_SET_MODE:
+ * Supports three transfer engines via STREAM_IOCTL_SET_MODE:
  *   POLL — CPU spins on SR1 flags (TXE/RXNE/ADDR/BTF), timeout-guarded.
- *   IRQ  — EV+ER ISRs drive the F1 I2C state machine; thread blocks on
- *          a completion flag. (NVIC enable still hangs from i2c.c, so IRQ
- *          mode activates only peripheral interrupts — NVIC enable pending.)
+ *   IRQ  — EV+ER ISRs drive the F1 I2C state machine; thread blocks on a
+ *          completion flag.
+ *   DMA  — START/address handshake stays on the CPU (timeout-guarded), but the
+ *          byte movement is offloaded to the DMA controller (CR2.DMAEN). For a
+ *          multi-byte RX the hardware auto-NACKs the final byte (CR2.LAST).
  *
- * stream_read() / stream_write() use the current slave address (set via
- * I2C_IOCTL_SET_ADDR). For multi-address operation use the addressed ioctls:
- *   I2C_IOCTL_MASTER_WRITE / I2C_IOCTL_MASTER_READ carry an i2c_xfer_t with
- *   an explicit 7-bit slave address.
+ * The IRQ-only transfer state (completion flag + state machine scratch) and the
+ * DMA-only state (reserved TX/RX streams) live in per-engine structs reached via
+ * a single `eng` pointer, so a POLL I2C pays nothing. stream_read()/write() use
+ * the current slave address (I2C_IOCTL_SET_ADDR); multi-address use the addressed
+ * ioctls (i2c_xfer_t carries an explicit 7-bit address).
  */
 typedef struct _i2c i2c;
+
+/* Per-engine state for the IRQ engine: the completion flag + state-machine
+ * scratch. NULL for POLL/DMA. Allocated on SET_MODE(IRQ), freed on close. */
+typedef struct {
+    volatile int xfer_done;
+    volatile uint8_t irq_state;
+    volatile int irq_result;
+    uint16_t addr;
+    const uint8_t *volatile tx_buf;
+    uint8_t *volatile rx_buf;
+    volatile uint16_t xfer_len;
+    volatile uint16_t xfer_pos;
+} i2c_irq_t;
+
+/* Per-engine state for the DMA engine: the reserved TX (M2P) and RX (P2M)
+ * streams. NULL for POLL/IRQ. Allocated on SET_MODE(DMA), freed on close. */
+typedef struct {
+    dma *dma_dev;          /* controller owning the acquired streams (dma1 for I2C) */
+    dma_stream_t *dma_tx;  /* data out  (M2P) */
+    dma_stream_t *dma_rx;  /* data in   (P2M) */
+} i2c_dma_t;
 
 typedef struct {
     const char *name;
@@ -32,6 +57,12 @@ typedef struct {
     uint32_t speed_hz;
     const char *scl_signal;
     const char *sda_signal;
+    /* Logical DMA request ids (e.g. DMA_REQ_I2C1_TX / DMA_REQ_I2C1_RX). The
+     * driver resolves each to a concrete (controller, stream, channel) via
+     * dma_hal_route(); DMA_REQ_NONE means that direction has no DMA (the driver
+     * refuses STREAM_MODE_DMA if either direction is missing). */
+    dma_req_id_t dma_tx_req;
+    dma_req_id_t dma_rx_req;
 } i2c_config_t;
 
 struct _i2c {
@@ -44,16 +75,9 @@ struct _i2c {
     uint8_t  scl_pin, sda_pin, scl_af, sda_af;
     int       ev_irq;
     int       er_irq;
-    volatile int xfer_done;      /* completion flag (IRQ mode) */
-
-    /* IRQ transfer state */
-    volatile uint8_t  irq_state;
-    volatile int      irq_result;
-    uint16_t addr;
-    const uint8_t *volatile tx_buf;
-    uint8_t *volatile rx_buf;
-    volatile uint16_t xfer_len;
-    volatile uint16_t xfer_pos;
+    dma_req_id_t dma_tx_req;     /* cached from config */
+    dma_req_id_t dma_rx_req;     /* cached from config */
+    void *eng;                   /* per-engine: i2c_irq_t* / i2c_dma_t* / NULL(POLL) */
 };
 
 device *i2c_create(const void *config);

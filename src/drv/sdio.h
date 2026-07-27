@@ -3,6 +3,7 @@
 
 #include "iface/stream_device.h"
 #include "sdio_hal.h"
+#include "drv/dma.h"              /* dma / dma_stream_t (DMA engine) + dma_req_id_t */
 #include "pinmux_hal.h"
 #include <stdint.h>
 
@@ -12,8 +13,24 @@
  * This is a PURE INTERFACE driver: it owns the pins and the SDIO peripheral,
  * but does NOT implement SD protocol logic. Higher-level drivers (sd_card)
  * use sdio_hal directly or send raw commands through ioctl.
+ *
+ * TRANSFER ENGINE: POLL (FIFO polling) or DMA. The SDIO host has its own DMA
+ * request, so a data block can be moved by the DMA controller instead of the
+ * CPU draining/feeding the FIFO. The DMA-only state (the reserved stream
+ * handle) lives in the per-engine sdio_dma_t, reached via `eng`; POLL pays
+ * nothing. The per-block data buffer always comes from the caller (e.g. the
+ * sd_card driver) and MUST be in main SRAM (DMA cannot touch CCM).
  */
 typedef struct _sdio sdio;
+
+/* Per-engine state for the DMA engine: the single SDIO DMA stream (the SDIO
+ * host has ONE DMA request line; direction is set per transfer via DCTRL.DTDIR,
+ * so the one stream is reconfigured read(P2M)/write(M2P) each call). NULL for
+ * POLL. Allocated on SET_MODE(DMA), freed on close. */
+typedef struct {
+    dma *dma_dev;          /* resolved dma controller (dma2) */
+    dma_stream_t *dma_s;   /* the one acquired SDIO DMA stream */
+} sdio_dma_t;
 
 typedef struct {
     const char *name;
@@ -24,6 +41,10 @@ typedef struct {
     const char *d1_signal;
     const char *d2_signal;
     const char *d3_signal;
+    /* Logical DMA request id (DMA_REQ_SDIO). The driver resolves it to a
+     * concrete (controller, stream, channel) via dma_hal_route(); 0 / DMA_REQ_NONE
+     * means "no DMA" (driver refuses STREAM_MODE_DMA). */
+    dma_req_id_t dma_req;
 } sdio_config_t;
 
 struct _sdio {
@@ -32,6 +53,8 @@ struct _sdio {
     pinmux_port_t ck_port, cmd_port, d0_port, d1_port, d2_port, d3_port;
     uint8_t  ck_pin, cmd_pin, d0_pin, d1_pin, d2_pin, d3_pin;
     uint8_t  ck_af, cmd_af, d0_af, d1_af, d2_af, d3_af;
+    dma_req_id_t dma_req;   /* cached from config */
+    void *eng;              /* per-engine: sdio_dma_t* in DMA mode, NULL in POLL */
 };
 
 device *sdio_create(const void *config);

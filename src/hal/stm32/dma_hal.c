@@ -215,6 +215,21 @@ dma_route_t dma_hal_route(dma_req_id_t req)
     /* ---- DAC (DMA channel 7 on DMA1; TIM6_UP/TIM7_UP share the stream) ---- */
     case DMA_REQ_DAC1:      return (dma_route_t){ "dma1", 5, 7 };
     case DMA_REQ_DAC2:      return (dma_route_t){ "dma1", 6, 7 };
+    /* ---- I2C (DMA1 only) — the F1-style I2C on F4 still exposes DMA requests
+     * (CR2.DMAEN). Routes per RM0090 Table 30. TX drives DR from memory (M2P),
+     * RX fills memory from DR (P2M); the driver acquires both streams. */
+    case DMA_REQ_I2C1_TX:  return (dma_route_t){ "dma1", 6, 1 };
+    case DMA_REQ_I2C1_RX:  return (dma_route_t){ "dma1", 0, 1 };
+    case DMA_REQ_I2C2_TX:  return (dma_route_t){ "dma1", 7, 1 };
+    case DMA_REQ_I2C2_RX:  return (dma_route_t){ "dma1", 2, 1 };
+    case DMA_REQ_I2C3_TX:  return (dma_route_t){ "dma1", 4, 3 };
+    case DMA_REQ_I2C3_RX:  return (dma_route_t){ "dma1", 2, 3 };
+    /* ---- SDIO (DMA2, channel 4) ----
+     * The SDIO host has a SINGLE DMA request line; the transfer direction is
+     * selected by DCTRL.DTDIR, so the driver reconfigures the one acquired stream
+     * per transfer (read = P2M, write = M2P). Both DMA2 Stream3 and Stream6 carry
+     * the SDIO request (channel 4); we pick Stream6. */
+    case DMA_REQ_SDIO:     return (dma_route_t){ "dma2", 6, 4 };
     default:
         return (dma_route_t){ NULL, 0, 0 };
     }

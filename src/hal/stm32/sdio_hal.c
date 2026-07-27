@@ -123,6 +123,42 @@ int sdio_hal_wait_sta(sdio_hal_handle_t *h, uint32_t mask, uint32_t timeout)
     return 0;
 }
 
+int sdio_hal_wait_data_end(sdio_hal_handle_t *h, uint32_t timeout)
+{
+    if (!h) return -1;
+    while (timeout--) {
+        uint32_t sta = h->reg->STA;
+        if (sta & SDIO_STA_DATAEND) return 0;
+        if (sta & (SDIO_STA_DTIMEOUT | SDIO_STA_DCRCFAIL)) {
+            h->reg->ICR = 0xFFFFFFFFU; return -1;
+        }
+    }
+    return -1;
+}
+
+void sdio_hal_data_config_dma(sdio_hal_handle_t *h, uint32_t dir,
+                              uint32_t blk_size, uint32_t count)
+{
+    if (!h) return;
+    sdio_hal_data_config(h, dir, blk_size, count);   /* sets DTEN + DTDIR */
+    h->reg->DCTRL |= SDIO_DCTRL_DMAEN;
+}
+
+void sdio_hal_dma_enable(sdio_hal_handle_t *h, int on)
+{
+    if (!h) return;
+    if (on) h->reg->DCTRL |= SDIO_DCTRL_DMAEN;
+    else    h->reg->DCTRL &= ~SDIO_DCTRL_DMAEN;
+}
+
+void *sdio_hal_get_fifo_addr(sdio_hal_handle_t *h)
+    { return h ? (void *)&h->reg->FIFO : NULL; }
+
+void sdio_hal_clear_data_icr(sdio_hal_handle_t *h)
+{
+    if (h) h->reg->ICR = SDIO_ICR_DATAENDC | SDIO_ICR_DCRCFAILC | SDIO_ICR_DTIMEOUTC;
+}
+
 int sdio_hal_read_block(sdio_hal_handle_t *h, uint8_t *buf,
                         uint32_t blk_addr, uint32_t count, int is_sdhc)
 {
