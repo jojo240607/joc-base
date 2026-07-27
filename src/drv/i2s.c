@@ -2,6 +2,7 @@
 #include "devmgr/device_manager.h"
 #include "drv/pinmux.h"
 #include "pinmux_hal.h"
+#include "drv/dma.h"                  /* dma device + dma_hal_route (DMA engine) */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -105,6 +106,7 @@ device *i2s_create(const void *config)
     p->ws_port = wp; p->ws_pin = wpn; p->ws_af = waf;
     p->ck_port = kp; p->ck_pin = kpn; p->ck_af = kaf;
     p->sd_port = dp; p->sd_pin = dpn; p->sd_af = daf;
+    p->dma_tx_req = c->dma_tx_req;        /* cache DMA request ID for open() */
 
     return &p->parent.parent;
 }
@@ -114,6 +116,51 @@ void i2s_destroy(i2s *self)
     if (!self) return;
     i2s_hal_destroy(self->hal);
     free(self);
+}
+
+/* --- DMA engine (STREAM_MODE_DMA, TX only) ---
+ * Resolve the hard-wired TX stream (via dma_hal_route) and reserve it at open().
+ * The DMA ISR (drv/dma.c) gives the stream done_sem on TC/TE. */
+static int i2s_dma_acquire(i2s *p)
+{
+    p->dma_dev = NULL; p->dma_tx = NULL;
+    if (p->dma_tx_req == DMA_REQ_NONE) return -1;
+    dma_route_t rt = dma_hal_route(p->dma_tx_req);
+    if (!rt.name) return -1;
+    dma *dm = (dma *)device_manager_get(rt.name);
+    if (!dm) return -1;
+    dma_stream_t *s = dm->fun->acquire(dm, rt.stream, rt.channel, DMA_DIR_M2P);
+    if (!s) return -1;
+    p->dma_dev = dm; p->dma_tx = s;
+    return 0;
+}
+
+static void i2s_dma_release(i2s *p)
+{
+    i2s_hal_disable_tx_dma(p->hal);
+    if (p->dma_dev && p->dma_tx) p->dma_dev->fun->free(p->dma_dev, p->dma_tx);
+    p->dma_dev = NULL; p->dma_tx = NULL;
+}
+
+/* DMA transmit: copy the 16-bit samples into the main-SRAM bounce (DMA cannot
+ * touch CCM), program the reserved TX stream (M2P, PAR=DR, 16-bit, MINC), gate
+ * the I2S onto the DMA (TXDMAEN), arm it and block until Transfer-Complete.
+ * Returns the number of bytes written. */
+static int i2s_dma_write(i2s *p, const uint16_t *s, size_t len_bytes)
+{
+    if (!p->dma_dev || !p->dma_tx) return -1;
+    if (len_bytes < 2) return 0;
+    size_t n = len_bytes / 2;
+    if (n > I2S_DMA_BOUNCE) n = I2S_DMA_BOUNCE;   /* bounce cap */
+    void *dr = i2s_hal_get_dr_addr(p->hal);
+    for (size_t i = 0; i < n; i++) p->dma_bounce[i] = s[i];
+    p->dma_dev->fun->config(p->dma_dev, p->dma_tx, dr, p->dma_bounce, (uint32_t)n,
+                            DMA_DATA_16, 0, 1, DMA_PRIO_MED);
+    i2s_hal_enable_tx_dma(p->hal);
+    p->dma_dev->fun->start(p->dma_dev, p->dma_tx, NULL, NULL);
+    int rc = p->dma_dev->fun->wait_done(p->dma_dev, p->dma_tx, 2000);
+    i2s_hal_disable_tx_dma(p->hal);
+    return rc == 0 ? (int)(n * 2) : -1;
 }
 
 static int i2s_dev_open(device *self)
@@ -161,12 +208,14 @@ static int i2s_dev_open(device *self)
     i2s_hal_config(p->hal, 0 /*Philips*/, p->datlen, p->audio_hz,
                    i2s_clk, p->master, p->tx);
     i2s_hal_enable(p->hal, 1);
+    i2s_dma_acquire(p);          /* reserve the hard-wired TX stream (if configured) */
     return 0;
 }
 
 static int i2s_dev_close(device *self)
 {
     i2s *p = (i2s *)self;
+    i2s_dma_release(p);
     i2s_hal_enable(p->hal, 0);
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) pm->fun->release_owner(pm, p->parent.parent.name);
@@ -184,6 +233,8 @@ static int i2s_stream_write(stream_device *self, const void *buf, size_t len)
     i2s *p = (i2s *)self;
     if (!p->tx) return -1;                       /* RX-only instance */
     if (len < 2) return 0;
+    if (p->parent.mode == STREAM_MODE_DMA)
+        return i2s_dma_write(p, (const uint16_t *)buf, len);
     const uint16_t *s = (const uint16_t *)buf;
     size_t n = len / 2;
     int ok = 1;
@@ -243,7 +294,11 @@ static int i2s_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m != STREAM_MODE_POLL) return -1;   /* only POLL supported */
+        if (m == STREAM_MODE_DMA) {
+            if (!p->dma_tx) return -1;          /* no TX stream reserved */
+        } else if (m != STREAM_MODE_POLL) {
+            return -1;
+        }
         p->parent.mode = m;
         return 0;
     }

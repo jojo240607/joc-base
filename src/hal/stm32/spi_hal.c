@@ -105,6 +105,12 @@ void spi_hal_write_dr(spi_hal_handle_t *h, uint8_t data)
 uint8_t spi_hal_read_dr(spi_hal_handle_t *h)
     { return h ? (uint8_t)h->reg->DR : 0U; }
 
+void spi_hal_enable_tx_dma(spi_hal_handle_t *h)  { if (h) h->reg->CR2 |= SPI_CR2_TXDMAEN; }
+void spi_hal_disable_tx_dma(spi_hal_handle_t *h) { if (h) h->reg->CR2 &= ~SPI_CR2_TXDMAEN; }
+void spi_hal_enable_rx_dma(spi_hal_handle_t *h)  { if (h) h->reg->CR2 |= SPI_CR2_RXDMAEN; }
+void spi_hal_disable_rx_dma(spi_hal_handle_t *h) { if (h) h->reg->CR2 &= ~SPI_CR2_RXDMAEN; }
+void *spi_hal_get_dr_addr(spi_hal_handle_t *h)   { return h ? (void *)&h->reg->DR : NULL; }
+
 /* readback helpers */
 uint32_t spi_hal_get_cr1(spi_hal_handle_t *h) { return h ? h->reg->CR1 : 0UL; }
 int spi_hal_is_busy(spi_hal_handle_t *h) { return h ? ((h->reg->SR & SPI_SR_BSY) ? 1 : 0) : 0; }

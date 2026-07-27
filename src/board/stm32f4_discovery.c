@@ -163,7 +163,9 @@ static const i2c_config_t g_i2c0 = { "i2c0", (void *)I2C1, 42000000, 100000,
 /* SPI master demo: spi0 is SPI1 on PA5(SCK)/PA6(MISO)/PA7(MOSI), ~1 MHz SCK. */
 static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
                                      "SPI1_SCK_PA5", "SPI1_MISO_PA6",
-                                     "SPI1_MOSI_PA7" };
+                                     "SPI1_MOSI_PA7",
+                                     DMA_REQ_SPI1_TX,      /* TX -> DMA2_Stream3 CH3 */
+                                     DMA_REQ_SPI1_RX };    /* RX -> DMA2_Stream2 CH3 */
 /* SDIO host: sdio0 on PC8-PC12(4-bit) + PD2(CMD), AF12. */
 static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
                                      "SDIO_CK", "SDIO_CMD",
@@ -209,7 +211,8 @@ static const i2s_config_t g_i2s0 = {
     "SPI2_SCK_PB13",   /* CK  (bit clock) */
     "SPI2_MOSI_PB15",  /* SD  (data out, TX) */
     NULL,              /* extSD (RX) unused for a TX instance */
-    1, 1, 0            /* master, transmit, 16-bit */
+    1, 1, 0,           /* master, transmit, 16-bit */
+    DMA_REQ_SPI2_TX    /* I2S2 TX -> DMA1_Stream4 CH3 */
 };
 /* CAN: can0 is the bxCAN controller (CAN1). The Discovery board wires PA11/PA12
  * to the USB-OTG connector, so the default CAN1_RX (PA11) is held DOMINANT by

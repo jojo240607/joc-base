@@ -9,13 +9,16 @@
  * Register layout (per controller): LISR/HISR @ +0x00/+0x04, LIFCR/HIFCR
  * @ +0x08/+0x0C, then 8 streams at +0x10 stride +0x18 (CR/NDTR/PAR/M0AR/M1AR/
  * FCR). Flag bit positions inside a stream's 6-bit status group: FE=+0,
- * DME=+2, TE=+3, HT=+4, TC=+5; group starts at 6*(stream%4).
+ * DME=+2, TE=+3, HT=+4, TC=+5. The 6-bit groups are NOT contiguous:
+ * stream0/1 -> bit base 0/6, stream2/3 -> bit base 16/22 (a 4-bit hole
+ * sits between stream1->2 and stream3->4). base = dma_fsr_shift[idx%4]
+ * = {0,6,16,22} (HISR/HIFCR reuse the same layout for stream4..7).
  */
 
 struct dma_hal_stream {
     DMA_TypeDef  *dma;     /* DMA1 or DMA2 base */
     uint32_t      idx;     /* 0..7 */
-    uint32_t      shift;   /* 6*(idx%4) — flag bit offset within L/H ISR/FCR */
+    uint32_t      shift;   /* dma_fsr_shift[idx%4] — flag bit offset within L/H ISR/FCR */
     int           is_high; /* idx>=4 -> use HISR/HIFCR, else LISR/LIFCR */
     int           ctlr;    /* 1 = DMA1, 2 = DMA2 (for IRQn base) */
 };
@@ -33,7 +36,8 @@ dma_hal_stream_t *dma_hal_stream_create(void *dma_periph, uint32_t stream_idx)
     memset(s, 0, sizeof(*s));
     s->dma     = (DMA_TypeDef *)dma_periph;
     s->idx     = stream_idx & 0x7U;
-    s->shift   = 6U * (s->idx % 4U);
+    static const uint8_t dma_fsr_shift[4] = { 0, 6, 16, 22 };
+    s->shift   = dma_fsr_shift[s->idx % 4U];
     s->is_high = (s->idx >= 4U) ? 1 : 0;
     s->ctlr    = ((DMA_TypeDef *)dma_periph == DMA1) ? 1 : 2;
     return s;

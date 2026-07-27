@@ -52,6 +52,12 @@ int i2s_hal_write_sample(i2s_hal_handle_t *h, uint16_t sample);
 /* 1 if the transmit buffer can accept data (SR.TXE), else 0. */
 int i2s_hal_tx_empty(i2s_hal_handle_t *h);
 
+/* DMA gating (CR2.TXDMAEN) and the data-register address for PAR. I2S is hosted
+ * inside the SPI peripheral, so the same SPI CR2/DR registers are used. */
+void  i2s_hal_enable_tx_dma(i2s_hal_handle_t *h);
+void  i2s_hal_disable_tx_dma(i2s_hal_handle_t *h);
+void *i2s_hal_get_dr_addr(i2s_hal_handle_t *h);
+
 /* readback helpers for self-test verification */
 uint32_t i2s_hal_get_i2scfgr(i2s_hal_handle_t *h);
 uint32_t i2s_hal_get_i2spr(i2s_hal_handle_t *h);

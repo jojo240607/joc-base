@@ -126,6 +126,10 @@ int i2s_hal_tx_empty(i2s_hal_handle_t *h)
     return h ? ((h->reg->SR & SPI_SR_TXE) ? 1 : 0) : 0;
 }
 
+void i2s_hal_enable_tx_dma(i2s_hal_handle_t *h)  { if (h) h->reg->CR2 |= SPI_CR2_TXDMAEN; }
+void i2s_hal_disable_tx_dma(i2s_hal_handle_t *h) { if (h) h->reg->CR2 &= ~SPI_CR2_TXDMAEN; }
+void *i2s_hal_get_dr_addr(i2s_hal_handle_t *h)   { return h ? (void *)&h->reg->DR : NULL; }
+
 uint32_t i2s_hal_get_i2scfgr(i2s_hal_handle_t *h) { return h ? h->reg->I2SCFGR : 0UL; }
 uint32_t i2s_hal_get_i2spr(i2s_hal_handle_t *h)   { return h ? h->reg->I2SPR   : 0UL; }
 uint32_t i2s_hal_get_plli2s(void)                 { return RCC->PLLI2SCFGR; }

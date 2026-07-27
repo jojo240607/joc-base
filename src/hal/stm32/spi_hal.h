@@ -37,6 +37,13 @@ void     spi_hal_disable_rxne_irq(spi_hal_handle_t *h); /* CR2.RXNEIE */
 void     spi_hal_write_dr(spi_hal_handle_t *h, uint8_t data);
 uint8_t  spi_hal_read_dr(spi_hal_handle_t *h);
 
+/* DMA gating (CR2.TXDMAEN / RXDMAEN) and the data-register address for PAR. */
+void     spi_hal_enable_tx_dma(spi_hal_handle_t *h);
+void     spi_hal_disable_tx_dma(spi_hal_handle_t *h);
+void     spi_hal_enable_rx_dma(spi_hal_handle_t *h);
+void     spi_hal_disable_rx_dma(spi_hal_handle_t *h);
+void    *spi_hal_get_dr_addr(spi_hal_handle_t *h);
+
 /* readback helpers for self-test verification */
 uint32_t spi_hal_get_cr1(spi_hal_handle_t *h);
 int      spi_hal_is_busy(spi_hal_handle_t *h);  /* SR.BSY */

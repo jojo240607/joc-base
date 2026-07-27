@@ -803,6 +803,25 @@ static int selftest_vspi(selftest *self)
     stream_xfer_mode_t poll_mode = STREAM_MODE_POLL;
     spid->vtable->ioctl(spid, STREAM_IOCTL_SET_MODE, &poll_mode);
 
+    /* (4) DMA mode: full-duplex master TX/RX via the hard-wired streams
+     * (SPI1_TX->DMA2_Stream3 CH3, SPI1_RX->DMA2_Stream2 CH3). With no slave the RX
+     * data is undefined, but the DMA path MUST complete (TC fires) and the bus
+     * must end idle with no Overrun — proving route + gating + TC all correct. */
+    stream_xfer_mode_t dma_mode = STREAM_MODE_DMA;
+    int dma_set_ok = (spid->vtable->ioctl(spid, STREAM_IOCTL_SET_MODE, &dma_mode) == 0);
+    uint8_t txd[4] = { 0x11, 0x22, 0x33, 0x44 }, rxd[4] = { 0 };
+    spi_xfer_t xfer_dma = { .tx_buf = txd, .rx_buf = rxd, .len = 4 };
+    int dma_xfer_ok = (spid->vtable->ioctl(spid, SPI_IOCTL_XFER, &xfer_dma) == 0);
+    spid->vtable->ioctl(spid, SPI_IOCTL_GET_BSY, &bsy);
+    volatile uint32_t bsy_tmo = 200000U;
+    while (bsy && bsy_tmo--) spid->vtable->ioctl(spid, SPI_IOCTL_GET_BSY, &bsy);
+    int dma_bsy = (bsy == 0);
+    if (!dma_set_ok || !dma_xfer_ok || !dma_bsy) ok = 0;
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       DMA  xfer 4B: set=%s xfer=%s BSY=%s\n",
+           dma_set_ok ? "PASS" : "FAIL", dma_xfer_ok ? "PASS" : "FAIL",
+           dma_bsy ? "clear" : "SET");
+    spid->vtable->ioctl(spid, STREAM_IOCTL_SET_MODE, &poll_mode);
+
     spid->vtable->close(spid);
     return ok;
 }
@@ -1305,6 +1324,20 @@ static int selftest_vi2s(selftest *self)
     if (!ok_tx) ok = 0;
     log_printf(app_log(), LOG_DEBUG, "selftest", "       write 4x16b samples -> %d bytes (expect %u, %s)\n",
            wr, (unsigned)sizeof(snd), ok_tx ? "PASS" : "FAIL");
+
+    /* (6) DMA mode: TX the same 4 samples via the hard-wired I2S2 TX stream
+     * (SPI2_TX -> DMA1_Stream4 CH3). Completing (TC fires) proves the DMA route,
+     * the TXDMAEN gating, and that the PLLI2S audio clock is live. */
+    stream_xfer_mode_t dma_mode = STREAM_MODE_DMA;
+    int dma_set_ok = (d->vtable->ioctl(d, STREAM_IOCTL_SET_MODE, &dma_mode) == 0);
+    uint16_t snd_dma[4] = { 0x1234, 0x5678, 0x9ABC, 0xDEF0 };
+    int wr_dma = d->vtable->write(d, snd_dma, sizeof(snd_dma));
+    int ok_tx_dma = (dma_set_ok && wr_dma == (int)sizeof(snd_dma));
+    if (!ok_tx_dma) ok = 0;
+    log_printf(app_log(), LOG_DEBUG, "selftest", "       DMA write 4x16b -> set=%s %d bytes (expect %u, %s)\n",
+           dma_set_ok ? "PASS" : "FAIL", wr_dma, (unsigned)sizeof(snd_dma), ok_tx_dma ? "PASS" : "FAIL");
+    stream_xfer_mode_t poll_mode = STREAM_MODE_POLL;
+    d->vtable->ioctl(d, STREAM_IOCTL_SET_MODE, &poll_mode);
 
     d->vtable->close(d);
     return ok;

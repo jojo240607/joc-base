@@ -210,20 +210,28 @@ static int dma_stream_start(dma *self, dma_stream_t *s, void (*cb)(void *), void
 static int dma_wait_done(dma *self, dma_stream_t *s, uint32_t timeout_ms)
 {
     if (!self || !s) return -1;
-    /* Poll the Transfer-Complete hardware flag with a bounded budget instead of
-     * blocking on the completion semaphore forever. This (a) honours timeout_ms,
-     * (b) avoids a permanent hang if a transfer is mis-configured (e.g. a wrong
-     * peripheral route), and (c) keeps the driver usable from bare metal where
-     * the sem is a busy-wait with no deadline. The TC/TE ISR still gives the sem
-     * (and runs the optional callback); once we observe TC we consume any permit
-     * left in the sem so the NEXT transfer's wait starts clean (no trywait in the
-     * bare-metal OSAL). */
+    /* Wait on the completion SEMAPHORE the TC/TE ISR gives, NOT by polling the TC
+     * flag. The ISR clears TC the instant it is set, so a polling loop would
+     * typically read TC=0 (already cleared by the ISR) and time out even though
+     * the transfer SUCCEEDED — a TOCTOU race. The sem permit, once given, PERSISTS
+     * until this wait consumes it, so completion is never missed. Bounded by a
+     * coarse instruction budget so a mis-routed transfer cannot hang the caller
+     * forever. (Bare-metal OSAL busy-waits; RTOS OSAL blocks — both fine here.) */
+    osal_sem_t *sem = &self->streams[s->idx].done_sem;
     dma_hal_stream_t *hs = self->hal[s->idx];
     uint32_t limit = (timeout_ms ? timeout_ms : 2000U) * 1000U;   /* ~1k iters/ms */
-    while (!dma_hal_stream_tc(hs) && limit--) { }
-    int ok = dma_hal_stream_tc(hs) ? 1 : 0;
-    self->streams[s->idx].done_sem.count = 0;   /* drain any stale permit */
-    return ok ? 0 : -1;
+    while (limit--) {
+        if (sem->count > 0) {                 /* completion permit observed */
+            while (sem->count > 0) osal_sem_wait(sem);   /* consume (drain extras) */
+            return 0;
+        }
+        if (dma_hal_stream_te(hs)) {          /* transfer error (TE) */
+            while (sem->count > 0) osal_sem_wait(sem);
+            return -1;
+        }
+    }
+    while (sem->count > 0) osal_sem_wait(sem);   /* drain on timeout too */
+    return -1;
 }
 
 static int dma_poll_done(dma *self, dma_stream_t *s)

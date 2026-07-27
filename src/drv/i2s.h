@@ -4,9 +4,15 @@
 #include "iface/device.h"
 #include "iface/stream_device.h"  /* i2s IS-A stream_device (audio data stream) */
 #include "i2s_hal.h"              /* opaque handle ONLY — no STM32 types reach the driver */
+#include "drv/dma.h"              /* dma / dma_stream_t (DMA engine) + dma_req_id_t */
 #include "pinmux_hal.h"           /* pinmux_port_t */
 #include <stdint.h>
 #include <stddef.h>
+
+/* DMA-accessible (main SRAM) bounce for the I2S DMA TX path. I2S samples are
+ * 16-bit, so this is a uint16_t array (naturally 2-byte aligned) so the 16-bit
+ * DMA accesses to DR are aligned. The DMA controllers cannot reach CCM. */
+#define I2S_DMA_BOUNCE 256
 
 /* device-level control commands for the I2S driver */
 #define I2S_IOCTL_GET_I2SCFGR  0x01   /* arg: uint32_t* I2SCFGR register */
@@ -33,6 +39,11 @@ struct _i2s {
     int master;                   /* 1 = master (clock generator) */
     int tx;                       /* 1 = transmit direction */
     uint32_t datlen;              /* 0=16,1=24,2=32 bit */
+    /* DMA engine state (valid when a TX stream is reserved at open + mode==DMA) */
+    dma_req_id_t dma_tx_req;      /* cached from config */
+    dma *dma_dev;                 /* resolved dma controller (dma1/dma2) */
+    dma_stream_t *dma_tx;         /* reserved TX stream handle (NULL if none) */
+    uint16_t dma_bounce[I2S_DMA_BOUNCE];  /* main-SRAM 16-bit scratch (CCM-inaccessible) */
     /* resolved pin geometry (claimed at open) */
     pinmux_port_t ws_port;  uint8_t ws_pin;  uint8_t ws_af;
     pinmux_port_t ck_port;  uint8_t ck_pin;  uint8_t ck_af;
@@ -57,6 +68,10 @@ typedef struct {
     int master;                /* 1 = master */
     int tx;                    /* 1 = transmit */
     uint32_t datlen;           /* 0=16,1=24,2=32 bit */
+    /* DMA request ID (logical, from dma_hal.h). Resolved to a concrete (controller,
+     * stream, channel) via dma_hal_route(). 0 means "no DMA" (driver refuses
+     * STREAM_MODE_DMA). For I2S this is the SPIx_TX request (e.g. SPI2_TX). */
+    dma_req_id_t dma_tx_req;
 } i2s_config_t;
 
 #endif /* I2S_H */
