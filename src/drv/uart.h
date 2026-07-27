@@ -63,9 +63,21 @@ struct _uart {
      * read()/getc() drain it. head/tail now live inside the ring buffer. */
     char rx_buf[UART_RX_BUF_SIZE];
     /* DMA bounce scratch in main SRAM (see UART_DMA_BOUNCE). Used as the actual
-     * DMA source for TX (caller buffer may be CCM) and destination for RX (the
-     * caller's receive buffer may be CCM). The driver copies to/from it. */
+     * DMA source for TX (caller buffer may be CCM) and destination for bulk RX
+     * (the caller's receive buffer may be CCM). The driver copies to/from it. */
     uint8_t dma_bounce[UART_DMA_BOUNCE];
+    /* Dedicated circular buffer for the IDLE-line RX DMA. Must be SEPARATE from
+     * dma_bounce: the TX DMA (uart_dma_write) and the circular RX DMA both need a
+     * main-SRAM scratch, and sharing one would let a TX reuse clobber received
+     * bytes (and vice-versa). DMA cannot touch CCM, so both live in main SRAM. */
+    uint8_t dma_idle_buf[UART_DMA_BOUNCE];
+    /* IDLE-line RX state (STREAM_MODE_DMA_IDLE only). The circular RX DMA keeps
+     * filling dma_idle_buf; `idle_total` is the running count of bytes the DMA
+     * has written since arming (NDTR-based, modulo the buffer size). On each IDLE
+     * interrupt the ISR computes (idle_total - prev) new bytes and copies them
+     * into the RX ring. */
+    uint32_t dma_idle_total;     /* total bytes DMA has written (mod buffer) */
+    uint32_t dma_idle_bufsize;   /* circular buffer size (= UART_DMA_BOUNCE) */
     /* In-progress asynchronous READ (started via stream submit). The ISR drains
      * the ring into this xfer and calls io_xfer_complete() when it is full.
      * NULL when no async read is pending. (Synchronous read()/getc() and an

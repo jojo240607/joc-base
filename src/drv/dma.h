@@ -71,6 +71,16 @@ struct dmaFun {
      * NULL). The callback runs in interrupt context when TC (or TE) fires.
      * Returns 0 on success. */
     int (*start)(dma *self, dma_stream_t *s, void (*cb)(void *), void *ctx);
+    /* Pause/disarm the stream (EN=0, TC/TE IRQ off) WITHOUT releasing it back to
+     * the pool. Used to halt a circular RX stream before re-programming it for a
+     * different transfer. The stream stays reserved (in_use stays set) so the
+     * owner can re-arm it later. Returns 0 on success. */
+    int (*stop)(dma *self, dma_stream_t *s);
+    /* Arm a CIRCULAR stream (CIRC=1, EN=1) with NO TC/TE interrupt. Used by the
+     * UART idle-line receiver: the DMA drains DR into a ring forever; the UART
+     * IDLE ISR (not the DMA TC) detects frame boundaries by reading NDTR, so the
+     * DMA must not raise TC/TE at all. Returns 0 on success. */
+    int (*start_circular)(dma *self, dma_stream_t *s);
     /* block until the transfer completes (or errors). Returns 0 when done. */
     int (*wait_done)(dma *self, dma_stream_t *s, uint32_t timeout_ms);
     /* non-blocking completion check (1 = done, 0 = still running). */

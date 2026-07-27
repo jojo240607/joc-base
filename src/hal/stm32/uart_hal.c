@@ -98,6 +98,46 @@ int uart_hal_rx_pending(uart_hal_handle_t *h)
 {
     return (h && (h->usart->SR & USART_SR_RXNE)) ? 1 : 0;
 }
+int uart_hal_ore_pending(uart_hal_handle_t *h)
+{
+    return (h && (h->usart->SR & USART_SR_ORE)) ? 1 : 0;
+}
+
+/* IDLE-line interrupt: fires after the bus is silent for >1 byte time, i.e. at
+ * the END of a variable-length frame. Used with a (circular) RX DMA so the ISR
+ * can compute how many bytes were received (buffer_size - NDTR) and re-arm. */
+void uart_hal_enable_idle_irq(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR1 |= USART_CR1_IDLEIE;
+}
+void uart_hal_disable_idle_irq(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR1 &= ~USART_CR1_IDLEIE;
+}
+int uart_hal_idle_pending(uart_hal_handle_t *h)
+{
+    return (h && (h->usart->SR & USART_SR_IDLE)) ? 1 : 0;
+}
+/* Clear the IDLE flag via the mandatory read-SR-then-read-DR sequence. Without
+ * this the flag stays set and the ISR re-fires forever. */
+void uart_hal_clear_idle(uart_hal_handle_t *h)
+{
+    if (!h) return;
+    (void)h->usart->SR;
+    (void)h->usart->DR;
+}
+
+/* Clear latched receive errors (Overrun / Framing / Noise). On STM32 an Overrun
+ * FREEZES the receiver until it is cleared (read SR then DR), so any path that
+ * leaves the RX line unattended (e.g. STREAM_MODE_DMA bulk TX, or a mode switch
+ * with DMAR/RXNE both off while bytes keep arriving) must clear it before
+ * re-arming reception, otherwise the next DMA/RX read silently starves. */
+void uart_hal_clear_errors(uart_hal_handle_t *h)
+{
+    if (!h) return;
+    (void)h->usart->SR;
+    (void)h->usart->DR;
+}
 void uart_hal_write_dr(uart_hal_handle_t *h, char c)
 {
     if (h) h->usart->DR = (uint8_t)c;

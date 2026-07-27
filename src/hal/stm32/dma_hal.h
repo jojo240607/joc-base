@@ -61,6 +61,14 @@ void dma_hal_stream_config(dma_hal_stream_t *s, dma_hal_dir_t dir, uint32_t chan
 void dma_hal_stream_enable_irq(dma_hal_stream_t *s, int tc, int te);
 void dma_hal_stream_disable_irq(dma_hal_stream_t *s);
 
+/* Enable / disable CIRCULAR mode (CIRC bit). In circular mode the stream's
+ * NDTR wraps to its initial value when it underflows, so the transfer runs
+ * FOREVER without a Transfer-Complete — this is exactly what a UART idle-line
+ * receiver needs (keep draining DR into a ring; the IDLE ISR reads NDTR to see
+ * how much arrived). CIRC may only be written while EN=0, so this clears EN and
+ * waits first. */
+void dma_hal_stream_set_circular(dma_hal_stream_t *s, int en);
+
 /* Arm the stream (set EN=1). For M2M the transfer starts immediately. */
 void dma_hal_stream_start(dma_hal_stream_t *s);
 /* Disarm (clear EN=1). */

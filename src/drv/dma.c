@@ -22,6 +22,8 @@ static int dma_stream_config(dma *self, dma_stream_t *s, const void *periph,
                              void *mem, uint32_t count, dma_data_size_t size,
                              int periph_inc, int mem_inc, dma_prio_t prio);
 static int dma_stream_start(dma *self, dma_stream_t *s, void (*cb)(void *), void *ctx);
+static int dma_stream_stop(dma *self, dma_stream_t *s);
+static int dma_stream_start_circular(dma *self, dma_stream_t *s);
 static int dma_wait_done(dma *self, dma_stream_t *s, uint32_t timeout_ms);
 static int dma_poll_done(dma *self, dma_stream_t *s);
 static uint32_t dma_remaining(dma *self, dma_stream_t *s);
@@ -42,6 +44,8 @@ const struct dmaFun dma_fun = {
     .acquire     = dma_acquire,
     .config      = dma_stream_config,
     .start       = dma_stream_start,
+    .stop        = dma_stream_stop,
+    .start_circular = dma_stream_start_circular,
     .wait_done   = dma_wait_done,
     .poll_done   = dma_poll_done,
     .remaining   = dma_remaining,
@@ -203,6 +207,35 @@ static int dma_stream_start(dma *self, dma_stream_t *s, void (*cb)(void *), void
     /* enable TC + TE interrupts while EN=0, THEN arm the stream (CR writable
      * only when EN=0, so this order is required). */
     dma_hal_stream_enable_irq(self->hal[i], 1, 1);
+    dma_hal_stream_start(self->hal[i]);
+    return 0;
+}
+
+/* Pause the stream (EN=0, TC/TE IE off) WITHOUT releasing it to the pool.
+ * Differs from dma_stream_free, which also clears in_use. Here the owner keeps
+ * the reservation so it can re-arm the same stream later (e.g. the UART idle-
+ * line RX circular stream being halted before a bulk re-program). */
+static int dma_stream_stop(dma *self, dma_stream_t *s)
+{
+    if (!self || !s) return -1;
+    uint32_t i = (uint32_t)s->idx;
+    dma_hal_stream_stop(self->hal[i]);          /* EN=0 */
+    dma_hal_stream_disable_irq(self->hal[i]);   /* silence TC/TE IE */
+    return 0;
+}
+
+/* Circular arm for the UART idle-line receiver: set CIRC=1 and EN=1 with NO
+ * TC/TE interrupt (the DMA must run forever without raising TC; the UART IDLE
+ * ISR reads NDTR to learn how many bytes arrived). config() already left EN=0,
+ * so set_circular() (which also waits for EN=0) then arm() is safe. */
+static int dma_stream_start_circular(dma *self, dma_stream_t *s)
+{
+    if (!self || !s) return -1;
+    uint32_t i = (uint32_t)s->idx;
+    self->streams[i].cb     = NULL;
+    self->streams[i].cb_ctx = NULL;
+    dma_hal_stream_disable_irq(self->hal[i]);   /* silent: no TC/TE ISR */
+    dma_hal_stream_set_circular(self->hal[i], 1);
     dma_hal_stream_start(self->hal[i]);
     return 0;
 }

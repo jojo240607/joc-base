@@ -311,63 +311,47 @@ static void cmd_ioxfer(app_ctx_t *c, const char *line)
 }
 
 /* ---- UART DMA 验证命令：把控制台 UART 切到 DMA 模式，先用 DMA TX 发出一个
- * 特征串（主机若收到即证明 DMAT/路由/TC 全对），再用 DMA RX 收 4 字节
- * （主机随后发送），随后切回 IRQ 模式。主机侧配合：发 "UARTDMA\r\n" 后约 0.1s
- * 再发 4 字节，设备会回显 "UARTDMA RX=..."。 */
+ * 特征串（主机若收到即证明 DMAT/路由/TC 全对），再做一个 DMA RX 收 4 字节。
+ *
+ * 关键在于：bulk RX 读会把 RX DMA 流配成“收满 4 字节才 TC”的阻塞传输，必须保证
+ * 主机发的 4 字节确实落在这条已 armed 的 RX DMA 上。所以板子在 armed 之前先打印
+ * "RX-READY"，主机看到后才发 4 字节——否则主机早先连发的字节会被交互控制台
+ * （IRQ/ring）在模式切换途中消费掉，等 bulk RX armed 时线上已经没有在途字节了。
+ * 主机配合：发 "UARTDMA\r\n"，读到 "RX-READY" 后立刻发 4 字节，板子回显
+ * "UARTDMA RX(4)=...."。最后切回默认的 DMA_IDLE。 */
 static void cmd_uartdma(app_ctx_t *c, const char *line)
 {
     (void)line;
     device *u = c->uart;
     if (!u) { usb_reply(c, "UARTDMA: no uart\r\n"); return; }
 
+    /* --- DMA TX 验证：DMA TX 成功 => DMAT/路由/TC 全对 --- */
     stream_xfer_mode_t m = STREAM_MODE_DMA;
     if (u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m) != 0) {
         usb_reply(c, "UARTDMA: DMA unavailable for this uart (no route)\r\n");
         return;
     }
-    /* TX via DMA: host receives these bytes iff USART1_TX->DMA2_Stream7 routing
-     * + DMAT + Transfer-Complete all work. We print progress in IRQ mode between
-     * the DMA ops so a hang is easy to localize on the host. */
     const char *marker = "UARTDMA_MARKER_0123456789ABCDEF\r\n";
-    u->vtable->write(u, marker, strlen(marker));   /* DMA TX #1 */
-    m = STREAM_MODE_IRQ;
-    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
-    u->vtable->write(u, "TX1-OK\r\n", 9);           /* IRQ print */
+    u->vtable->write(u, marker, strlen(marker));   /* DMA TX: host RX 即证明通路 */
 
-    /* RX via DMA: switch back to DMA, do a 2nd DMA TX ("RX-START") to see if
-     * re-arming the SAME stream hangs, then the RX read itself. */
-    m = STREAM_MODE_DMA;
-    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
-    u->vtable->write(u, "RX-START\r\n", 11);        /* DMA TX #2 (re-arm test) */
-    m = STREAM_MODE_IRQ;
-    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
-    u->vtable->write(u, "TX2-OK\r\n", 9);           /* IRQ print */
-
-    m = STREAM_MODE_DMA;
-    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
+    /* --- DMA RX 验证（marker 驱动）---
+     * 先打印 RX-READY（DMA TX，发出后 write 才返回），再 armed bulk RX 读。主机
+     * 看到 RX-READY 才发 4 字节，必落到已 armed 的 RX DMA 上（armed 在 RX-READY
+     * 发完之后，避免把自身 TX 环回进 RX）。bulk 读收满 4 字节即 TC。 */
+    u->vtable->write(u, "RX-READY\r\n", 10);       /* 通知主机：现在发 4 字节 */
     char rx[4];
-    int n = u->vtable->read(u, rx, sizeof(rx));     /* DMA RX read */
-    m = STREAM_MODE_IRQ;
-    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
+    int n = u->vtable->read(u, rx, sizeof(rx));     /* DMA RX 读（阻塞 <=2s） */
 
-    char out[96];
+    m = STREAM_MODE_DMA_IDLE;
+    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);  /* 恢复默认 DMA+IDLE */
+
+    char out[120];
     int k;
     if (n == 4)
         k = snprintf(out, sizeof(out), "UARTDMA RX(4)=%c%c%c%c\r\n",
                      rx[0], rx[1], rx[2], rx[3]);
-    else {
-        /* RX DMA did not complete — dump the HW state to localize the cause:
-         * SR.RXNE (bit5) tells us if bytes actually arrived at the USART;
-         * CR3.DMAR (bit6) tells us if the USART is gating onto the DMA;
-         * the stream NDTR tells us how many bytes the DMA moved. */
-        uart *uu = (uart *)u;
-        uint32_t sr  = uart_hal_get_sr(uu->hal);
-        uint32_t cr3 = uart_hal_get_cr3(uu->hal);
-        uint32_t ndtr = uu->dma_dev ? uu->dma_dev->fun->remaining(uu->dma_dev, uu->dma_rx) : 0;
-        k = snprintf(out, sizeof(out),
-                     "UARTDMA RX FAIL n=%d sr=0x%X cr3=0x%X DMAR=%d ndtr=%lu\r\n",
-                     n, (unsigned)sr, (unsigned)cr3, (int)((cr3 >> 6) & 1), (unsigned long)ndtr);
-    }
+    else
+        k = snprintf(out, sizeof(out), "UARTDMA RX FAIL n=%d\r\n", n);
     u->vtable->write(u, out, (size_t)k);
     usb_reply(c, n == 4 ? "UARTDMA OK (TX+RX via DMA)\r\n"
                         : "UARTDMA TX-OK RX-FAIL\r\n");
@@ -422,6 +406,16 @@ static void dispatch(app_ctx_t *c, const char *line)
     }
     const char *s = "ERR unknown\r\n";
     c->console->vtable->write(c->console, s, strlen(s));
+    /* debug: dump the offending line in hex so a misparsed command is visible */
+    char dbg[64];
+    int k = snprintf(dbg, sizeof(dbg), "[unk len=%d]", (int)strlen(line));
+    c->console->vtable->write(c->console, dbg, (size_t)k);
+    for (int i = 0; line[i]; i++) {
+        k = snprintf(dbg, sizeof(dbg), " %02X", (unsigned char)line[i]);
+        c->console->vtable->write(c->console, dbg, (size_t)k);
+    }
+    s = "\r\n";
+    c->console->vtable->write(c->console, s, 2);
 }
 
 void console_run(app_ctx_t *c)

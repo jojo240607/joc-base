@@ -36,7 +36,21 @@ void uart_hal_enable_tx_irq(uart_hal_handle_t *h);  /* set USART_CR1_TXEIE */
 void uart_hal_disable_tx_irq(uart_hal_handle_t *h); /* clear USART_CR1_TXEIE */
 int  uart_hal_tx_ready(uart_hal_handle_t *h);       /* (SR & USART_SR_TXE) != 0 */
 int  uart_hal_rx_pending(uart_hal_handle_t *h);     /* (SR & USART_SR_RXNE) != 0 */
+int  uart_hal_ore_pending(uart_hal_handle_t *h);     /* (SR & USART_SR_ORE)  != 0 — Overrun FREEZES RX */
 void uart_hal_write_dr(uart_hal_handle_t *h, char c);/* write DR (triggers TX) */
+
+/* --- IDLE-line interrupt (variable-length DMA reception) ---
+ * IDLE is asserted after the bus has been silent for >1 byte time (no new
+ * start bit). It is the standard STM32 hook for detecting the END of a
+ * variable-length frame: arm a (circular) DMA to keep filling a buffer, enable
+ * IDLEIE, and in the ISR read NDTR to learn how many bytes arrived, copy that
+ * frame out, and re-arm. NOTE: the flag is cleared ONLY by the read-SR-then-
+ * read-DR sequence (like ORE) — uart_hal_clear_idle() does exactly that. */
+void uart_hal_enable_idle_irq(uart_hal_handle_t *h);   /* set USART_CR1_IDLEIE */
+void uart_hal_disable_idle_irq(uart_hal_handle_t *h);  /* clear USART_CR1_IDLEIE */
+int  uart_hal_idle_pending(uart_hal_handle_t *h);      /* (SR & USART_SR_IDLE) != 0 */
+void uart_hal_clear_idle(uart_hal_handle_t *h);        /* read SR then DR (clears IDLE) */
+void uart_hal_clear_errors(uart_hal_handle_t *h);      /* read SR then DR (clears ORE/FE/NE) */
 uint32_t uart_hal_get_brr(uart_hal_handle_t *h);   /* read back BRR for self-test */
 uint32_t uart_hal_get_cr1(uart_hal_handle_t *h);   /* read back CR1 for self-test */
 

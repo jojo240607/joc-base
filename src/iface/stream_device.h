@@ -40,6 +40,13 @@ typedef enum {
     STREAM_MODE_POLL = 0,   /* CPU spins until done */
     STREAM_MODE_IRQ,        /* interrupt-driven, blocking API */
     STREAM_MODE_DMA,        /* DMA engine, blocking API (driver may return -ENOSYS) */
+    /* DMA + IDLE-line: a CIRCULAR RX DMA keeps draining DR into a ring; the
+     * USART IDLE interrupt (bus idle >1 byte-time) marks the END of a
+     * variable-length frame. The IDLE ISR copies the received chunk into the
+     * device RX ring so read()/getc() stay non-blocking and frame-length
+     * agnostic. TX still uses the IRQ state machine. This is the recommended
+     * default for a UART console: zero per-byte RX ISR overhead. */
+    STREAM_MODE_DMA_IDLE,
 } stream_xfer_mode_t;
 
 /* ioctl commands understood by EVERY stream device (passed via device_ioctl) */

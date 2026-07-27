@@ -102,6 +102,17 @@ void dma_hal_stream_disable_irq(dma_hal_stream_t *s)
     r->CR &= ~(DMA_SxCR_TCIE | DMA_SxCR_TEIE);
 }
 
+void dma_hal_stream_set_circular(dma_hal_stream_t *s, int en)
+{
+    DMA_Stream_TypeDef *r = stream_reg(s->dma, s->idx);
+    /* CIRC may only be written while EN=0: clear EN and wait for the hardware to
+     * acknowledge before modifying it. */
+    r->CR &= ~DMA_SxCR_EN;
+    while (r->CR & DMA_SxCR_EN) { }
+    if (en) r->CR |= DMA_SxCR_CIRC;
+    else    r->CR &= ~DMA_SxCR_CIRC;
+}
+
 void dma_hal_stream_start(dma_hal_stream_t *s)
 {
     DMA_Stream_TypeDef *r = stream_reg(s->dma, s->idx);
@@ -145,9 +156,19 @@ uint32_t dma_hal_stream_remaining(dma_hal_stream_t *s)
 
 irq_id_t dma_hal_stream_irq_id(dma_hal_stream_t *s)
 {
-    /* DMA1 streams -> IRQn 11..18 ; DMA2 streams -> IRQn 56..63. */
-    int base = (s->ctlr == 1) ? 11 : 56;
-    return (irq_id_t)(base + (int)s->idx);
+    /* STM32F4 DMA IRQn layout is NON-contiguous: there are gaps between the
+     * low streams and the high ones (Ethernet/CAN2/OTG-FS sit between
+     * DMA2_Stream4 and Stream5; many peripherals sit between DMA1_Stream6 and
+     * Stream7). A naive `base + idx` is WRONG for the high streams and makes the
+     * completion ISR arm the wrong NVIC line — the real DMA stream interrupt
+     * stays disabled, so wait_done() times out even though the transfer data is
+     * correct. Use an explicit per-stream table (verified against the vector
+     * table in startup_stm32f407xx.s):
+     *   DMA1: 11,12,13,14,15,16,17,47
+     *   DMA2: 56,57,58,59,60,68,69,70 */
+    static const uint8_t dma1_irq[8] = { 11, 12, 13, 14, 15, 16, 17, 47 };
+    static const uint8_t dma2_irq[8] = { 56, 57, 58, 59, 60, 68, 69, 70 };
+    return (irq_id_t)((s->ctlr == 1) ? dma1_irq[s->idx] : dma2_irq[s->idx]);
 }
 
 int dma_hal_is_m2m_capable(dma_hal_stream_t *s)
