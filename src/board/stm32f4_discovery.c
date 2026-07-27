@@ -20,6 +20,8 @@
 #include "irq.h"                /* platform-independent interrupt API */
 
 #include "drv/clock.h"
+#include "clock_hal.h"   /* clock_hal_configure()：board_tick_init 需先把时钟带到 168M */
+
 #include "drv/uart.h"
 #include "drv/gpio_pin.h"
 #include "drv/adc.h"
@@ -63,9 +65,20 @@ static void board_tick_cb(void *ctx, device_event_type_t ev, void *data)
 
 void board_tick_init(void)
 {
+    /* 先把核心时钟带到 PLL@168MHz，使 SystemCoreClock 此刻即为真实值、CPU
+     * 也确实跑在 168 MHz 上。否则 system_early_init 在 board_tick_init 之后才
+     * 由 app_main_task 打开 clk 设备（clock_hal_configure），这里读到的
+     * SystemCoreClock 仍是 .data 初值 16M，而 CPU 实际还跑在 8M(HSE)，导致
+     * SysTick 重载用错基准、节拍率严重失准（RTOS 的 delay/timeout 全错）。
+     * clock_hal_configure() 幂等，app_main_task 再次 open 无副作用。 */
+    clock_hal_configure();
+
     systick_config_t c;
     c.name    = "systick";
-    c.cpu_hz  = SystemCoreClock;   /* board knows the real core clock */
+    /* 用 HAL 提供的设计常量（= CLOCK_SYSCLK_HZ = 168 MHz），不再依赖可变全局
+     * SystemCoreClock（其 .data 初值为 16M，需被 clock_hal_configure 改写才对）。
+     * 板子“知道”的真实核心时钟就是 168M，直接取显式值，不随全局改动而失准。 */
+    c.cpu_hz  = clock_hal_sysclk_hz();
     c.tick_hz = 1000;              /* 1 ms tick */
     device *d = systick_create(&c);
     if (d)

@@ -48,7 +48,7 @@
 #include "stm32f4xx.h"
 
 #if !defined  (HSE_VALUE) 
-  #define HSE_VALUE    ((uint32_t)25000000) /*!< Default value of the External oscillator in Hz */
+  #define HSE_VALUE    ((uint32_t)8000000)  /*!< STM32F4-Discovery 板载外部晶振 8 MHz */
 #endif /* HSE_VALUE */
 
 #if !defined  (HSI_VALUE)
@@ -169,11 +169,25 @@ void SystemInit(void)
   /* FPU settings ------------------------------------------------------------*/
   #if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
     SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));  /* set CP10 and CP11 Full Access */
+    /* 浮点状态自动惰性保存（FPCCR.ASPEN/LSPEN）复位默认即为 1，本 CMSIS 版本
+     * SCB_Type 未暴露 FPCCR 成员；此处依赖复位值：仅当任务实际用过 FPU 时
+     * 才在异常入口压 s16-s31。 */
   #endif
 
 #if defined (DATA_IN_ExtSRAM) || defined (DATA_IN_ExtSDRAM)
   SystemInit_ExtMemCtl(); 
 #endif /* DATA_IN_ExtSRAM || DATA_IN_ExtSDRAM */
+
+  /* 默认时钟源：外部 8 MHz 晶振 (HSE)。
+   * 复位后 SYSCLK 默认 HSI 16 MHz，足够跑完 .data/.bss 拷贝；这里切到 HSE，
+   * 使 SystemInit 之后（含 pre-main 路径）一律以外部晶振为时钟源。
+   * 8 MHz 下 Flash 0 WS 即可，无需调整 LATENCY。
+   * 注：SystemInit 在 .data 拷贝之前执行，故不在此写 SystemCoreClock（会被后续拷贝覆盖），
+   * 真实频率由 main() 的 clock_hal_configure() 切到 PLL@168MHz 时设定。 */
+  RCC->CR |= RCC_CR_HSEON;
+  while ((RCC->CR & RCC_CR_HSERDY) == 0) { }
+  RCC->CFGR = (RCC->CFGR & (uint32_t)~RCC_CFGR_SW) | RCC_CFGR_SW_HSE;
+  while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSE) { }
 
   /* Configure the Vector Table location -------------------------------------*/
 #if defined(USER_VECT_TAB_ADDRESS)
@@ -181,6 +195,11 @@ void SystemInit(void)
 #else
   SCB->VTOR = FLASH_BASE; /* Default Vector Table Location at the base address of Internal Flash */
 #endif /* USER_VECT_TAB_ADDRESS */
+
+  /* NVIC 优先级分组：PRIGROUP=3 → 4 位全抢占、0 子优先级（FreeRTOS 式，
+   * 对应 CMSIS 的 NVIC_PRIORITYGROUP_4）。在 main() 之前设定，避免启动早期
+   * 出现非预期的中断嵌套。 */
+  NVIC_SetPriorityGrouping(0x3UL);
 }
 
 /**

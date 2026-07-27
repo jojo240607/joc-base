@@ -28,8 +28,9 @@ void clock_hal_configure(void)
     /* Bus prescalers: AHB /1, APB1 /4 (42 MHz), APB2 /2 (84 MHz) */
     RCC->CFGR |= RCC_CFGR_HPRE_DIV1 | RCC_CFGR_PPRE1_DIV4 | RCC_CFGR_PPRE2_DIV2;
 
-    /* Select PLL as system clock */
-    RCC->CFGR |= RCC_CFGR_SW_PLL;
+    /* Select PLL as system clock. 先清 SW 位再置位：无论 SystemInit 已将 SYSCLK
+     * 切到 HSI 还是 HSE，都能正确切到 PLL（避免 |= 在 HSE 基础上得到保留值 0x3）。 */
+    RCC->CFGR = (RCC->CFGR & (uint32_t)~RCC_CFGR_SW) | RCC_CFGR_SW_PLL;
     while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL) { }
 
     SystemCoreClock = CLOCK_SYSCLK_HZ;
