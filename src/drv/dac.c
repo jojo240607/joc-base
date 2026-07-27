@@ -12,6 +12,8 @@ static int dac_dev_open(device *self);
 static int dac_dev_close(device *self);
 static int dac_dma_acquire(dac *p);
 static void dac_dma_release(dac *p);
+static int dac_setup_engine(dac *p, stream_xfer_mode_t engine);
+static void dac_free_engine(dac *p);
 static int dac_dma_write(dac *p, const void *buf, size_t len);
 static int dac_dev_read(device *self, void *buf, size_t len);
 static int dac_dev_write(device *self, const void *buf, size_t len);
@@ -56,18 +58,6 @@ device *dac_create(const void *config)
     p->dma_req = c->dma_req;              /* cached for re-acquire on reopen */
     p->dma_dev = NULL; p->dma_str = NULL;
     p->trig_tim = c->trig_tim;            /* cached trigger timer (TIM6) for DAC+DMA */
-    p->trig_hal = NULL; p->has_trigger = 0;
-    if (p->trig_tim) {
-        p->trig_hal = tim_hal_create(p->trig_tim);
-        if (p->trig_hal) {
-            tim_hal_enable_clock(p->trig_hal);
-            /* ~1 MHz trigger: plenty fast for a short burst, and any rate works
-             * since the DAC DMA blocks on Transfer-Complete. Route Update->TRGO. */
-            tim_hal_config(p->trig_hal, 84000000U, 1000000U);
-            tim_hal_master_trgo_update(p->trig_hal);
-            p->has_trigger = 1;
-        }
-    }
     /* Resolve the output signal name up front. */
     if (c->out_signal)
         pinmux_hal_resolve(c->out_signal, &p->port, &p->pin, &p->af);
@@ -108,12 +98,18 @@ static int dac_dev_open(device *self)
     dac_hal_enable_clock(p->hal);
     dac_hal_enable_channel(p->hal, p->channel);
     dac_dma_acquire(p);    /* reserve the hard-wired DMA stream (if any) */
+    /* (Re)build the per-engine state for the chosen engine (default POLL) and
+     * select the trigger (DMA only). If DMA is unavailable, fall back to POLL so
+     * the dac stays usable. */
+    if (dac_setup_engine(p, p->parent.mode) != 0)
+        dac_setup_engine(p, STREAM_MODE_POLL);
     return 0;
 }
 
 static int dac_dev_close(device *self)
 {
     dac *p = (dac *)self;
+    dac_free_engine(p);    /* free per-engine state (idempotent; destroys trig) */
     dac_dma_release(p);    /* release the reserved DMA stream */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) pm->fun->release_owner(pm, p->parent.parent.name);
@@ -128,10 +124,10 @@ static int dac_dev_close(device *self)
 static int dac_dma_acquire(dac *p)
 {
     p->dma_dev = NULL; p->dma_str = NULL;
-    /* DAC+DMA needs BOTH a routed DMA stream AND a trigger timer (static mode
-     * never raises a DMA request). Without the timer, refuse so SET_MODE DMA
-     * is cleanly rejected and the BIST skips rather than hangs. */
-    if (p->dma_req == DMA_REQ_NONE || !p->has_trigger) return 0;
+    /* Reserve the hard-wired DMA stream (DAC1->DMA1_Stream5). The trigger timer
+     * requirement is enforced later, in dac_setup_engine(DMA) — DAC+DMA needs a
+     * timer TRGO because static mode never raises a DMA request. */
+    if (p->dma_req == DMA_REQ_NONE) return 0;
     dma_route_t rt = dma_hal_route(p->dma_req);
     if (!rt.name) return 0;
     dma *dm = (dma *)device_manager_get(rt.name);
@@ -141,6 +137,67 @@ static int dac_dma_acquire(dac *p)
     else log_printf(app_log(), LOG_DEBUG, "dac", "%s: DMA stream busy\n",
                    p->parent.parent.name);
     return (p->dma_str) ? 0 : -1;
+}
+
+/* Lazily create + configure the DAC trigger timer (TIM6) for DAC+DMA. Returns 0
+ * if a trigger is available (handle created/kept in e->trig_hal), -1 if the
+ * board supplied no trigger timer (DAC+DMA is then impossible). */
+static int dac_ensure_trigger(dac *p, dac_dma_t *e)
+{
+    if (!p->trig_tim) { e->has_trigger = 0; return -1; }
+    if (!e->trig_hal) {
+        e->trig_hal = tim_hal_create(p->trig_tim);
+        if (!e->trig_hal) { e->has_trigger = 0; return -1; }
+        tim_hal_enable_clock(e->trig_hal);
+        /* ~1 MHz trigger: plenty fast for a short burst, and any rate works
+         * since the DAC DMA blocks on Transfer-Complete. Route Update->TRGO. */
+        tim_hal_config(e->trig_hal, 84000000U, 1000000U);
+        tim_hal_master_trgo_update(e->trig_hal);
+    }
+    e->has_trigger = 1;
+    return 0;
+}
+
+/* --- Per-engine state management (lazy allocation, mirrors uart_setup_engine) ---
+ * The engine is POLL/DMA; only the DMA engine needs state (dac_dma_t: the sample
+ * bounce + the trigger timer). Reached via a single `p->eng` cast. Returns 0 on
+ * success, -1 if DMA is unavailable (leaving p untouched). */
+static void dac_free_engine(dac *p)
+{
+    if (!p->eng) return;
+    dac_dma_t *e = (dac_dma_t *)p->eng;
+    if (e->trig_hal) { tim_hal_destroy(e->trig_hal); e->trig_hal = NULL; }
+    free(p->eng);
+    p->eng = NULL;
+}
+
+static int dac_setup_engine(dac *p, stream_xfer_mode_t engine)
+{
+    if (engine != STREAM_MODE_POLL && engine != STREAM_MODE_DMA)
+        return -1;
+    /* DMA needs the hard-wired stream reserved at open(). */
+    if (engine == STREAM_MODE_DMA && !p->dma_str) return -1;
+
+    dac_free_engine(p);   /* teardown (after validation) */
+
+    if (engine == STREAM_MODE_DMA) {
+        dac_dma_t *e = (dac_dma_t *)malloc(sizeof(dac_dma_t));
+        if (!e) return -1;
+        memset(e, 0, sizeof(*e));
+        p->eng = e;
+        /* DAC+DMA REQUIRES a trigger timer (static mode never raises a DMA
+         * request). If none is available, reject the mode cleanly. */
+        if (dac_ensure_trigger(p, e) != 0) {
+            dac_free_engine(p);
+            return -1;
+        }
+        dac_hal_enable_trigger(p->hal, p->channel, 0 /*TIM6 TRGO*/);
+    } else { /* POLL: static mode, no engine state */
+        p->eng = NULL;
+        dac_hal_disable_trigger(p->hal, p->channel);
+    }
+    p->parent.mode = engine;
+    return 0;
 }
 
 /* Release the reserved DMA stream (called at close). */
@@ -159,11 +216,12 @@ static void dac_dma_release(dac *p)
  * into DOR, which the BIST reads back to prove the path. */
 static int dac_dma_write(dac *p, const void *buf, size_t len)
 {
-    if (!p->dma_dev || !p->dma_str || !p->has_trigger) return -1;
+    dac_dma_t *e = (dac_dma_t *)p->eng;
+    if (!e || !p->dma_dev || !p->dma_str || !e->trig_hal) return -1;
     uint32_t nsamp = (uint32_t)(len / sizeof(uint16_t));
     if (nsamp == 0) return -1;
     const uint16_t *src = (const uint16_t *)buf;
-    uint16_t *tmp = (nsamp <= DAC_DMA_BOUNCE) ? p->dma_bounce
+    uint16_t *tmp = (nsamp <= DAC_DMA_BOUNCE) ? e->dma_bounce
                                               : (uint16_t *)malloc(nsamp * sizeof(uint16_t));
     if (!tmp) return -1;
     for (uint32_t i = 0; i < nsamp; i++) tmp[i] = src[i] & 0x0FFFU;
@@ -172,9 +230,9 @@ static int dac_dma_write(dac *p, const void *buf, size_t len)
                             DMA_DATA_16, 0 /*periph_inc*/, 1 /*mem_inc*/, DMA_PRIO_MED);
     p->dma_dev->fun->start(p->dma_dev, p->dma_str, NULL, NULL);  /* arm stream (EN=1) */
     dac_hal_enable_dma(p->hal, p->channel);    /* DAC now raises DMA requests */
-    tim_hal_start(p->trig_hal);                /* timer TRGO clocks DHR->DOR + DMA req */
+    tim_hal_start(e->trig_hal);                /* timer TRGO clocks DHR->DOR + DMA req */
     int rc = p->dma_dev->fun->wait_done(p->dma_dev, p->dma_str, 2000);
-    tim_hal_stop(p->trig_hal);                 /* freeze the trigger source */
+    tim_hal_stop(e->trig_hal);                 /* freeze the trigger source */
     /* Flush the final held sample. In trigger mode the last DMA write sits in
      * DHR awaiting one more trigger edge; switching back to static mode (TENx=0)
      * makes the held value auto-transfer to DOR, and we re-write it to be
@@ -182,7 +240,7 @@ static int dac_dma_write(dac *p, const void *buf, size_t len)
     dac_hal_disable_trigger(p->hal, p->channel);
     dac_hal_write(p->hal, p->channel, tmp[nsamp - 1] & 0x0FFFU);
     dac_hal_disable_dma(p->hal, p->channel);
-    if (tmp != p->dma_bounce) free(tmp);
+    if (tmp != e->dma_bounce) free(tmp);
     return rc == 0 ? (int)(nsamp * sizeof(uint16_t)) : -1;
 }
 
@@ -233,19 +291,10 @@ static int dac_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m != STREAM_MODE_POLL && m != STREAM_MODE_DMA) return -1;
-        if (m == STREAM_MODE_DMA && !p->dma_str) return -1;   /* no DMA engine here */
-        p->parent.mode = m;
-        if (m == STREAM_MODE_DMA) {
-            /* Trigger mode is MANDATORY for DAC+DMA: static mode (TENx=0) never
-             * raises a DMA request, so the burst would starve. The timer TRGO
-             * (TIM6) clocks each DHR->DOR move + DMA request. */
-            if (p->has_trigger)
-                dac_hal_enable_trigger(p->hal, p->channel, 0 /*TIM6 TRGO*/);
-        } else {
-            dac_hal_disable_trigger(p->hal, p->channel);   /* back to static (poll) */
-        }
-        return 0;
+        /* (re)build per-engine state for the new engine (frees the old, allocates
+         * the new, enables/ disables the trigger). Returns -1 (leaving the dac in
+         * its previous configuration) if the engine is unavailable. */
+        return dac_setup_engine(p, m);
     }
     case STREAM_IOCTL_GET_MODE: {
         if (!arg) return -1;
