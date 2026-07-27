@@ -152,15 +152,39 @@ static int i2s_dma_write(i2s *p, const uint16_t *s, size_t len_bytes)
     if (len_bytes < 2) return 0;
     size_t n = len_bytes / 2;
     if (n > I2S_DMA_BOUNCE) n = I2S_DMA_BOUNCE;   /* bounce cap */
-    void *dr = i2s_hal_get_dr_addr(p->hal);
     for (size_t i = 0; i < n; i++) p->dma_bounce[i] = s[i];
-    p->dma_dev->fun->config(p->dma_dev, p->dma_tx, dr, p->dma_bounce, (uint32_t)n,
+
+    /* I2S master-TX DMA quirk (RM0090 §28.4.4 / STM32F4 errata): in I2S mode the
+     * peripheral does NOT raise the TXE DMA request until the first data word is
+     * loaded into the Tx buffer. If TXDMAEN is armed while DR is empty, the I2S
+     * clock never starts feeding the DMA, the transfer stalls and wait_done()
+     * times out (-1). Fix: prime DR with sample[0] by hand, then let the DMA
+     * stream the remaining (n-1) words (M0AR past the primed slot, count n-1).
+     * The primed word is already shifting out, so the DMA simply follows on. */
+    if (n == 1) {                                 /* nothing left for the DMA */
+        if (i2s_hal_write_sample(p->hal, s[0]) != 0) return -1;
+        return 2;
+    }
+
+    void *dr = i2s_hal_get_dr_addr(p->hal);
+    if (i2s_hal_write_sample(p->hal, s[0]) != 0) return -1;   /* prime: start I2S clock */
+
+    p->dma_dev->fun->config(p->dma_dev, p->dma_tx, dr, &p->dma_bounce[1],
+                            (uint32_t)(n - 1),
                             DMA_DATA_16, 0, 1, DMA_PRIO_MED);
     i2s_hal_enable_tx_dma(p->hal);
     p->dma_dev->fun->start(p->dma_dev, p->dma_tx, NULL, NULL);
     int rc = p->dma_dev->fun->wait_done(p->dma_dev, p->dma_tx, 2000);
     i2s_hal_disable_tx_dma(p->hal);
-    return rc == 0 ? (int)(n * 2) : -1;
+
+    if (rc != 0) {
+        uint32_t rem = p->dma_dev->fun->remaining(p->dma_dev, p->dma_tx);
+        log_printf(app_log(), LOG_DEBUG, "i2s",
+                   "[i2s] dma_tx FAIL: rc=%d remaining=%lu/%lu\n",
+                   rc, (unsigned long)rem, (unsigned long)(n - 1));
+        return -1;
+    }
+    return (int)(n * 2);
 }
 
 static int i2s_dev_open(device *self)

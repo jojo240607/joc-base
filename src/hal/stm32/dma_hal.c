@@ -196,13 +196,18 @@ dma_route_t dma_hal_route(dma_req_id_t req)
     case DMA_REQ_UART4_RX:  return (dma_route_t){ "dma1", 2, 4 };
     case DMA_REQ_UART5_TX:  return (dma_route_t){ "dma1", 7, 4 };
     case DMA_REQ_UART5_RX:  return (dma_route_t){ "dma1", 0, 4 };
-    /* ---- SPI / I2S (I2S2=SPI2, I2S3=SPI3) (DMA channel 3) ---- */
+    /* ---- SPI / I2S (I2S2=SPI2, I2S3=SPI3) ----
+     * Channel is the DMA request multiplexer select (CHSEL). On STM32F4 the
+     * SPI/I2S request lines are wired to CHANNEL 0 (NOT 3 — that is SPI1's
+     * DMA2 channel, a common copy-paste error). Streams are per RM0090
+     * Table 30/31: SPI2=I2S2 -> TX DMA1_Stream4 / RX DMA1_Stream3;
+     * SPI3=I2S3 -> TX DMA1_Stream5 / RX DMA1_Stream2. */
     case DMA_REQ_SPI1_TX:   return (dma_route_t){ "dma2", 3, 3 };
     case DMA_REQ_SPI1_RX:   return (dma_route_t){ "dma2", 2, 3 };
-    case DMA_REQ_SPI2_TX:   return (dma_route_t){ "dma1", 4, 3 };   /* I2S2 TX */
-    case DMA_REQ_SPI2_RX:   return (dma_route_t){ "dma1", 3, 3 };   /* I2S2 RX */
-    case DMA_REQ_SPI3_TX:   return (dma_route_t){ "dma1", 5, 3 };   /* I2S3 TX */
-    case DMA_REQ_SPI3_RX:   return (dma_route_t){ "dma1", 2, 3 };   /* I2S3 RX */
+    case DMA_REQ_SPI2_TX:   return (dma_route_t){ "dma1", 4, 0 };   /* I2S2 TX */
+    case DMA_REQ_SPI2_RX:   return (dma_route_t){ "dma1", 3, 0 };   /* I2S2 RX */
+    case DMA_REQ_SPI3_TX:   return (dma_route_t){ "dma1", 5, 0 };   /* I2S3 TX */
+    case DMA_REQ_SPI3_RX:   return (dma_route_t){ "dma1", 2, 0 };   /* I2S3 RX */
     /* ---- ADC (DMA channel 0 on DMA2) ---- */
     case DMA_REQ_ADC1:      return (dma_route_t){ "dma2", 0, 0 };
     case DMA_REQ_ADC2:      return (dma_route_t){ "dma2", 2, 1 };
