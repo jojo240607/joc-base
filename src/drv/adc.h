@@ -14,6 +14,25 @@
  * Sized for a comfortable burst; larger reads fall back to a malloc. */
 #define ADC_DMA_BOUNCE 64
 
+/* Per-engine state — heap-allocated on demand in open()/SET_MODE and freed in
+ * close(). Only the ACTIVE engine's variant exists at any time, so the RAM it
+ * costs is paid only when that engine is actually used. This replaces the old
+ * static layout where EVERY adc paid for an eoc_sem + last_raw + 64-word DMA
+ * bounce up-front even when it ran POLL — a POLL adc now costs ~0 B of engine
+ * state instead of ~136 B.
+ *
+ * The engine axis is POLL/IRQ/DMA; the active variant is keyed by parent.mode
+ * and reached through a single `a->eng` cast (adc_irq_t for IRQ, adc_dma_t for
+ * DMA). */
+typedef struct {
+    volatile uint32_t last_raw;   /* last conversion result (written by EOC ISR) */
+    osal_sem_t eoc_sem;           /* signaled by the EOC ISR (IRQ-mode read) */
+} adc_irq_t;
+
+typedef struct {
+    uint16_t dma_bounce[ADC_DMA_BOUNCE];  /* main-SRAM sample scratch (DMA-only) */
+} adc_dma_t;
+
 /* device-level control commands for the ADC driver (passed to device_ioctl) */
 #define ADC_IOCTL_SET_CHANNEL  0x01   /* arg: const uint32_t* channel */
 #define ADC_IOCTL_GET_CHANNEL  0x02   /* arg: uint32_t* channel */
@@ -55,15 +74,20 @@ struct _adc {
     volatile uint32_t last_raw;  /* last conversion result (written by EOC ISR) */
     osal_sem_t eoc_sem;          /* signaled by the EOC ISR (IRQ-mode read) */
     irq_id_t  eoc_irq;           /* cached ADC IRQ id (from adc_hal_irq_id) */
-    /* DMA engine (STREAM_MODE_DMA). The ADC is hard-wired to one specific DMA
-     * stream (ADC1->DMA2_Stream0); resolved once at open() and kept reserved.
-     * The bounce buffer lives in main SRAM (malloc'd adc struct) — DMA cannot
-     * touch CCM, so it is NOT safe to DMA straight into a caller buffer that may
-     * live in CCM (e.g. a stack array). */
+
+    /* DMA engine handles (valid only when engine == STREAM_MODE_DMA and the
+     * stream was successfully acquired at open). Kept as always-present small
+     * pointers so a burst can arm a transfer without re-resolving the route. The
+     * large sample bounce buffer lives in the per-engine adc_dma_t instead. The
+     * ADC is hard-wired to one specific DMA stream (ADC1->DMA2_Stream0). */
     dma_req_id_t  dma_req;        /* cached from config (for re-acquire on reopen) */
     dma          *dma_dev;        /* resolved dma controller (NULL if no route) */
     dma_stream_t *dma_str;        /* reserved stream for this ADC (P2M) */
-    uint16_t      dma_bounce[ADC_DMA_BOUNCE];  /* main-SRAM sample scratch */
+
+    /* per-engine state — heap-allocated in open() for the chosen engine, freed in
+     * close(). NULL for POLL (zero state); the active variant is selected by
+     * parent.mode (adc_irq_t for IRQ, adc_dma_t for DMA). */
+    void *eng;
 };
 
 /* The board fills adc_config_t (defined below) as DATA and passes it in; the

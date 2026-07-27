@@ -145,6 +145,60 @@ static void adc_dma_release(adc *a)
     a->dma_dev = NULL; a->dma_str = NULL;
 }
 
+/* --- Per-engine state management (lazy allocation, mirrors uart_setup_engine) ---
+ * The engine (POLL/IRQ/DMA) is the only axis; only the active engine's state is
+ * heap-allocated (adc_irq_t / adc_dma_t), reached via a single `a->eng` cast.
+ * Returns 0 on success, -1 if the engine is unavailable (leaving a untouched). */
+static void adc_free_engine(adc *a)
+{
+    if (!a->eng) return;
+    free(a->eng);
+    a->eng = NULL;
+}
+
+static int adc_setup_engine(adc *a, stream_xfer_mode_t engine)
+{
+    if (engine != STREAM_MODE_POLL && engine != STREAM_MODE_IRQ &&
+        engine != STREAM_MODE_DMA)
+        return -1;
+    /* DMA needs the hard-wired stream reserved at open(). */
+    if (engine == STREAM_MODE_DMA && !a->dma_str) return -1;
+    /* IRQ needs a valid EOC interrupt line. */
+    if (engine == STREAM_MODE_IRQ && a->eoc_irq < 0) return -1;
+
+    /* tear down current state (after validation, so a rejection leaves the adc
+     * in its previous, working configuration). */
+    adc_free_engine(a);
+
+    if (engine == STREAM_MODE_IRQ) {
+        adc_irq_t *e = (adc_irq_t *)malloc(sizeof(adc_irq_t));
+        if (!e) return -1;
+        memset(e, 0, sizeof(*e));
+        a->eng = e;
+    } else if (engine == STREAM_MODE_DMA) {
+        adc_dma_t *e = (adc_dma_t *)malloc(sizeof(adc_dma_t));
+        if (!e) return -1;
+        memset(e, 0, sizeof(*e));
+        a->eng = e;
+    } else { /* POLL: zero state */
+        a->eng = NULL;
+    }
+
+    a->parent.mode = engine;
+    /* Select the RX producer: IRQ arms the EOC ISR (data path); DMA + POLL
+     * silence it so the ISR can't steal a sample the DMA is moving. */
+    if (engine == STREAM_MODE_IRQ) {
+        irq_manager_set_priority(a->eoc_irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
+        adc_hal_enable_eoc_irq(a->hal);
+        irq_manager_enable(a->eoc_irq, adc_isr, a);
+    } else {
+        adc_hal_disable_eoc_irq(a->hal);
+        if (a->eoc_irq >= 0)
+            irq_manager_disable(a->eoc_irq, adc_isr, a);
+    }
+    return 0;
+}
+
 /* DMA burst read: program the reserved stream (P2M, PAR=DR, memory=bounce,
  * MINC), start a continuous conversion burst, block until Transfer-Complete,
  * then copy the 16-bit samples out to the caller's uint32_t buffer. The bounce
@@ -152,10 +206,11 @@ static void adc_dma_release(adc *a)
  * in CCM). */
 static int adc_dma_read(adc *a, void *buf, size_t len)
 {
-    if (!a->dma_dev || !a->dma_str) return -1;
+    adc_dma_t *e = (adc_dma_t *)a->eng;
+    if (!e || !a->dma_dev || !a->dma_str) return -1;
     uint32_t nsamp = (uint32_t)(len / sizeof(uint32_t));
     if (nsamp == 0) return -1;
-    uint16_t *tmp = (nsamp <= ADC_DMA_BOUNCE) ? a->dma_bounce
+    uint16_t *tmp = (nsamp <= ADC_DMA_BOUNCE) ? e->dma_bounce
                                                : (uint16_t *)malloc(nsamp * sizeof(uint16_t));
     if (!tmp) return -1;
     void *dr = adc_hal_get_dr_addr(a->hal);
@@ -169,7 +224,7 @@ static int adc_dma_read(adc *a, void *buf, size_t len)
         uint32_t *out = (uint32_t *)buf;
         for (uint32_t i = 0; i < nsamp; i++) out[i] = tmp[i];
     }
-    if (tmp != a->dma_bounce) free(tmp);
+    if (tmp != e->dma_bounce) free(tmp);
     return rc == 0 ? (int)(nsamp * sizeof(uint32_t)) : -1;
 }
 
@@ -177,14 +232,22 @@ static int adc_dma_read(adc *a, void *buf, size_t len)
 
 static int adc_dev_open(device *self)
 {
-    adc_hw_init((adc *)self);
-    adc_dma_acquire((adc *)self);    /* reserve the hard-wired DMA stream (if any) */
+    adc *a = (adc *)self;
+    adc_hw_init(a);
+    adc_dma_acquire(a);              /* reserve the hard-wired DMA stream (if any) */
+    /* (Re)build the per-engine state for the chosen engine (default IRQ) and
+     * select the EOC producer. If the configured engine is unavailable (e.g. IRQ
+     * with no EOC line), fall back to POLL so the adc stays usable. */
+    if (adc_setup_engine(a, a->parent.mode) != 0)
+        adc_setup_engine(a, STREAM_MODE_POLL);
     return 0;
 }
 
 static int adc_dev_close(device *self)
 {
-    adc_dma_release((adc *)self);    /* release the reserved DMA stream */
+    adc *a = (adc *)self;
+    adc_free_engine(a);              /* free per-engine state (idempotent) */
+    adc_dma_release(a);              /* release the reserved DMA stream */
     return 0;
 }
 
@@ -197,12 +260,14 @@ static int adc_stream_read(stream_device *self, void *buf, size_t len)
     if (len < sizeof(uint32_t)) return -1;
     if (a->parent.mode == STREAM_MODE_DMA) return adc_dma_read(a, buf, len);
     if (a->parent.mode == STREAM_MODE_IRQ) {
+        adc_irq_t *e = (adc_irq_t *)a->eng;
+        if (!e) return -1;
         /* interrupt-driven: trigger the conversion, block on the EOC semaphore,
          * then take the value the ISR stashed into last_raw. */
-        osal_sem_init(&a->eoc_sem, 0);
+        osal_sem_init(&e->eoc_sem, 0);
         adc_hal_start_convert(a->hal);
-        osal_sem_wait(&a->eoc_sem);
-        *(uint32_t *)buf = a->last_raw;
+        osal_sem_wait(&e->eoc_sem);
+        *(uint32_t *)buf = e->last_raw;
         return (int)sizeof(uint32_t);
     }
     *(uint32_t *)buf = adc_read(a);    /* polling single conversion */
@@ -215,8 +280,10 @@ static int adc_stream_read(stream_device *self, void *buf, size_t len)
 static void adc_isr(void *ctx)
 {
     adc *a = (adc *)ctx;
-    a->last_raw = adc_hal_read_dr(a->hal);
-    osal_sem_give(&a->eoc_sem);
+    adc_irq_t *e = (adc_irq_t *)a->eng;
+    if (!e) return;
+    e->last_raw = adc_hal_read_dr(a->hal);
+    osal_sem_give(&e->eoc_sem);
 }
 static int adc_stream_write(stream_device *self, const void *buf, size_t len)
     { (void)self; (void)buf; (void)len; return -1; }   /* ADC is read-only */
@@ -266,22 +333,10 @@ static int adc_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m == STREAM_MODE_DMA && !a->dma_str) return -1;   /* no DMA engine here */
-        a->parent.mode = m;
-        if (m == STREAM_MODE_DMA) {
-            /* DMA owns the data path; silence the EOC ISR so it cannot steal a
-             * sample the DMA is supposed to move (and re-fire forever on TC). */
-            adc_hal_disable_eoc_irq(a->hal);
-            irq_manager_disable(a->eoc_irq, adc_isr, a);
-        } else if (m == STREAM_MODE_IRQ) {
-            irq_manager_set_priority(a->eoc_irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
-            adc_hal_enable_eoc_irq(a->hal);
-            irq_manager_enable(a->eoc_irq, adc_isr, a);    /* arm NVIC (cb attached) */
-        } else { /* POLL */
-            adc_hal_disable_eoc_irq(a->hal);
-            irq_manager_disable(a->eoc_irq, adc_isr, a);   /* mask NVIC (cb stays) */
-        }
-        return 0;
+        /* (re)build per-engine state for the new engine (frees the old, allocates
+         * the new, selects the EOC producer). Returns -1 (leaving the adc in its
+         * previous configuration) if the engine is unavailable. */
+        return adc_setup_engine(a, m);
     }
     case STREAM_IOCTL_GET_MODE:
         if (!arg) return -1;
@@ -320,14 +375,9 @@ static void adc_hw_init(adc *self)
     adc_hal_config_channel(self->hal);
 
     /* Register the EOC ISR through the platform-independent irq framework. The
-     * callback is installed once at open(); the EOC interrupt itself is only
-     * enabled when the stream is in STREAM_MODE_IRQ (here, if it already is, or
-     * later via STREAM_IOCTL_SET_MODE). */
+     * callback is installed once at open(); the EOC interrupt itself is armed /
+     * disarmed by adc_setup_engine() according to the active engine (IRQ arms it,
+     * DMA/POLL silence it). */
     self->eoc_irq = adc_hal_irq_id(self->hal);
-    irq_manager_set_priority(self->eoc_irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
-    if (self->parent.mode == STREAM_MODE_IRQ)
-        adc_hal_enable_eoc_irq(self->hal);      /* peripheral EOC IE (gated by mode) */
     irq_manager_attach(self->eoc_irq, adc_isr, self);  /* register handler */
-    if (self->parent.mode == STREAM_MODE_IRQ)
-        irq_manager_enable(self->eoc_irq, adc_isr, self); /* arm NVIC in IRQ mode */
 }
