@@ -21,6 +21,8 @@ static int i2s_dev_close(device *self);
 static int i2s_dev_read(device *self, void *buf, size_t len);
 static int i2s_dev_write(device *self, const void *buf, size_t len);
 static int i2s_dev_ioctl(device *self, int cmd, void *arg);
+static int i2s_setup_engine(i2s *p, stream_xfer_mode_t engine);
+static void i2s_free_engine(i2s *p);
 
 /* stream-class vtable (read/write/flush) */
 static int i2s_stream_read(stream_device *self, void *buf, size_t len);
@@ -142,17 +144,50 @@ static void i2s_dma_release(i2s *p)
     p->dma_dev = NULL; p->dma_tx = NULL;
 }
 
+/* --- Per-engine state management (lazy allocation, mirrors uart_setup_engine) ---
+ * The engine is POLL/DMA; only the DMA engine needs state (i2s_dma_t: the 16-bit
+ * sample bounce in main SRAM). Reached via a single `p->eng` cast. Returns 0 on
+ * success, -1 if DMA is unavailable (leaving p untouched). */
+static void i2s_free_engine(i2s *p)
+{
+    if (!p->eng) return;
+    free(p->eng);
+    p->eng = NULL;
+}
+
+static int i2s_setup_engine(i2s *p, stream_xfer_mode_t engine)
+{
+    if (engine != STREAM_MODE_POLL && engine != STREAM_MODE_DMA)
+        return -1;
+    /* DMA needs the hard-wired TX stream reserved at open(). */
+    if (engine == STREAM_MODE_DMA && !p->dma_tx) return -1;
+
+    i2s_free_engine(p);   /* teardown (after validation) */
+
+    if (engine == STREAM_MODE_DMA) {
+        i2s_dma_t *e = (i2s_dma_t *)malloc(sizeof(i2s_dma_t));
+        if (!e) return -1;
+        memset(e, 0, sizeof(*e));
+        p->eng = e;
+    } else { /* POLL: zero state */
+        p->eng = NULL;
+    }
+    p->parent.mode = engine;
+    return 0;
+}
+
 /* DMA transmit: copy the 16-bit samples into the main-SRAM bounce (DMA cannot
  * touch CCM), program the reserved TX stream (M2P, PAR=DR, 16-bit, MINC), gate
  * the I2S onto the DMA (TXDMAEN), arm it and block until Transfer-Complete.
  * Returns the number of bytes written. */
 static int i2s_dma_write(i2s *p, const uint16_t *s, size_t len_bytes)
 {
-    if (!p->dma_dev || !p->dma_tx) return -1;
+    i2s_dma_t *e = (i2s_dma_t *)p->eng;
+    if (!e || !p->dma_dev || !p->dma_tx) return -1;
     if (len_bytes < 2) return 0;
     size_t n = len_bytes / 2;
     if (n > I2S_DMA_BOUNCE) n = I2S_DMA_BOUNCE;   /* bounce cap */
-    for (size_t i = 0; i < n; i++) p->dma_bounce[i] = s[i];
+    for (size_t i = 0; i < n; i++) e->dma_bounce[i] = s[i];
 
     /* I2S master-TX DMA quirk (RM0090 §28.4.4 / STM32F4 errata): in I2S mode the
      * peripheral does NOT raise the TXE DMA request until the first data word is
@@ -169,7 +204,7 @@ static int i2s_dma_write(i2s *p, const uint16_t *s, size_t len_bytes)
     void *dr = i2s_hal_get_dr_addr(p->hal);
     if (i2s_hal_write_sample(p->hal, s[0]) != 0) return -1;   /* prime: start I2S clock */
 
-    p->dma_dev->fun->config(p->dma_dev, p->dma_tx, dr, &p->dma_bounce[1],
+    p->dma_dev->fun->config(p->dma_dev, p->dma_tx, dr, &e->dma_bounce[1],
                             (uint32_t)(n - 1),
                             DMA_DATA_16, 0, 1, DMA_PRIO_MED);
     i2s_hal_enable_tx_dma(p->hal);
@@ -233,12 +268,17 @@ static int i2s_dev_open(device *self)
                    i2s_clk, p->master, p->tx);
     i2s_hal_enable(p->hal, 1);
     i2s_dma_acquire(p);          /* reserve the hard-wired TX stream (if configured) */
+    /* (Re)build the per-engine state for the chosen engine (default POLL). If DMA
+     * is unavailable, fall back to POLL so the I2S stays usable. */
+    if (i2s_setup_engine(p, p->parent.mode) != 0)
+        i2s_setup_engine(p, STREAM_MODE_POLL);
     return 0;
 }
 
 static int i2s_dev_close(device *self)
 {
     i2s *p = (i2s *)self;
+    i2s_free_engine(p);          /* free per-engine state (idempotent) */
     i2s_dma_release(p);
     i2s_hal_enable(p->hal, 0);
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
@@ -318,13 +358,10 @@ static int i2s_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m == STREAM_MODE_DMA) {
-            if (!p->dma_tx) return -1;          /* no TX stream reserved */
-        } else if (m != STREAM_MODE_POLL) {
-            return -1;
-        }
-        p->parent.mode = m;
-        return 0;
+        /* (re)build per-engine state for the new engine (frees the old, allocates
+         * the new). Returns -1 (leaving the i2s in its previous configuration) if
+         * the engine is unavailable. */
+        return i2s_setup_engine(p, m);
     }
     case STREAM_IOCTL_GET_MODE:
         if (arg) *(stream_xfer_mode_t *)arg = p->parent.mode;

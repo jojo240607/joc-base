@@ -14,6 +14,13 @@
  * DMA accesses to DR are aligned. The DMA controllers cannot reach CCM. */
 #define I2S_DMA_BOUNCE 256
 
+/* Per-engine state for the DMA (TX) engine: the 16-bit sample bounce buffer in
+ * main SRAM (DMA cannot touch CCM). Allocated only when the I2S is in
+ * STREAM_MODE_DMA; a POLL I2S pays nothing. Reached via a single `p->eng` cast. */
+typedef struct {
+    uint16_t dma_bounce[I2S_DMA_BOUNCE];  /* main-SRAM 16-bit scratch (CCM-inaccessible) */
+} i2s_dma_t;
+
 /* device-level control commands for the I2S driver */
 #define I2S_IOCTL_GET_I2SCFGR  0x01   /* arg: uint32_t* I2SCFGR register */
 #define I2S_IOCTL_GET_I2SPR    0x02   /* arg: uint32_t* I2SPR register */
@@ -39,11 +46,17 @@ struct _i2s {
     int master;                   /* 1 = master (clock generator) */
     int tx;                       /* 1 = transmit direction */
     uint32_t datlen;              /* 0=16,1=24,2=32 bit */
-    /* DMA engine state (valid when a TX stream is reserved at open + mode==DMA) */
+    /* DMA engine handles (valid only when engine == STREAM_MODE_DMA and the TX
+     * stream was successfully acquired at open). Kept as always-present small
+     * pointers so a burst can arm a transfer without re-resolving the route. The
+     * large sample bounce buffer lives in the per-engine i2s_dma_t instead. The
+     * I2S TX is hard-wired to one specific DMA stream (SPI2_TX->DMA1_Stream4). */
     dma_req_id_t dma_tx_req;      /* cached from config */
     dma *dma_dev;                 /* resolved dma controller (dma1/dma2) */
     dma_stream_t *dma_tx;         /* reserved TX stream handle (NULL if none) */
-    uint16_t dma_bounce[I2S_DMA_BOUNCE];  /* main-SRAM 16-bit scratch (CCM-inaccessible) */
+    /* per-engine state — heap-allocated in open() for the chosen engine, freed in
+     * close(). NULL for POLL (zero state); the DMA variant is i2s_dma_t. */
+    void *eng;
     /* resolved pin geometry (claimed at open) */
     pinmux_port_t ws_port;  uint8_t ws_pin;  uint8_t ws_af;
     pinmux_port_t ck_port;  uint8_t ck_pin;  uint8_t ck_af;
