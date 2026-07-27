@@ -39,6 +39,7 @@ struct selftestVtable {
     int (*test_i2s)(selftest *self);       /* I2S: PLLI2S clock + prescaler + TX path */
     int (*test_can)(selftest *self);       /* CAN: bxCAN loopback TX/RX echo path */
     int (*test_usb)(selftest *self);       /* USB: OTG FS CDC core bring-up + ctrl self-test */
+    int (*test_dma)(selftest *self);       /* DMA: memory-to-memory copy + TC ISR + stream pool */
 };
 
 struct _selftest {

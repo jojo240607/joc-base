@@ -43,6 +43,7 @@
 #include "drv/flash.h"
 #include "drv/i2s.h"
 #include "drv/usb.h"
+#include "drv/dma.h"
 #include "drv/can.h"
 
 #include "temp_hal.h"
@@ -244,6 +245,12 @@ static const usb_config_t g_usb0 = {
     "usb0", (void *)USB_OTG_FS, "USB_OTG_FS_DM", "USB_OTG_FS_DP", 0
 };
 
+/* DMA controllers: dma1 / dma2 each expose an 8-stream pool to other drivers
+ * (UART/SPI/SDIO/ADC ... can acquire a stream via device_manager_get("dma1")).
+ * The driver is CONTROL-class (resource manager), not a byte stream. */
+static const dma_config_t g_dma1 = { "dma1", (void *)DMA1 };
+static const dma_config_t g_dma2 = { "dma2", (void *)DMA2 };
+
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
  * Each driver claims and configures its own pins through the pinmux at open()
@@ -293,6 +300,8 @@ static const board_node_t g_nodes[] = {
     { i2s_create,         &g_i2s0 },
     { can_create,         &g_can0 },
     { usb_create,         &g_usb0 },
+    { dma_create,         &g_dma1 },
+    { dma_create,         &g_dma2 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

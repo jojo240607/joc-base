@@ -64,6 +64,7 @@ add_executable(${PROJECT_NAME}.elf
     src/drv/i2s.c
     src/drv/can.c
     src/drv/usb.c
+    src/drv/dma.c
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
     src/irq/irq_manager.c   # centralized interrupt manager (registry + dump)
@@ -95,6 +96,7 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/i2s_hal.c
     src/hal/stm32/can_hal.c
     src/hal/stm32/usb_hal.c
+    src/hal/stm32/dma_hal.c
     # ST USB OTG FS device library (silicon + control engine + CDC class) wrapped in our HAL
     src/hal/stm32/st_usb/usb_core.c
     src/hal/stm32/st_usb/usb_dcd.c

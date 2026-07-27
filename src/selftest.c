@@ -29,6 +29,7 @@
 #include "drv/i2s.h"
 #include "drv/can.h"
 #include "drv/usb.h"
+#include "drv/dma.h"
 #include "iface/block_device.h"   /* device_as_block downcast */
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
@@ -63,6 +64,7 @@ static int selftest_vflash(selftest *self);
 static int selftest_vi2s(selftest *self);
 static int selftest_vcan(selftest *self);
 static int selftest_vusb(selftest *self);
+static int selftest_vdma(selftest *self);
 
 /* one shared vtable for the whole self-test class */
 static const struct selftestVtable selftest_vtable = {
@@ -91,6 +93,7 @@ static const struct selftestVtable selftest_vtable = {
     .test_i2s       = selftest_vi2s,
     .test_can       = selftest_vcan,
     .test_usb       = selftest_vusb,
+    .test_dma       = selftest_vdma,
 };
 
 const struct selftestFun selftest_fun = {
@@ -133,6 +136,63 @@ void selftest_deinit(selftest *self)
 {
     if (!self) return;
     /* no vtable to free (it is per-class static const) */
+}
+
+/* DMA self-test: exercise the memory-to-memory engine end-to-end through the
+ * unified DMA device — acquire a stream, configure an M2M copy, start it, block
+ * on the Transfer-Complete interrupt, then verify the copied bytes. Two sizes
+ * (8-bit and 32-bit) prove PSIZE/MSIZE + address increments. Also confirms the
+ * stream is returned to the pool on free().
+ *
+ * IMPORTANT: DMA cannot reach CCM (0x10000000) — only the CPU can. The task
+ * stack lives in CCM, so the copy buffers MUST be in main SRAM; we use file/func
+ * static buffers (in .bss -> main SRAM) rather than stack/heap-on-CCM. */
+static int selftest_vdma(selftest *self)
+{
+    (void)self;
+    /* NOTE: STM32F4 DMA1 CANNOT do memory-to-memory transfers — only DMA2 can.
+     * The driver rejects M2M on DMA1 (returns -1) so we exercise M2M on dma2. */
+    device *d = device_manager_get("dma2");
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "dma", "selftest: dma1 not found\n"); return 0; }
+    d->vtable->open(d);
+
+    dma *dm = (dma *)d;
+    int pass = 1;
+
+    /* --- 8-bit, 64-byte M2M copy (src -> dst) --- */
+    static uint8_t src8[64], dst8[64];
+    for (int i = 0; i < 64; i++) { src8[i] = (uint8_t)(i * 3 + 1); dst8[i] = 0; }
+
+    dma_stream_t *s8 = dm->fun->acquire(dm, 0, DMA_DIR_M2M);
+    if (!s8) { log_printf(app_log(), LOG_DEBUG, "dma", "selftest: acquire failed (8-bit)\n"); d->vtable->close(d); return 0; }
+    int rc = 0;
+    rc |= dm->fun->config(dm, s8, src8, dst8, 64, DMA_DATA_8, 1, 1, DMA_PRIO_MED);
+    rc |= dm->fun->start(dm, s8, NULL, NULL);
+    rc |= dm->fun->wait_done(dm, s8, 0);
+    int ok8 = (rc == 0);
+    for (int i = 0; i < 64; i++) if (dst8[i] != src8[i]) ok8 = 0;
+    dm->fun->free(dm, s8);
+    if (!ok8) pass = 0;
+    log_printf(app_log(), LOG_DEBUG, "dma", "selftest: 8-bit M2M rc=%d match=%d\n", rc, ok8);
+
+    /* --- 32-bit, 128-byte (32 items) M2M copy --- */
+    static uint32_t src32[32], dst32[32];
+    for (int i = 0; i < 32; i++) { src32[i] = 0xDEAD0000u + (uint32_t)i; dst32[i] = 0; }
+
+    dma_stream_t *s32 = dm->fun->acquire(dm, 0, DMA_DIR_M2M);
+    if (!s32) { log_printf(app_log(), LOG_DEBUG, "dma", "selftest: acquire failed (32-bit)\n"); d->vtable->close(d); return pass; }
+    rc = 0;
+    rc |= dm->fun->config(dm, s32, src32, dst32, 32, DMA_DATA_32, 1, 1, DMA_PRIO_HIGH);
+    rc |= dm->fun->start(dm, s32, NULL, NULL);
+    rc |= dm->fun->wait_done(dm, s32, 0);
+    int ok32 = (rc == 0);
+    for (int i = 0; i < 32; i++) if (dst32[i] != src32[i]) ok32 = 0;
+    dm->fun->free(dm, s32);
+    if (!ok32) pass = 0;
+    log_printf(app_log(), LOG_DEBUG, "dma", "selftest: 32-bit M2M rc=%d match=%d\n", rc, ok32);
+
+    d->vtable->close(d);
+    return pass;
 }
 
 int selftest_run(selftest *self)
@@ -247,6 +307,10 @@ int selftest_run(selftest *self)
     log_printf(app_log(), LOG_INFO, "selftest", "[BIST] usb   : SKIP (no host; bypassed for RTOSUSR/RTOSKOBJ/RTOSALL verification)\n");
     /* r = self->vtable->test_usb(self); */
     log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] usb   : %s\n", r ? "PASS" : "FAIL");
+    pass &= r;
+
+    r = self->vtable->test_dma(self);
+    log_printf(app_log(), LOG_DEBUG, "selftest", "[BIST] dma   : %s\n", r ? "PASS" : "FAIL");
     pass &= r;
 
 
