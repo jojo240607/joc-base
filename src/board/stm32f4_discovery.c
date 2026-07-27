@@ -261,7 +261,11 @@ static const can_config_t g_can0 = {
  * the board's VBUS detect is not populated. Full enumeration requires a host on
  * CN5; the BIST validates the core bring-up + control protocol without one. */
 static const usb_config_t g_usb0 = {
-    "usb0", (void *)USB_OTG_FS, "USB_OTG_FS_DM", "USB_OTG_FS_DP", 0
+    "usb0", (void *)USB_OTG_FS, "USB_OTG_FS_DM", "USB_OTG_FS_DP", 0,
+    0   /* dma_enable: OTG FS built-in DMA is OPT-IN. The F4 OTG FS internal
+         * DMA is unreliable for CDC enumeration on the embedded PHY (no COM9
+         * appears), so the proven slave/FIFO mode is the default. Set 1 to use
+         * the OTG's built-in DMA for the byte stream. */
 };
 
 /* DMA controllers: dma1 / dma2 each expose an 8-stream pool to other drivers

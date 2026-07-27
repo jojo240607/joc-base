@@ -29,6 +29,10 @@
 #include "usb_core.h"
 #include "usb_bsp.h"
 
+/* The OTG internal-DMA decision is owned by our HAL (usb_hal.c) so the board
+ * config can select it; ST's core init reads it once when building the cfg. */
+extern int usb_hal_get_dma_enable(void);
+
 
 /** @addtogroup USB_OTG_DRIVER
 * @{
@@ -225,7 +229,7 @@ USB_OTG_STS USB_OTG_SelectCore(USB_OTG_CORE_HANDLE *pdev,
   uint32_t i , baseAddress = 0;
   USB_OTG_STS status = USB_OTG_OK;
   
-  pdev->cfg.dma_enable       = 0;
+  pdev->cfg.dma_enable       = usb_hal_get_dma_enable();
   
   /* at startup the core is in FS mode */
   pdev->cfg.speed            = USB_OTG_SPEED_FULL;

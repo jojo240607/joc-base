@@ -14,8 +14,12 @@
 /* ---- CDC descriptors -------------------------------------------------- */
 
 /* Device descriptor (18 bytes). Miscellaneous class + IAD so Windows loads the
- * native usbser driver without an INF. */
-static const uint8_t dev_desc[18] = {
+ * native usbser driver without an INF.
+ * NOTE: intentionally NOT `const` — in OTG-DMA mode the core's built-in DMA
+ * reads this buffer directly (DIEPDMA) during GET_DESCRIPTOR, and the OTG FS
+ * DMA master cannot read Flash (0x08000000). Keeping it in .data (main SRAM)
+ * makes it DMA-readable; the initializer is copied from Flash at startup. */
+static uint8_t dev_desc[18] = {
     0x12,             /* bLength */
     0x01,             /* bDescriptorType = Device */
     0x00, 0x02,       /* bcdUSB = 2.00 */
@@ -59,6 +63,15 @@ struct _usb {
     ringbuffer *tx_rb;
     uint8_t  rx_storage[USB_RX_BUF_SIZE];
     uint8_t  tx_storage[USB_TX_BUF_SIZE];
+
+    /* DMA-safe staging buffer for the bulk-IN source. usb_tx_pump copies a
+     * chunk from the TX ring into HERE and hands it to DCD_EP_Tx. In OTG-DMA
+     * mode the OTG's built-in DMA reads this buffer directly, so it MUST live
+     * in main SRAM — a stack buffer would sit in CCM (0x10000000), which the
+     * OTG DMA cannot access. The struct is malloc'd from the main-SRAM heap,
+     * so this field is DMA-safe. In slave/FIFO mode the CPU copies it into the
+     * TX FIFO, which is also fine. */
+    uint8_t  tx_dma_buf[64];
 
     /* host-free self-test mode */
     int      test_mode;
@@ -252,6 +265,11 @@ device *usb_create(const void *config)
     g_usb = p;
     usbd_cdc_register_usb(p);
 
+    /* Select OTG internal-DMA vs slave/FIFO mode BEFORE USBD_Init builds the
+     * core cfg (USB_OTG_SelectCore reads usb_hal_get_dma_enable()). */
+    usb_hal_set_dma_enable(c->dma_enable);
+
+
     p->parent.parent.vtable = &usb_dev_vtable;
     p->parent.vtable        = &usb_stream_vtable;
     p->parent.parent.type   = DEVICE_TYPE_USB;
@@ -310,8 +328,10 @@ static void usb_isr(void *ctx)
  * its state. This function is the TX ring's ONLY consumer and is called solely
  * from the main loop (usb_stream_write and the per-iteration USB_IOCTL_TX_PUMP);
  * the IN-complete ISR must NOT call it (it only clears bulk_tx_pending) so the
- * single-consumer ringbuffer invariant holds. DCD_EP_Tx copies the bytes into
- * the TX FIFO inline, so the stack chunk is safe and need not outlive the call. */
+ * single-consumer ringbuffer invariant holds. In slave/FIFO mode DCD_EP_Tx
+ * copies the bytes into the TX FIFO inline; in OTG-DMA mode it arms the OTG's
+ * built-in DMA to read them from tx_dma_buf, so that buffer (main SRAM) must
+ * stay valid for the whole IN transfer and must not be a stack/CCM buffer. */
 static void usb_tx_pump(usb *u)
 {
     if (!u || u->bulk_tx_pending)
@@ -319,12 +339,16 @@ static void usb_tx_pump(usb *u)
     ringbuffer *rb = u->tx_rb;
     if (!rb || rb->fun->is_empty(rb))
         return;                                   /* nothing staged to send */
-    uint8_t chunk[64];
-    size_t n = rb->fun->read(rb, chunk, sizeof(chunk));
+    /* Stage into the DMA-safe buffer (main SRAM). In OTG-DMA mode the OTG's
+     * built-in DMA reads from this buffer directly; a stack buffer would be in
+     * CCM and unreachable by the DMA. In slave/FIFO mode the CPU copies it into
+     * the TX FIFO. Either way only ONE IN is armed at a time and bulk_tx_pending
+     * guards re-entry, so this single buffer is never overwritten mid-transfer. */
+    size_t n = rb->fun->read(rb, u->tx_dma_buf, sizeof(u->tx_dma_buf));
     if (n == 0)
         return;
     u->bulk_tx_pending = 1;                       /* set BEFORE arming */
-    DCD_EP_Tx(u->hal->pdev, 0x81, chunk, (uint16_t)n);
+    DCD_EP_Tx(u->hal->pdev, 0x81, u->tx_dma_buf, (uint16_t)n);
 }
 
 static int usb_stream_write(stream_device *self, const void *buf, size_t len)
@@ -527,6 +551,14 @@ static int usb_run_ctrl_selftest(usb *u)
     log_printf(app_log(), LOG_DEBUG, "usb", "       ctrl SET_ADDRESS(7): DAD=0x%02X %s", dad, ok_addr ? "PASS" : "FAIL");
     pdev->dev.device_status = saved_status;          /* restore live state */
     DCD_EP_SetAddress(pdev, 0);        /* restore so real enumeration is clean */
+    if (usb_hal_get_dma_enable()) {
+        /* In DMA mode the synthetic control transfers above armed the OTG's
+         * built-in DMA on EP0 (with the ISR masked, so XFRC never fired). Flush
+         * EP0 IN/OUT so no stale DMA is pending when a real host later
+         * enumerates — otherwise the endpoint can wedge the enumeration. */
+        DCD_EP_Flush(pdev, 0x80);
+        DCD_EP_Flush(pdev, 0x00);
+    }
     irq_manager_enable(id, usb_isr, u);/* let the live host resume EP0 traffic */
 
     return ok ? 0 : -1;

@@ -25,6 +25,14 @@ typedef struct {
     const char *dm_signal;   /* e.g. "USB_OTG_FS_DM"  (PA11, AF10) */
     const char *dp_signal;   /* e.g. "USB_OTG_FS_DP"  (PA12, AF10) */
     int         vbus_sense;  /* 1 = use VBUS sensing, 0 = ignore (NOVBUSSENS) */
+    /* OTG internal-DMA: 1 = enable the OTG FS built-in DMA for the CDC byte
+     * stream, 0 = slave/FIFO mode (default on this board). Unlike other stream
+     * drivers this is NOT a runtime engine switch — ST's library fixes it at
+     * core init via cfg.dma_enable, so it is applied from here in usb_create().
+     * NOTE: kept OPT-IN because the F4 OTG FS internal DMA is unreliable for CDC
+     * enumeration on the embedded PHY (no COM9 appears); the slave/FIFO mode is
+     * the proven default. The DMA path is fully wired for those who want it. */
+    int         dma_enable;
 } usb_config_t;
 
 /* ioctl commands (driver-specific, above the shared STREAM ioctls). */

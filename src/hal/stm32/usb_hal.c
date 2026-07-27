@@ -10,6 +10,14 @@
 /* Single OTG FS core instance (ST's stack expects a stable handle). */
 static USB_OTG_CORE_HANDLE g_pdev;
 
+/* OTG internal-DMA default ON (see usb_hal.h). The driver may clear it from
+ * its board config; ST's USB_OTG_SelectCore reads it when building the core
+ * cfg at init time. */
+static int g_otg_dma_enable = 1;
+
+void usb_hal_set_dma_enable(int on) { g_otg_dma_enable = on ? 1 : 0; }
+int  usb_hal_get_dma_enable(void)   { return g_otg_dma_enable; }
+
 usb_hal_handle_t *usb_hal_create(void *peripheral)
 {
     (void)peripheral;   /* OTG FS is at the fixed 0x50000000; arg kept for symmetry */

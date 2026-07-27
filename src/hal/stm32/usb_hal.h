@@ -35,6 +35,16 @@ usb_hal_handle_t *usb_hal_create(void *peripheral);
 void usb_hal_destroy(usb_hal_handle_t *h);
 USB_OTG_CORE_HANDLE *usb_hal_pdev(usb_hal_handle_t *h);
 
+/* ---- OTG internal-DMA enable -----------------------------------------
+ * The STM32F4 OTG FS has a BUILT-IN DMA (GAHBCFG.DMAEN) — distinct from the
+ * general-purpose DMA1/DMA2 streams other drivers use. ST's device library
+ * selects it once at core init via cfg.dma_enable, so it cannot be toggled at
+ * runtime. The driver sets this from its board config in usb_create(); ST's
+ * USB_OTG_SelectCore consults it when it builds the core cfg. Defaults ON:
+ * the OTG DMA moves the CDC byte stream off the CPU. */
+void usb_hal_set_dma_enable(int on);
+int  usb_hal_get_dma_enable(void);
+
 void usb_hal_enable_clock(usb_hal_handle_t *h);
 void usb_hal_connect(usb_hal_handle_t *h);
 void usb_hal_disconnect(usb_hal_handle_t *h);
