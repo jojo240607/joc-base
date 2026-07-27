@@ -34,6 +34,9 @@ add_executable(${PROJECT_NAME}.elf
     src/iface/io_xfer.c          # io_xfer_t descriptor + io_xfer_complete (driver/ISR helper)
     # common utility classes (platform-independent, reusable by any business layer)
     src/common/ringbuffer.c      # OOC ring buffer (FIFO) used by stream devices + others
+    src/common/hash.c            # OOC hash table (used by device_manager storage)
+    src/common/list.c            # OOC intrusive list (used by device_manager storage)
+    src/common/pool.c            # OOC fixed block pool (used by device_manager storage)
     src/bus/bus.c                # lightweight pub/sub event bus (log multi-sink backend)
     src/log/log.c                # OOC logger (level filter + multi-sink)
     src/log/app_log.c            # app glue: logger sunk to console UART
