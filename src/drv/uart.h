@@ -4,12 +4,21 @@
 #include "iface/device.h"
 #include "iface/stream_device.h"  /* uart IS-A stream_device (data stream) */
 #include "uart_hal.h"         /* opaque handle ONLY — no STM32 types reach the driver */
+#include "drv/dma.h"          /* dma / dma_stream_t (DMA engine) + pulls dma_hal.h (dma_req_id_t) */
 #include "irq.h"              /* platform-independent interrupt API (irq_register/enable) */
 #include "osal/osal.h"        /* osal_sem_t (TX completion + line serialization) */
 #include <stdint.h>
 
 /* Size of the RX ring buffer fed by the UART receive ISR. */
 #define UART_RX_BUF_SIZE 64
+
+/* DMA-accessible (main SRAM) bounce scratch used by the DMA TX/RX paths. The
+ * STM32F4 DMA controllers CANNOT reach CCM (0x10000000) — only the CPU can — so
+ * any caller buffer living on the CCM stack (or a CCM heap) is invalid as a DMA
+ * source/destination and would raise a Transfer-Error instead of completing.
+ * The uart struct itself is malloc'd in main SRAM, so this member is safe; we
+ * DMA through it and copy to/from the caller's (possibly CCM) buffer. */
+#define UART_DMA_BOUNCE 256
 
 /* device-level control commands for the UART driver */
 #define UART_IOCTL_SET_BAUDRATE 0x01   /* arg: const uint32_t* baud */
@@ -38,10 +47,25 @@ struct _uart {
     uart_hal_handle_t *hal;       /* opaque — driver never dereferences it */
     const char *tx_signal;        /* cached TX signal name (resolved at open) */
     const char *rx_signal;        /* cached RX signal name (resolved at open) */
+    /* DMA engine state (valid only when streams were successfully acquired at
+     * open and mode == STREAM_MODE_DMA). The driver keeps the resolved dma
+     * device + the two reserved stream handles so TX/RX can arm a transfer
+     * without re-resolving the route each call. */
+    dma_req_id_t dma_tx_req;      /* cached from config (for re-acquire on reopen) */
+    dma_req_id_t dma_rx_req;
+    dma *dma_dev;                 /* resolved dma controller (dma1/dma2) */
+    dma_stream_t *dma_tx;         /* reserved TX stream handle (NULL if none) */
+    dma_stream_t *dma_rx;         /* reserved RX stream handle (NULL if none) */
+    int dma_tx_dir;               /* cached direction for config() */
+    int dma_rx_dir;
     /* RX storage handed to the embedded ring buffer (stream_device.rx_rb, the
      * common/ringbuffer class). The receive ISR pushes bytes via that ring;
      * read()/getc() drain it. head/tail now live inside the ring buffer. */
     char rx_buf[UART_RX_BUF_SIZE];
+    /* DMA bounce scratch in main SRAM (see UART_DMA_BOUNCE). Used as the actual
+     * DMA source for TX (caller buffer may be CCM) and destination for RX (the
+     * caller's receive buffer may be CCM). The driver copies to/from it. */
+    uint8_t dma_bounce[UART_DMA_BOUNCE];
     /* In-progress asynchronous READ (started via stream submit). The ISR drains
      * the ring into this xfer and calls io_xfer_complete() when it is full.
      * NULL when no async read is pending. (Synchronous read()/getc() and an
@@ -77,6 +101,13 @@ typedef struct {
      * duplicate-name ambiguity in the AF database (suffixes guarantee uniqueness). */
     const char *tx_signal;  /* e.g. "USART1_TX_PA9" */
     const char *rx_signal;  /* e.g. "USART1_RX_PA10" */
+    /* DMA request IDs (logical, from dma_hal.h). The driver resolves each to a
+     * concrete (controller, stream, channel) via dma_hal_route() and acquires
+     * that stream from the matching dma device — there is no other way to know
+     * which DMA stream a USART TX/RX is hard-wired to. 0 (DMA_REQ_NONE) means
+     * "no DMA for this direction" (the driver then refuses STREAM_MODE_DMA). */
+    dma_req_id_t dma_tx_req;
+    dma_req_id_t dma_rx_req;
 } uart_config_t;
 
 /* console helpers (module-level singleton used by syscalls _write) */

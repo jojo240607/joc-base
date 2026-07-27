@@ -151,3 +151,34 @@ int dma_hal_is_m2m_capable(dma_hal_stream_t *s)
     /* Only DMA2 on STM32F4 can perform memory-to-memory transfers. */
     return (s->ctlr == 2) ? 1 : 0;
 }
+
+/* STM32F4 DMA request routing (RM0090 Table 30/31). Each peripheral request is
+ * hard-wired to exactly one (controller, stream, channel). Returns the device-
+ * manager name of the owning controller plus the concrete stream + CHSEL.
+ * Entries not yet mapped (or not applicable) return name=NULL so a driver that
+ * asks for them refuses cleanly instead of programming a wrong stream. */
+dma_route_t dma_hal_route(dma_req_id_t req)
+{
+    switch (req) {
+    /* ---- USART / UART (DMA channel 4) ---- */
+    case DMA_REQ_USART1_TX: return (dma_route_t){ "dma2", 7, 4 };
+    case DMA_REQ_USART1_RX: return (dma_route_t){ "dma2", 5, 4 };
+    case DMA_REQ_USART2_TX: return (dma_route_t){ "dma1", 6, 4 };
+    case DMA_REQ_USART2_RX: return (dma_route_t){ "dma1", 5, 4 };
+    case DMA_REQ_USART3_TX: return (dma_route_t){ "dma1", 3, 4 };
+    case DMA_REQ_USART3_RX: return (dma_route_t){ "dma1", 1, 4 };
+    case DMA_REQ_UART4_TX:  return (dma_route_t){ "dma1", 4, 4 };
+    case DMA_REQ_UART4_RX:  return (dma_route_t){ "dma1", 2, 4 };
+    case DMA_REQ_UART5_TX:  return (dma_route_t){ "dma1", 7, 4 };
+    case DMA_REQ_UART5_RX:  return (dma_route_t){ "dma1", 0, 4 };
+    /* ---- SPI / I2S (I2S2=SPI2, I2S3=SPI3) (DMA channel 3) ---- */
+    case DMA_REQ_SPI1_TX:   return (dma_route_t){ "dma2", 3, 3 };
+    case DMA_REQ_SPI1_RX:   return (dma_route_t){ "dma2", 2, 3 };
+    case DMA_REQ_SPI2_TX:   return (dma_route_t){ "dma1", 4, 3 };   /* I2S2 TX */
+    case DMA_REQ_SPI2_RX:   return (dma_route_t){ "dma1", 3, 3 };   /* I2S2 RX */
+    case DMA_REQ_SPI3_TX:   return (dma_route_t){ "dma1", 5, 3 };   /* I2S3 TX */
+    case DMA_REQ_SPI3_RX:   return (dma_route_t){ "dma1", 2, 3 };   /* I2S3 RX */
+    default:
+        return (dma_route_t){ NULL, 0, 0 };
+    }
+}

@@ -163,7 +163,7 @@ static int selftest_vdma(selftest *self)
     static uint8_t src8[64], dst8[64];
     for (int i = 0; i < 64; i++) { src8[i] = (uint8_t)(i * 3 + 1); dst8[i] = 0; }
 
-    dma_stream_t *s8 = dm->fun->acquire(dm, 0, DMA_DIR_M2M);
+    dma_stream_t *s8 = dm->fun->acquire(dm, DMA_STREAM_ANY, 0, DMA_DIR_M2M);
     if (!s8) { log_printf(app_log(), LOG_DEBUG, "dma", "selftest: acquire failed (8-bit)\n"); d->vtable->close(d); return 0; }
     int rc = 0;
     rc |= dm->fun->config(dm, s8, src8, dst8, 64, DMA_DATA_8, 1, 1, DMA_PRIO_MED);
@@ -179,7 +179,7 @@ static int selftest_vdma(selftest *self)
     static uint32_t src32[32], dst32[32];
     for (int i = 0; i < 32; i++) { src32[i] = 0xDEAD0000u + (uint32_t)i; dst32[i] = 0; }
 
-    dma_stream_t *s32 = dm->fun->acquire(dm, 0, DMA_DIR_M2M);
+    dma_stream_t *s32 = dm->fun->acquire(dm, DMA_STREAM_ANY, 0, DMA_DIR_M2M);
     if (!s32) { log_printf(app_log(), LOG_DEBUG, "dma", "selftest: acquire failed (32-bit)\n"); d->vtable->close(d); return pass; }
     rc = 0;
     rc |= dm->fun->config(dm, s32, src32, dst32, 32, DMA_DATA_32, 1, 1, DMA_PRIO_HIGH);

@@ -4,6 +4,7 @@
 #include "osal/osal.h"               /* osal_sem_wait / _init (TX serialization) */
 #include "devmgr/device_manager.h"   /* resolve the pinmux arbiter by name */
 #include "drv/pinmux.h"               /* request + program pins through pinmux */
+#include "drv/dma.h"                  /* dma device + dma_hal_route (DMA engine) */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>                     /* printf for conflict diagnostics */
@@ -69,6 +70,8 @@ device *uart_create(const void *config)
     self->parent.parent.name = c->name;             /* driver sets its own name */
     self->tx_signal = c->tx_signal;          /* cache names for pinmux claim at open() */
     self->rx_signal = c->rx_signal;
+    self->dma_tx_req = c->dma_tx_req;        /* cache DMA request IDs for open() */
+    self->dma_rx_req = c->dma_rx_req;
     uart_init(self);
     if (c->is_console) uart_set_console(self);
     return (device *)self;
@@ -223,6 +226,111 @@ static int uart_tx_blocking(uart *u, const char *s, size_t len)
     return (int)len;
 }
 
+/* --- DMA engine (STREAM_MODE_DMA) ---
+ * A UART TX/RX is hard-wired by the silicon to ONE specific DMA stream. We
+ * resolve that stream once at open() (via dma_hal_route) and keep it reserved;
+ * TX/RX just arm a transfer on it. The DMA ISR (in drv/dma.c) gives the stream's
+ * done_sem on Transfer-Complete, so write/read block until the hardware finishes
+ * — the blocking API contract is preserved. */
+
+/* Resolve the TX/RX DMA routes for this UART and reserve the hard-wired streams
+ * from the matching dma controller. Called once at open(); the streams stay
+ * reserved until close(). Returns 0 if at least one direction resolved. */
+static int uart_dma_acquire(uart *u)
+{
+    u->dma_dev = NULL; u->dma_tx = NULL; u->dma_rx = NULL;
+    if (u->dma_tx_req == DMA_REQ_NONE && u->dma_rx_req == DMA_REQ_NONE)
+        return 0;   /* this UART has no DMA configured */
+    if (u->dma_tx_req != DMA_REQ_NONE) {
+        dma_route_t rt = dma_hal_route(u->dma_tx_req);
+        if (rt.name) {
+            dma *dm = (dma *)device_manager_get(rt.name);
+            if (dm) {
+                dma_stream_t *s = dm->fun->acquire(dm, rt.stream, rt.channel, DMA_DIR_M2P);
+                if (s) { u->dma_dev = dm; u->dma_tx = s; }
+                else log_printf(app_log(), LOG_DEBUG, "uart",
+                       "%s: DMA TX stream busy\n", u->parent.parent.name);
+            }
+        }
+    }
+    if (u->dma_rx_req != DMA_REQ_NONE) {
+        dma_route_t rt = dma_hal_route(u->dma_rx_req);
+        if (rt.name) {
+            dma *dm = (dma *)device_manager_get(rt.name);
+            if (dm) {
+                dma_stream_t *s = dm->fun->acquire(dm, rt.stream, rt.channel, DMA_DIR_P2M);
+                if (s) { if (!u->dma_dev) u->dma_dev = dm; u->dma_rx = s; }
+            }
+        }
+    }
+    return (u->dma_tx || u->dma_rx) ? 0 : -1;
+}
+
+/* Release the reserved DMA streams (called at close). */
+static void uart_dma_release(uart *u)
+{
+    uart_hal_disable_tx_dma(u->hal);
+    uart_hal_disable_rx_dma(u->hal);
+    if (u->dma_dev) {
+        if (u->dma_tx) u->dma_dev->fun->free(u->dma_dev, u->dma_tx);
+        if (u->dma_rx) u->dma_dev->fun->free(u->dma_dev, u->dma_rx);
+    }
+    u->dma_dev = NULL; u->dma_tx = NULL; u->dma_rx = NULL;
+}
+
+/* DMA transmit: program the reserved TX stream (M2P, PAR=DR, memory=src, MINC),
+ * gate the USART onto the DMA (DMAT), arm it and block until Transfer-Complete.
+ * Returns the number of bytes moved. The caller's buffer may live in CCM (e.g.
+ * a stack array), which DMA cannot touch, so we copy it into the main-SRAM
+ * bounce first and DMA from there. */
+static int uart_dma_write(uart *u, const char *s, size_t len)
+{
+    if (!u->dma_dev || !u->dma_tx) return -1;
+    void *dr = uart_hal_get_dr_addr(u->hal);
+    const uint8_t *src = (const uint8_t *)s;
+    uint8_t *tmp = NULL;
+    if (len <= UART_DMA_BOUNCE) {
+        memcpy(u->dma_bounce, s, len);
+        src = u->dma_bounce;
+    } else {
+        /* oversize: heap is in main SRAM, so a malloc'd temp is DMA-accessible.
+         * uart_dma_write runs from thread context (never an ISR), so malloc is OK. */
+        tmp = (uint8_t *)malloc(len);
+        if (!tmp) return -1;
+        memcpy(tmp, s, len);
+        src = tmp;
+    }
+    u->dma_dev->fun->config(u->dma_dev, u->dma_tx, dr, (void *)src, (uint32_t)len,
+                            DMA_DATA_8, 0 /*periph_inc*/, 1 /*mem_inc*/, DMA_PRIO_MED);
+    uart_hal_enable_tx_dma(u->hal);
+    u->dma_dev->fun->start(u->dma_dev, u->dma_tx, NULL, NULL);
+    u->dma_dev->fun->wait_done(u->dma_dev, u->dma_tx, 0);
+    uart_hal_disable_tx_dma(u->hal);
+    if (tmp) free(tmp);
+    return (int)len;
+}
+
+/* DMA receive: program the reserved RX stream (P2M, PAR=DR, memory=bounce, MINC),
+ * gate the USART onto the DMA (DMAR), arm it and block until Transfer-Complete
+ * (i.e. until `len` bytes have arrived). The DMA writes into the main-SRAM
+ * bounce (DMA cannot touch CCM), then we copy out to the caller's buffer. */
+static int uart_dma_read(uart *u, void *buf, size_t len)
+{
+    if (!u->dma_dev || !u->dma_rx) return -1;
+    void *dr = uart_hal_get_dr_addr(u->hal);
+    uint8_t *tmp = (len <= UART_DMA_BOUNCE) ? u->dma_bounce : (uint8_t *)malloc(len);
+    if (!tmp) return -1;
+    u->dma_dev->fun->config(u->dma_dev, u->dma_rx, dr, tmp, (uint32_t)len,
+                            DMA_DATA_8, 0 /*periph_inc*/, 1 /*mem_inc*/, DMA_PRIO_MED);
+    uart_hal_enable_rx_dma(u->hal);
+    u->dma_dev->fun->start(u->dma_dev, u->dma_rx, NULL, NULL);
+    int rc = u->dma_dev->fun->wait_done(u->dma_dev, u->dma_rx, 2000);
+    uart_hal_disable_rx_dma(u->hal);
+    if (rc == 0) memcpy(buf, tmp, len);
+    if (tmp != u->dma_bounce) free(tmp);
+    return rc == 0 ? (int)len : -1;
+}
+
 /* --- unified device-interface virtual implementations --- */
 
 static int uart_dev_open(device *self)
@@ -273,6 +381,10 @@ static int uart_dev_open(device *self)
 
     uart_hal_init(u->hal);
 
+    /* Reserve the hard-wired DMA streams for this UART's TX/RX (if any). This is
+     * idempotent across open/close — close() releases them. */
+    uart_dma_acquire(u);
+
     /* Attach our RX storage to the embedded ring buffer (common/ringbuffer) so
      * the receive ISR can push bytes and read()/getc() can drain them. */
     stream_device_init_ringbuffer((stream_device *)u, (uint8_t *)u->rx_buf, UART_RX_BUF_SIZE);
@@ -294,6 +406,7 @@ static int uart_dev_open(device *self)
 static int uart_dev_close(device *self)
 {
     uart *u = (uart *)self;
+    uart_dma_release(u);               /* release reserved DMA streams */
     irq_id_t id = uart_hal_irq_id(u->hal);
     irq_manager_detach(id, uart_isr, u); /* mask NVIC + uninstall callback */
     uart_hal_disable_rx_irq(u->hal);
@@ -309,7 +422,7 @@ static int uart_stream_read(stream_device *self, void *buf, size_t len)
 {
     uart *u = (uart *)self;
     if (len < 1 || !buf) return -1;
-    if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    if (u->parent.mode == STREAM_MODE_DMA) return uart_dma_read(u, buf, len);
     if (u->parent.mode == STREAM_MODE_POLL) {
         while (!uart_hal_rx_pending(u->hal)) { }        /* busy-wait, no ISR */
         *(char *)buf = uart_hal_read_dr(u->hal);
@@ -329,7 +442,7 @@ static int uart_stream_write(stream_device *self, const void *buf, size_t len)
     uart *u = (uart *)self;
     const char *s = (const char *)buf;
     if (!buf) return -1;
-    if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    if (u->parent.mode == STREAM_MODE_DMA) return uart_dma_write(u, s, len);
     if (u->parent.mode == STREAM_MODE_IRQ)
         return uart_tx_blocking(u, s, len);             /* interrupt-driven TX */
     for (size_t i = 0; i < len; i++)
@@ -444,10 +557,17 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+        if (m == STREAM_MODE_DMA) {
+            /* only allowed if this UART reserved a DMA stream at open() */
+            if (!u->dma_tx && !u->dma_rx) return -1;
+            /* DMA moves the bytes itself; silence the UART's own data IRQs so the
+             * ISR cannot steal a byte the DMA is supposed to transfer. */
+            uart_hal_disable_tx_irq(u->hal);
+            uart_hal_disable_rx_irq(u->hal);
+        }
         u->parent.mode = m;
         if (m == STREAM_MODE_IRQ) uart_hal_enable_rx_irq(u->hal);
-        else uart_hal_disable_rx_irq(u->hal);
+        else { uart_hal_disable_rx_irq(u->hal); uart_hal_disable_tx_irq(u->hal); }
         return 0;
     }
     case STREAM_IOCTL_GET_MODE:

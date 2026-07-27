@@ -17,7 +17,7 @@ static int dma_dev_ioctl(device *self, int cmd, void *arg);
 
 /* typed convenience methods — reachable ONLY through self->fun->xxx(self, ...),
  * never as standalone functions (the concrete impls are `static` in this file) */
-static dma_stream_t *dma_acquire(dma *self, uint32_t request, dma_dir_t dir);
+static dma_stream_t *dma_acquire(dma *self, uint8_t stream_idx, uint8_t channel, dma_dir_t dir);
 static int dma_stream_config(dma *self, dma_stream_t *s, const void *periph,
                              void *mem, uint32_t count, dma_data_size_t size,
                              int periph_inc, int mem_inc, dma_prio_t prio);
@@ -139,22 +139,36 @@ static void dma_isr(void *ctx)
 
 /* --- typed methods --- */
 
-static dma_stream_t *dma_acquire(dma *self, uint32_t request, dma_dir_t dir)
+static dma_stream_t *dma_acquire(dma *self, uint8_t stream_idx, uint8_t channel, dma_dir_t dir)
 {
     if (!self) return NULL;
-    for (uint32_t i = 0; i < DMA_STREAMS_PER_CTLR; i++) {
-        if (!self->streams[i].in_use) {
-            self->streams[i].in_use  = 1;
-            self->streams[i].dir      = dir;
-            self->streams[i].channel  = request & 0x7U;
-            self->streams[i].cb       = NULL;
-            self->streams[i].cb_ctx   = NULL;
-            return &self->handles[i];
+    uint32_t i;
+    if (stream_idx == DMA_STREAM_ANY) {
+        /* memory-to-memory: any free stream will do. */
+        for (i = 0; i < DMA_STREAMS_PER_CTLR; i++)
+            if (!self->streams[i].in_use) break;
+        if (i == DMA_STREAMS_PER_CTLR) {
+            log_printf(app_log(), LOG_DEBUG, "dma", "%s: no free stream\n",
+                       self->parent.parent.name);
+            return NULL;
+        }
+    } else {
+        /* peripheral request: the silicon demands a SPECIFIC stream. */
+        if (stream_idx >= DMA_STREAMS_PER_CTLR) return NULL;
+        i = stream_idx;
+        if (self->streams[i].in_use) {
+            log_printf(app_log(), LOG_DEBUG, "dma",
+                       "%s: stream %u busy (requested for peripheral)\n",
+                       self->parent.parent.name, (unsigned)i);
+            return NULL;
         }
     }
-    log_printf(app_log(), LOG_DEBUG, "dma", "%s: no free stream (req=%lu)\n",
-               self->parent.parent.name, (unsigned long)request);
-    return NULL;
+    self->streams[i].in_use  = 1;
+    self->streams[i].dir      = dir;
+    self->streams[i].channel  = channel & 0x7U;
+    self->streams[i].cb       = NULL;
+    self->streams[i].cb_ctx   = NULL;
+    return &self->handles[i];
 }
 
 static int dma_stream_config(dma *self, dma_stream_t *s, const void *periph,
@@ -195,10 +209,21 @@ static int dma_stream_start(dma *self, dma_stream_t *s, void (*cb)(void *), void
 
 static int dma_wait_done(dma *self, dma_stream_t *s, uint32_t timeout_ms)
 {
-    (void)timeout_ms;
     if (!self || !s) return -1;
-    osal_sem_wait(&self->streams[s->idx].done_sem);   /* released by the TC/TE ISR */
-    return 0;
+    /* Poll the Transfer-Complete hardware flag with a bounded budget instead of
+     * blocking on the completion semaphore forever. This (a) honours timeout_ms,
+     * (b) avoids a permanent hang if a transfer is mis-configured (e.g. a wrong
+     * peripheral route), and (c) keeps the driver usable from bare metal where
+     * the sem is a busy-wait with no deadline. The TC/TE ISR still gives the sem
+     * (and runs the optional callback); once we observe TC we consume any permit
+     * left in the sem so the NEXT transfer's wait starts clean (no trywait in the
+     * bare-metal OSAL). */
+    dma_hal_stream_t *hs = self->hal[s->idx];
+    uint32_t limit = (timeout_ms ? timeout_ms : 2000U) * 1000U;   /* ~1k iters/ms */
+    while (!dma_hal_stream_tc(hs) && limit--) { }
+    int ok = dma_hal_stream_tc(hs) ? 1 : 0;
+    self->streams[s->idx].done_sem.count = 0;   /* drain any stale permit */
+    return ok ? 0 : -1;
 }
 
 static int dma_poll_done(dma *self, dma_stream_t *s)

@@ -40,4 +40,19 @@ void uart_hal_write_dr(uart_hal_handle_t *h, char c);/* write DR (triggers TX) *
 uint32_t uart_hal_get_brr(uart_hal_handle_t *h);   /* read back BRR for self-test */
 uint32_t uart_hal_get_cr1(uart_hal_handle_t *h);   /* read back CR1 for self-test */
 
+/* --- DMA support (used by the driver's STREAM_MODE_DMA engine) ---
+ * The driver acquires a DMA stream (via the dma device + dma_hal_route) and
+ * programs PAR = uart_hal_get_dr_addr(). These bits gate the USART's request
+ * to the DMA controller: DMAT lets the DMA push each byte into DR (TX), DMAR
+ * lets the DMA read each received byte out of DR (RX). */
+void    *uart_hal_get_dr_addr(uart_hal_handle_t *h);   /* &USARTx->DR (for DMA PAR) */
+void uart_hal_enable_tx_dma(uart_hal_handle_t *h);     /* CR3.DMAT = 1 */
+void uart_hal_disable_tx_dma(uart_hal_handle_t *h);    /* CR3.DMAT = 0 */
+void uart_hal_enable_rx_dma(uart_hal_handle_t *h);     /* CR3.DMAR = 1 */
+void uart_hal_disable_rx_dma(uart_hal_handle_t *h);    /* CR3.DMAR = 0 */
+
+/* readback getters for DMA debugging */
+uint32_t uart_hal_get_sr(uart_hal_handle_t *h);        /* USARTx->SR */
+uint32_t uart_hal_get_cr3(uart_hal_handle_t *h);       /* USARTx->CR3 (DMAR/DMAT) */
+
 #endif /* UART_HAL_H */

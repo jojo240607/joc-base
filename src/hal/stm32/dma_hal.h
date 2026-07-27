@@ -86,4 +86,53 @@ irq_id_t dma_hal_stream_irq_id(dma_hal_stream_t *s);
  * can do M2M (i.e. DMA2), 0 otherwise (DMA1). */
 int dma_hal_is_m2m_capable(dma_hal_stream_t *s);
 
+/* ---------------------------------------------------------------------------
+ * Peripheral -> DMA route table (STM32F4, RM0090 Table 30/31).
+ *
+ * Unlike memory-to-memory (any free stream works), a PERIPHERAL request is
+ * hard-wired by the silicon to ONE specific (controller, stream, channel)
+ * triple. The driver names the logical request (e.g. DMA_REQ_USART1_TX) and
+ * this table returns the exact stream it must acquire plus the channel to
+ * program into CHSEL — there is no freedom to pick another stream. The
+ * controller is returned as a device-manager NAME ("dma1"/"dma2") so the
+ * driver can resolve it with device_manager_get() without ever touching a
+ * DMA_TypeDef. These IDs are the only thing the (platform-independent) drivers
+ * need to know; the mapping itself stays chip-specific, HERE in the HAL.
+ * ------------------------------------------------------------------------- */
+typedef enum {
+    DMA_REQ_NONE = 0,
+    /* USART / UART — all on DMA channel 4 */
+    DMA_REQ_USART1_TX, DMA_REQ_USART1_RX,
+    DMA_REQ_USART2_TX, DMA_REQ_USART2_RX,
+    DMA_REQ_USART3_TX, DMA_REQ_USART3_RX,
+    DMA_REQ_UART4_TX,  DMA_REQ_UART4_RX,
+    DMA_REQ_UART5_TX,  DMA_REQ_UART5_RX,
+    /* SPI / I2S (I2S2 = SPI2, I2S3 = SPI3) — all on DMA channel 3 */
+    DMA_REQ_SPI1_TX,  DMA_REQ_SPI1_RX,
+    DMA_REQ_SPI2_TX,  DMA_REQ_SPI2_RX,   /* == I2S2 TX / RX */
+    DMA_REQ_SPI3_TX,  DMA_REQ_SPI3_RX,   /* == I2S3 TX / RX */
+    /* I2C — DMA1 only */
+    DMA_REQ_I2C1_TX,  DMA_REQ_I2C1_RX,
+    DMA_REQ_I2C2_TX,  DMA_REQ_I2C2_RX,
+    DMA_REQ_I2C3_TX,  DMA_REQ_I2C3_RX,
+    /* ADC — DMA2, channel 0 */
+    DMA_REQ_ADC1, DMA_REQ_ADC2, DMA_REQ_ADC3,
+    /* DAC — DMA1, channel 7 */
+    DMA_REQ_DAC1, DMA_REQ_DAC2,
+    /* SDIO — DMA2, channel 4 */
+    DMA_REQ_SDIO,
+} dma_req_id_t;
+
+/* Resolved route for a peripheral request. `name` is the dma device-manager
+ * name to acquire from; `stream`/`channel` are the concrete stream index
+ * (0..7) and CHSEL value (0..7) the hardware demands. An unknown id returns
+ * name=NULL (driver should refuse the transfer). */
+typedef struct {
+    const char *name;
+    uint8_t     stream;
+    uint8_t     channel;
+} dma_route_t;
+
+dma_route_t dma_hal_route(dma_req_id_t req);
+
 #endif /* DMA_HAL_H */

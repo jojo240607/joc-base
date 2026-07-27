@@ -310,6 +310,69 @@ static void cmd_ioxfer(app_ctx_t *c, const char *line)
     c->console->vtable->write(c->console, out, (size_t)n);
 }
 
+/* ---- UART DMA 验证命令：把控制台 UART 切到 DMA 模式，先用 DMA TX 发出一个
+ * 特征串（主机若收到即证明 DMAT/路由/TC 全对），再用 DMA RX 收 4 字节
+ * （主机随后发送），随后切回 IRQ 模式。主机侧配合：发 "UARTDMA\r\n" 后约 0.1s
+ * 再发 4 字节，设备会回显 "UARTDMA RX=..."。 */
+static void cmd_uartdma(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    device *u = c->uart;
+    if (!u) { usb_reply(c, "UARTDMA: no uart\r\n"); return; }
+
+    stream_xfer_mode_t m = STREAM_MODE_DMA;
+    if (u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m) != 0) {
+        usb_reply(c, "UARTDMA: DMA unavailable for this uart (no route)\r\n");
+        return;
+    }
+    /* TX via DMA: host receives these bytes iff USART1_TX->DMA2_Stream7 routing
+     * + DMAT + Transfer-Complete all work. We print progress in IRQ mode between
+     * the DMA ops so a hang is easy to localize on the host. */
+    const char *marker = "UARTDMA_MARKER_0123456789ABCDEF\r\n";
+    u->vtable->write(u, marker, strlen(marker));   /* DMA TX #1 */
+    m = STREAM_MODE_IRQ;
+    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
+    u->vtable->write(u, "TX1-OK\r\n", 9);           /* IRQ print */
+
+    /* RX via DMA: switch back to DMA, do a 2nd DMA TX ("RX-START") to see if
+     * re-arming the SAME stream hangs, then the RX read itself. */
+    m = STREAM_MODE_DMA;
+    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
+    u->vtable->write(u, "RX-START\r\n", 11);        /* DMA TX #2 (re-arm test) */
+    m = STREAM_MODE_IRQ;
+    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
+    u->vtable->write(u, "TX2-OK\r\n", 9);           /* IRQ print */
+
+    m = STREAM_MODE_DMA;
+    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
+    char rx[4];
+    int n = u->vtable->read(u, rx, sizeof(rx));     /* DMA RX read */
+    m = STREAM_MODE_IRQ;
+    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);
+
+    char out[96];
+    int k;
+    if (n == 4)
+        k = snprintf(out, sizeof(out), "UARTDMA RX(4)=%c%c%c%c\r\n",
+                     rx[0], rx[1], rx[2], rx[3]);
+    else {
+        /* RX DMA did not complete — dump the HW state to localize the cause:
+         * SR.RXNE (bit5) tells us if bytes actually arrived at the USART;
+         * CR3.DMAR (bit6) tells us if the USART is gating onto the DMA;
+         * the stream NDTR tells us how many bytes the DMA moved. */
+        uart *uu = (uart *)u;
+        uint32_t sr  = uart_hal_get_sr(uu->hal);
+        uint32_t cr3 = uart_hal_get_cr3(uu->hal);
+        uint32_t ndtr = uu->dma_dev ? uu->dma_dev->fun->remaining(uu->dma_dev, uu->dma_rx) : 0;
+        k = snprintf(out, sizeof(out),
+                     "UARTDMA RX FAIL n=%d sr=0x%X cr3=0x%X DMAR=%d ndtr=%lu\r\n",
+                     n, (unsigned)sr, (unsigned)cr3, (int)((cr3 >> 6) & 1), (unsigned long)ndtr);
+    }
+    u->vtable->write(u, out, (size_t)k);
+    usb_reply(c, n == 4 ? "UARTDMA OK (TX+RX via DMA)\r\n"
+                        : "UARTDMA TX-OK RX-FAIL\r\n");
+}
+
 /* ---- 命令表：加命令只需在此追加一行 + 对应 handler ---- */
 static const cmd_entry_t g_cmds[] = {
     { "PING",     cmd_ping,     0 },
@@ -340,6 +403,7 @@ static const cmd_entry_t g_cmds[] = {
     { "BTN2",     cmd_btn2,     0 },
     { "BTN2C",    cmd_btn2c,    0 },
     { "IOXFER",   cmd_ioxfer,   0 },
+    { "UARTDMA",  cmd_uartdma,  0 },
 };
 
 static void dispatch(app_ctx_t *c, const char *line)

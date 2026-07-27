@@ -132,3 +132,34 @@ uint32_t uart_hal_get_cr1(uart_hal_handle_t *h)
 {
     return h ? h->usart->CR1 : 0UL;
 }
+
+void *uart_hal_get_dr_addr(uart_hal_handle_t *h)
+{
+    return h ? (void *)&h->usart->DR : NULL;
+}
+
+void uart_hal_enable_tx_dma(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR3 |= USART_CR3_DMAT;
+}
+void uart_hal_disable_tx_dma(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR3 &= ~USART_CR3_DMAT;
+}
+void uart_hal_enable_rx_dma(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR3 |= USART_CR3_DMAR;
+}
+void uart_hal_disable_rx_dma(uart_hal_handle_t *h)
+{
+    if (h) h->usart->CR3 &= ~USART_CR3_DMAR;
+}
+
+uint32_t uart_hal_get_sr(uart_hal_handle_t *h)
+{
+    return h ? h->usart->SR : 0UL;
+}
+uint32_t uart_hal_get_cr3(uart_hal_handle_t *h)
+{
+    return h ? h->usart->CR3 : 0UL;
+}

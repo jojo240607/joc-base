@@ -1,23 +1,33 @@
-[1/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/uart.c.obj
-[2/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/gpio_pin.c.obj
-[3/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/main.c.obj
-[4/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/pinmux.c.obj
-[5/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/exti.c.obj
-[6/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/pwm.c.obj
-[7/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/spi.c.obj
-[8/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/sd_card.c.obj
-D:/project/mcu/oop/joc-base/src/drv/sd_card.c: In function 'sc_init':
-D:/project/mcu/oop/joc-base/src/drv/sd_card.c:170:5: warning: this 'if' clause does not guard... [-Wmisleading-indentation]
-  170 |     if (sc_cmd(p, SD_CMD3, 0, 1, &r1)) return -1; p->rca = (uint16_t)(r1 >> 16);
-      |     ^~
-D:/project/mcu/oop/joc-base/src/drv/sd_card.c:170:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the 'if'
-  170 |     if (sc_cmd(p, SD_CMD3, 0, 1, &r1)) return -1; p->rca = (uint16_t)(r1 >> 16);
-      |                                                   ^
-[9/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/i2s.c.obj
-[10/11] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/selftest.c.obj
-[11/11] Linking C executable stm32f407_minimal.elf
+[1/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/main.c.obj
+[2/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_idle.c.obj
+[3/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_blink.c.obj
+[4/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/system_init.c.obj
+[5/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_template.c.obj
+[6/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_app_main.c.obj
+[7/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_bist.c.obj
+[8/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_button_wq.c.obj
+[9/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_button.c.obj
+[10/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/osal/osal_rtos.c.obj
+[11/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/syscalls.c.obj
+[12/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_sem.c.obj
+[13/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/kobj.c.obj
+[14/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/arch/cortex_m/port.c.obj
+[15/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_event.c.obj
+[16/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_stress.c.obj
+[17/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_mutex.c.obj
+[18/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_bus.c.obj
+[19/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/task.c.obj
+[20/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_mq.c.obj
+[21/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_usr.c.obj
+[22/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/bh.c.obj
+[23/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/arch/cortex_m/mpu.c.obj
+[24/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/sched.c.obj
+[25/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_p4.c.obj
+[26/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_selftest.c.obj
+[27/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/console.c.obj
+[28/28] Linking C executable stm32f407_minimal.elf
 Memory region         Used Size  Region Size  %age Used
-           FLASH:       82564 B         1 MB      7.87%
-             RAM:        8704 B       128 KB      6.64%
+           FLASH:      103776 B         1 MB      9.90%
+             RAM:       88968 B       128 KB     67.88%
    text	   data	    bss	    dec	    hex	filename
-  82216	    340	   8372	  90928	  16330	D:/project/mcu/oop/joc-base/build/stm32f407_minimal.elf
+ 103368	    400	  80776	 184544	  2d0e0	D:/project/mcu/oop/joc-base/build/stm32f407_minimal.elf

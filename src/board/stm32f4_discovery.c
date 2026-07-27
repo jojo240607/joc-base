@@ -97,7 +97,9 @@ static const adc_config_t  g_adc0  = { "adc0",  (void *)ADC1, 0, 3300,
                                        "ADC1_IN0" };          /* PA0, af=0 */
 static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1,
                                        "USART1_TX_PA9",        /* TX = PA9, AF7 */
-                                       "USART1_RX_PA10" };     /* RX = PA10, AF7 */
+                                       "USART1_RX_PA10",       /* RX = PA10, AF7 */
+                                       DMA_REQ_USART1_TX,      /* TX -> DMA2_Stream7 CH4 */
+                                       DMA_REQ_USART1_RX };    /* RX -> DMA2_Stream5 CH4 */
 static const gpio_config_t g_led   = { "led",   "GPIOD_12", 1 }; /* D12, output */
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */

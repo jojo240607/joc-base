@@ -53,10 +53,14 @@ struct dmaFun {
     void (*destroy)(dma *self);
     void (*init)(dma *self);
     void (*deinit)(dma *self);
-    /* acquire a free stream for the given request (channel 0..7) + direction.
-     * Returns NULL if all 8 streams are busy. The stream stays reserved until
-     * free() is called. */
-    dma_stream_t *(*acquire)(dma *self, uint32_t request, dma_dir_t dir);
+    /* acquire a stream for a transfer. `stream_idx` is the concrete stream to
+     * use (0..7) — for a peripheral request this MUST be the value from
+     * dma_hal_route(); pass DMA_STREAM_ANY to let the driver pick a free stream
+     * (used by memory-to-memory). `channel` is the CHSEL value (0..7, again from
+     * dma_hal_route() for peripherals, or 0 for M2M). `dir` selects P2M/M2P/M2M.
+     * Returns NULL if the requested stream is busy or out of range. The stream
+     * stays reserved until free() is called. */
+    dma_stream_t *(*acquire)(dma *self, uint8_t stream_idx, uint8_t channel, dma_dir_t dir);
     /* program a previously-acquired stream: periph address (PAR), memory address
      * (M0AR), item count, unit size, address increments, priority. The stream is
      * left DISABLED (call start() to arm it). Returns 0 on success. */
@@ -78,6 +82,10 @@ struct dmaFun {
 };
 
 #define DMA_STREAMS_PER_CTLR 8
+/* Sentinel for acquire(): pick ANY free stream (used by memory-to-memory
+ * transfers, where the silicon imposes no fixed stream). Peripheral requests
+ * MUST pass the concrete stream index from dma_hal_route() instead. */
+#define DMA_STREAM_ANY 0xFF
 
 /* Per-stream runtime state (one entry per pool stream). `hal` / `owner` are
  * back-pointers so the per-stream ISR can recover its context without a global
