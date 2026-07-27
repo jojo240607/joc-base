@@ -32,6 +32,31 @@
  */
 typedef struct _spi spi;
 
+/* Per-engine state — heap-allocated on demand in open()/SET_MODE and freed in
+ * close(). Only the ACTIVE engine's variant exists at any time, so the RAM it
+ * costs is paid only when that engine is actually used. This replaces the old
+ * static layout where EVERY spi paid for an xfer_done semaphore + 2x256 B DMA
+ * bounce + ISR transfer state up-front even when it ran POLL/IRQ — a POLL or
+ * IRQ spi now costs ~0 B of engine state instead of ~0.5 KB.
+ *
+ * SPI has a single orthogonal axis here: the transfer ENGINE (POLL/IRQ/DMA).
+ * There is no second (framing-like) axis, so the variants are simply keyed by
+ * parent.mode; the active one is reached through a single `p->eng` cast. */
+typedef struct {
+    osal_sem_t xfer_done;            /* signaled by the RXNE ISR on completion */
+    const uint8_t *tx_buf;           /* ISR advances these (IRQ mode only) */
+    uint8_t *rx_buf;
+    volatile uint16_t xfer_len;
+    volatile uint16_t xfer_pos;
+} spi_irq_t;
+
+typedef struct {
+    /* main-SRAM scratch (DMA cannot touch CCM). The TX source and RX dest must
+     * be separate buffers (full-duplex: TX src + RX dst must not overlap). */
+    uint8_t dma_bounce[SPI_DMA_BOUNCE];
+    uint8_t dma_rx_bounce[SPI_DMA_BOUNCE];
+} spi_dma_t;
+
 /* Board fills this as DATA. pclk_hz is the APB clock (84 MHz SPI1, 42 MHz SPI2/3). */
 typedef struct {
     const char *name;
@@ -57,23 +82,21 @@ struct _spi {
     uint8_t  sck_pin, miso_pin, mosi_pin;
     uint8_t  sck_af, miso_af, mosi_af;
     irq_id_t  irq;               /* platform IRQ number */
-    osal_sem_t xfer_done;        /* completion semaphore for IRQ mode */
 
-    /* DMA engine state (valid when streams reserved at open + mode == DMA). */
+    /* DMA engine handles (valid only when engine == STREAM_MODE_DMA and the
+     * streams were successfully acquired at open). Kept as always-present small
+     * pointers so TX/RX can arm a transfer without re-resolving the route. The
+     * large DMA bounce buffers live in the per-engine spi_dma_t instead. */
     dma_req_id_t dma_tx_req;      /* cached from config */
     dma_req_id_t dma_rx_req;
     dma *dma_dev;                 /* resolved dma controller (dma1/dma2) */
     dma_stream_t *dma_tx;         /* reserved TX stream handle (NULL if none) */
     dma_stream_t *dma_rx;         /* reserved RX stream handle (NULL if none) */
-    uint8_t dma_bounce[SPI_DMA_BOUNCE];     /* main-SRAM TX scratch (CCM-inaccessible) */
-    uint8_t dma_rx_bounce[SPI_DMA_BOUNCE];  /* separate RX scratch (full-duplex:
-                                               TX src + RX dst must not overlap) */
 
-    /* transfer state (used by ISR in IRQ mode) */
-    const uint8_t *volatile tx_buf;
-    uint8_t *volatile rx_buf;
-    volatile uint16_t xfer_len;
-    volatile uint16_t xfer_pos;
+    /* per-engine state — heap-allocated in open() for the chosen engine, freed in
+     * close(). NULL for POLL (zero state); the active variant is selected by
+     * parent.mode (spi_irq_t for IRQ, spi_dma_t for DMA). */
+    void *eng;
 };
 
 device *spi_create(const void *config);

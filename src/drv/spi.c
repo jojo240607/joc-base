@@ -133,6 +133,62 @@ static int spi_dma_acquire(spi *p)
     return 0;
 }
 
+/* --- Per-engine state management (lazy allocation, mirrors uart_setup_engine) ---
+ * The engine (POLL/IRQ/DMA) is the only axis; only the active engine's state is
+ * heap-allocated (spi_irq_t / spi_dma_t), reached via a single `p->eng` cast.
+ * Returns 0 on success, -1 if the engine is unavailable (leaving p untouched). */
+static void spi_free_engine(spi *p)
+{
+    if (!p->eng) return;
+    free(p->eng);
+    p->eng = NULL;
+}
+
+static int spi_setup_engine(spi *p, stream_xfer_mode_t engine)
+{
+    if (engine != STREAM_MODE_POLL && engine != STREAM_MODE_IRQ &&
+        engine != STREAM_MODE_DMA)
+        return -1;
+    /* DMA needs both hard-wired streams reserved (full-duplex SPI). */
+    if (engine == STREAM_MODE_DMA && (!p->dma_tx || !p->dma_rx))
+        return -1;
+    /* IRQ needs a valid interrupt line. */
+    if (engine == STREAM_MODE_IRQ && p->irq < 0)
+        return -1;
+
+    /* tear down current state (after validation above, so a rejection leaves
+     * the spi in its previous, working configuration) */
+    spi_free_engine(p);
+
+    if (engine == STREAM_MODE_IRQ) {
+        spi_irq_t *e = (spi_irq_t *)malloc(sizeof(spi_irq_t));
+        if (!e) return -1;
+        memset(e, 0, sizeof(*e));
+        p->eng = e;
+    } else if (engine == STREAM_MODE_DMA) {
+        spi_dma_t *e = (spi_dma_t *)malloc(sizeof(spi_dma_t));
+        if (!e) return -1;
+        memset(e, 0, sizeof(*e));
+        p->eng = e;
+    } else { /* POLL: zero state */
+        p->eng = NULL;
+    }
+
+    p->parent.mode = engine;
+    /* Select the RX producer: IRQ arms RXNE (data path); DMA silences the
+     * peripheral IRQ (the DMA TC ISR handles completion); POLL uses neither. */
+    if (p->irq >= 0) {
+        if (engine == STREAM_MODE_IRQ) {
+            spi_hal_enable_rxne_irq(p->hal);
+            irq_manager_enable(p->irq, spi_isr, p);
+        } else {
+            spi_hal_disable_rxne_irq(p->hal);
+            irq_manager_disable(p->irq, spi_isr, p);
+        }
+    }
+    return 0;
+}
+
 static void spi_dma_release(spi *p)
 {
     spi_hal_disable_tx_dma(p->hal);
@@ -149,25 +205,26 @@ static void spi_dma_release(spi *p)
  * both streams to hit Transfer-Complete. Returns 0 on success. */
 static int spi_dma_xfer(spi *p, const uint8_t *tx, uint8_t *rx, uint16_t len)
 {
-    if (!p->dma_dev || !p->dma_tx || !p->dma_rx) return -1;
+    spi_dma_t *e = (spi_dma_t *)p->eng;
+    if (!e || !p->dma_dev || !p->dma_tx || !p->dma_rx) return -1;
     if (len == 0) return 0;
     void *dr = spi_hal_get_dr_addr(p->hal);
 
     const uint8_t *tx_src = tx; uint8_t tx_inc = 1;
     if (tx) {
-        if (len <= SPI_DMA_BOUNCE) { memcpy(p->dma_bounce, tx, len); tx_src = p->dma_bounce; }
+        if (len <= SPI_DMA_BOUNCE) { memcpy(e->dma_bounce, tx, len); tx_src = e->dma_bounce; }
         else tx_src = tx;                 /* oversize: assume main-SRAM buffer */
     } else {
-        memset(p->dma_bounce, 0xFF, (len <= SPI_DMA_BOUNCE) ? len : SPI_DMA_BOUNCE);
-        tx_src = p->dma_bounce; tx_inc = 0;  /* repeat 0xFF (read-only master) */
+        memset(e->dma_bounce, 0xFF, (len <= SPI_DMA_BOUNCE) ? len : SPI_DMA_BOUNCE);
+        tx_src = e->dma_bounce; tx_inc = 0;  /* repeat 0xFF (read-only master) */
     }
 
     uint8_t *rx_dst = rx; uint8_t rx_inc = 1;
     if (rx) {
-        if (len <= SPI_DMA_BOUNCE) rx_dst = p->dma_rx_bounce;  /* separate RX scratch */
+        if (len <= SPI_DMA_BOUNCE) rx_dst = e->dma_rx_bounce;  /* separate RX scratch */
         else rx_dst = rx;
     } else {
-        rx_dst = p->dma_bounce; rx_inc = 0;  /* discard (RX DMA must drain to avoid OVR) */
+        rx_dst = e->dma_bounce; rx_inc = 0;  /* discard (RX DMA must drain to avoid OVR) */
     }
 
     p->dma_dev->fun->config(p->dma_dev, p->dma_tx, dr, (void *)tx_src, len,
@@ -182,7 +239,7 @@ static int spi_dma_xfer(spi *p, const uint8_t *tx, uint8_t *rx, uint16_t len)
     if (rc == 0) rc = p->dma_dev->fun->wait_done(p->dma_dev, p->dma_rx, 2000);
     spi_hal_disable_tx_dma(p->hal);
     spi_hal_disable_rx_dma(p->hal);
-    if (rc == 0 && rx && rx_dst != rx) memcpy(rx, p->dma_rx_bounce, len);
+    if (rc == 0 && rx && rx_dst != rx) memcpy(rx, e->dma_rx_bounce, len);
     return rc == 0 ? 0 : -1;
 }
 
@@ -219,21 +276,26 @@ static int spi_dev_open(device *self)
     spi_dma_acquire(p);
 
     /* Register the SPI ISR through the platform-independent irq framework. */
-    if (p->irq >= 0) {
+    if (p->irq >= 0)
         irq_manager_attach(p->irq, spi_isr, p);
-        if (p->parent.mode == STREAM_MODE_IRQ)
-            irq_manager_enable(p->irq, spi_isr, p);
-    }
+
+    /* (Re)build the per-engine state for the chosen engine (default POLL) and
+     * select the RX producer. If the configured engine is unavailable (e.g. IRQ
+     * with no irq line), fall back to POLL so the SPI stays usable. */
+    if (spi_setup_engine(p, p->parent.mode) != 0)
+        spi_setup_engine(p, STREAM_MODE_POLL);
+
     return 0;
 }
 
 static int spi_dev_close(device *self)
 {
     spi *p = (spi *)self;
-    spi_dma_release(p);
+    spi_free_engine(p);               /* free per-engine state (idempotent) */
+    spi_dma_release(p);               /* release reserved DMA streams */
     if (p->irq >= 0) {
         spi_hal_disable_rxne_irq(p->hal);
-        irq_manager_disable(p->irq, spi_isr, p);
+        irq_manager_detach(p->irq, spi_isr, p);
     }
     spi_hal_set_peripheral_enable(p->hal, 0);
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
@@ -273,24 +335,26 @@ static int spi_do_xfer(spi *p, const uint8_t *tx, uint8_t *rx, uint16_t len)
     if (p->parent.mode == STREAM_MODE_DMA)
         return spi_dma_xfer(p, tx, rx, len);
     if (p->parent.mode == STREAM_MODE_IRQ) {
+        spi_irq_t *e = (spi_irq_t *)p->eng;
+        if (!e) return -1;
         /* --- Interrupt-driven transfer --- */
         if (len == 0) return 0;
         /* Set up transfer state for the ISR. */
-        p->tx_buf  = tx;
-        p->rx_buf  = rx;
-        p->xfer_len = len;
-        p->xfer_pos = 0;
-        osal_sem_init(&p->xfer_done, 0);
+        e->tx_buf  = tx;
+        e->rx_buf  = rx;
+        e->xfer_len = len;
+        e->xfer_pos = 0;
+        osal_sem_init(&e->xfer_done, 0);
 
         /* Prime: write the first byte to DR to start shifting. */
         spi_hal_write_dr(p->hal, tx ? tx[0] : (uint8_t)0xFF);
-        p->xfer_pos = 1;
+        e->xfer_pos = 1;
 
         /* Enable RXNEIE; the ISR handles remaining bytes. */
         spi_hal_enable_rxne_irq(p->hal);
 
         /* Wait for the ISR to complete the transfer. */
-        osal_sem_wait(&p->xfer_done);
+        osal_sem_wait(&e->xfer_done);
 
         spi_hal_disable_rxne_irq(p->hal);
         return 0;
@@ -313,22 +377,24 @@ static int spi_do_xfer(spi *p, const uint8_t *tx, uint8_t *rx, uint16_t len)
 static void spi_isr(void *ctx)
 {
     spi *p = (spi *)ctx;
+    spi_irq_t *e = (spi_irq_t *)p->eng;
+    if (!e) return;
 
     /* Read the received byte (this clears RXNE). */
     uint8_t rx_byte = spi_hal_read_dr(p->hal);
-    uint16_t pos = p->xfer_pos;            /* index of the byte JUST received */
+    uint16_t pos = e->xfer_pos;            /* index of the byte JUST received */
 
-    if (pos > 0 && p->rx_buf)
-        p->rx_buf[pos - 1] = rx_byte;
+    if (pos > 0 && e->rx_buf)
+        e->rx_buf[pos - 1] = rx_byte;
 
     /* If more bytes to send, write the next one. */
-    if (pos < p->xfer_len) {
+    if (pos < e->xfer_len) {
         spi_hal_write_dr(p->hal,
-            p->tx_buf ? p->tx_buf[pos] : (uint8_t)0xFF);
-        p->xfer_pos = pos + 1;
+            e->tx_buf ? e->tx_buf[pos] : (uint8_t)0xFF);
+        e->xfer_pos = pos + 1;
     } else {
         /* Last byte received — signal completion. */
-        osal_sem_give(&p->xfer_done);
+        osal_sem_give(&e->xfer_done);
     }
 }
 
@@ -358,25 +424,10 @@ static int spi_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m == STREAM_MODE_DMA) {
-            /* need both streams reserved for full-duplex SPI DMA */
-            if (!p->dma_tx || !p->dma_rx) return -1;
-            /* silence the SPI's own data IRQ so the ISR can't steal a byte */
-            spi_hal_disable_rxne_irq(p->hal);
-            if (p->irq >= 0) irq_manager_disable(p->irq, spi_isr, p);
-        } else if (m == STREAM_MODE_IRQ) {
-            if (p->irq >= 0) {
-                spi_hal_enable_rxne_irq(p->hal);
-                irq_manager_enable(p->irq, spi_isr, p);
-            }
-        } else if (m == STREAM_MODE_POLL) {
-            spi_hal_disable_rxne_irq(p->hal);
-            if (p->irq >= 0) irq_manager_disable(p->irq, spi_isr, p);
-        } else {
-            return -1;
-        }
-        p->parent.mode = m;
-        return 0;
+        /* (re)build per-engine state for the new engine (frees the old, allocates
+         * the new, selects the RX producer). Returns -1 (leaving the spi in its
+         * previous configuration) if the engine is unavailable. */
+        return spi_setup_engine(p, m);
     }
     case STREAM_IOCTL_GET_MODE:
         if (arg) *(stream_xfer_mode_t *)arg = p->parent.mode;
