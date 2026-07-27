@@ -38,4 +38,13 @@ void     adc_hal_disable_eoc_irq(adc_hal_handle_t *h); /* clear ADC_CR1_EOCIE */
 void     adc_hal_start_convert(adc_hal_handle_t *h);   /* SWSTART only (no wait) */
 uint32_t adc_hal_read_dr(adc_hal_handle_t *h);         /* read DR (clears EOC) */
 
+/* --- DMA support (used by the driver's STREAM_MODE_DMA engine) ---
+ * STM32F4 ADCs are hard-wired to a specific DMA stream (ADC1->DMA2_Stream0).
+ * The driver resolves that stream via dma_hal_route() and drives it through the
+ * generic dma device; the HAL only exposes the data-register address and the
+ * CR2 bits that gate the ADC's DMA request. */
+void    *adc_hal_get_dr_addr(adc_hal_handle_t *h);     /* (void*)&DR — DMA PAR */
+void     adc_hal_enable_dma(adc_hal_handle_t *h);      /* CR2 DMA|CONT + SWSTART (continuous burst) */
+void     adc_hal_disable_dma(adc_hal_handle_t *h);     /* clear CR2 DMA|CONT */
+
 #endif /* ADC_HAL_H */

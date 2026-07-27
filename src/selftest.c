@@ -380,12 +380,36 @@ static int selftest_vadc(selftest *self)
     uint32_t vref = 0;
     adc->vtable->read(adc, &vref, sizeof(vref));
     uint32_t zero = 0U;
-    adc->vtable->ioctl(adc, ADC_IOCTL_SET_CHANNEL, &zero);   /* restore external channel */
-
     int vref_ok = (vref >= 800U && vref <= 2200U);
     log_printf(app_log(), LOG_DEBUG, "selftest", "       VREFINT raw=%lu (expect ~1500) %s\n",
            (unsigned long)vref, vref_ok ? "" : "[OUT OF RANGE]");
-    return vref_ok;
+
+    /* (2) DMA burst: re-select VREFINT, switch the ADC to STREAM_MODE_DMA and
+     * read a buffer of N VREFINT samples through the hard-wired ADC1->DMA2_Stream0
+     * path. Every sample must land in the sane VREFINT band — proving route +
+     * ADC-DMA + Transfer-Complete all work. If this board has no DMA route the
+     * mode is refused and we skip (not a failure). */
+    int dma_ok = 1;
+    adc->vtable->ioctl(adc, ADC_IOCTL_SET_CHANNEL, &ch);   /* VREFINT again */
+    stream_xfer_mode_t dma_mode = STREAM_MODE_DMA;
+    if (adc->vtable->ioctl(adc, STREAM_IOCTL_SET_MODE, &dma_mode) == 0) {
+        uint32_t buf[16];
+        int n = adc->vtable->read(adc, buf, sizeof(buf));
+        dma_ok = (n == (int)sizeof(buf));
+        for (int i = 0; dma_ok && i < 16; i++)
+            if (buf[i] < 800U || buf[i] > 2200U) dma_ok = 0;
+        stream_xfer_mode_t irq_mode = STREAM_MODE_IRQ;
+        adc->vtable->ioctl(adc, STREAM_IOCTL_SET_MODE, &irq_mode);  /* restore */
+        log_printf(app_log(), LOG_DEBUG, "selftest",
+               "       DMA  burst16: n=%d samples-ok=%s\n",
+               n / 4, dma_ok ? "PASS" : "FAIL");
+    } else {
+        log_printf(app_log(), LOG_DEBUG, "selftest",
+               "       DMA  mode: not routed on this board (skip)\n");
+    }
+
+    adc->vtable->ioctl(adc, ADC_IOCTL_SET_CHANNEL, &zero);   /* restore external channel */
+    return vref_ok && dma_ok;
 }
 
 static int selftest_vtemp(selftest *self)
@@ -897,6 +921,33 @@ static int selftest_vdac(selftest *self)
 
     log_printf(app_log(), LOG_DEBUG, "selftest", "       dac0(DAC1_CH1,PA4): DOR readback %s, CR.EN1=%s\n",
            rb_ok ? "PASS" : "FAIL", ok_en ? "on" : "OFF");
+
+    /* (2) DMA burst: switch the DAC to STREAM_MODE_DMA and DMA a buffer of N
+     * samples into DHR12R1 through the hard-wired DAC1->DMA1_Stream5 path, then
+     * read back the DOR the silicon latched — it must equal the LAST sample,
+     * proving route + DAC-DMA + Transfer-Complete all work. The analog output
+     * itself is not probed (no scope); DOR readback is exactly what the
+     * hardware holds after the burst. If this board has no DMA route the mode is
+     * refused and we skip (not a failure). */
+    int dma_ok = 1;
+    stream_xfer_mode_t dma_mode = STREAM_MODE_DMA;
+    if (d->vtable->ioctl(d, STREAM_IOCTL_SET_MODE, &dma_mode) == 0) {
+        static const uint16_t wbuf[4] = { 0x111, 0x555, 0x999, 0xCCC };
+        int n = d->vtable->write(d, wbuf, sizeof(wbuf));
+        dma_ok = (n == (int)sizeof(wbuf));
+        uint16_t got = 0;
+        d->vtable->ioctl(d, DAC_IOCTL_GET_VALUE, &got);
+        if (got != wbuf[3]) dma_ok = 0;   /* DOR must hold the last DMA sample */
+        stream_xfer_mode_t poll_mode = STREAM_MODE_POLL;
+        d->vtable->ioctl(d, STREAM_IOCTL_SET_MODE, &poll_mode);  /* restore */
+        log_printf(app_log(), LOG_DEBUG, "selftest",
+               "       DMA  burst4: n=%d DOR=0x%03X(last? %s)\n",
+               n / 2, (unsigned)got, (got == wbuf[3]) ? "PASS" : "FAIL");
+    } else {
+        log_printf(app_log(), LOG_DEBUG, "selftest",
+               "       DMA  mode: not routed on this board (skip)\n");
+    }
+    if (!dma_ok) ok = 0;
 
     d->vtable->close(d);
     return ok;

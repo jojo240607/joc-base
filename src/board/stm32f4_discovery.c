@@ -94,7 +94,8 @@ uint32_t board_ticks(void) { return g_board_ticks; }
 /* ---- board devices as DATA (each driver's own config, filled by the board) */
 static const pinmux_config_t g_pinmux = { "pinmux" };
 static const adc_config_t  g_adc0  = { "adc0",  (void *)ADC1, 0, 3300,
-                                       "ADC1_IN0" };          /* PA0, af=0 */
+                                       "ADC1_IN0",            /* PA0, af=0 */
+                                       DMA_REQ_ADC1 };        /* ADC1 -> DMA2_Stream0 CH0 */
 static const uart_config_t g_uart0 = { "uart0", (void *)USART1, 115200, 1,
                                        "USART1_TX_PA9",        /* TX = PA9, AF7 */
                                        "USART1_RX_PA10",       /* RX = PA10, AF7 */
@@ -173,8 +174,12 @@ static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
                                      "SDIO_D2", "SDIO_D3" };
 /* SD Card: uses sdio0 bus device (no direct pin/HAL access). */
 static const sd_card_config_t g_sd_card0 = { "sd_card0", "sdio0", 0 };
-/* DAC: dac0 is DAC1 channel 1 on PA4 (DAC_OUT1), 12-bit analog output. */
-static const dac_config_t g_dac0 = { "dac0", (void *)DAC, 1, "DAC_OUT1" };
+/* DAC: dac0 is DAC1 channel 1 on PA4 (DAC_OUT1), 12-bit analog output.
+ * DAC+DMA requires a trigger source (static mode never raises a DMA request),
+ * so TIM6 (the silicon's dedicated DAC trigger timer) clocks the burst. */
+static const dac_config_t g_dac0 = { "dac0", (void *)DAC, 1, "DAC_OUT1",
+                                     DMA_REQ_DAC1,              /* DAC1 -> DMA1_Stream5 CH7 */
+                                     (void *)TIM6 };           /* TIM6 TRGO (DAC trigger) */
 /* RTC: rtc0 is the on-chip RTC, clocked by the internal LSI oscillator. The RTC
  * lives in the backup domain and needs no external pins, so there is no pinmux
  * signal — only the peripheral base (RTC). */

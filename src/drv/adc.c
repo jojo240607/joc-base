@@ -59,6 +59,8 @@ device *adc_create(const void *config)
     self->channel = c->channel;
     self->vdda_mv = c->vdda_mv;
     self->ain_signal = c->ain_signal;        /* cached for pinmux claim at open() */
+    self->dma_req = c->dma_req;              /* cached for re-acquire on reopen */
+    self->dma_dev = NULL; self->dma_str = NULL;
     /* Resolve the analog-input signal name up front (external channels only).
      * Internal channels (16/17/18) take no GPIO pin, so ain_signal is NULL. */
     if (c->channel < 16U && c->ain_signal) {
@@ -115,17 +117,74 @@ static void adc_set_channel(adc *self, uint32_t channel)
     adc_hal_set_channel(self->hal, channel);
 }
 
+/* --- DMA engine (STREAM_MODE_DMA, P2M: ADC_DR -> memory) ---
+ * An ADC is hard-wired to ONE specific DMA stream (ADC1->DMA2_Stream0). We
+ * resolve that stream once at open() (via dma_hal_route) and keep it reserved;
+ * the DMA ISR (in drv/dma.c) gives the stream's done_sem on Transfer-Complete,
+ * so the read blocks until the hardware finishes the whole burst — the blocking
+ * API contract is preserved. */
+static int adc_dma_acquire(adc *a)
+{
+    a->dma_dev = NULL; a->dma_str = NULL;
+    if (a->dma_req == DMA_REQ_NONE) return 0;   /* this ADC has no DMA configured */
+    dma_route_t rt = dma_hal_route(a->dma_req);
+    if (!rt.name) return 0;
+    dma *dm = (dma *)device_manager_get(rt.name);
+    if (!dm) return 0;
+    dma_stream_t *s = dm->fun->acquire(dm, rt.stream, rt.channel, DMA_DIR_P2M);
+    if (s) { a->dma_dev = dm; a->dma_str = s; }
+    else log_printf(app_log(), LOG_DEBUG, "adc", "%s: DMA stream busy\n",
+                   a->parent.parent.name);
+    return (a->dma_str) ? 0 : -1;
+}
+
+/* Release the reserved DMA stream (called at close). */
+static void adc_dma_release(adc *a)
+{
+    if (a->dma_dev && a->dma_str) a->dma_dev->fun->free(a->dma_dev, a->dma_str);
+    a->dma_dev = NULL; a->dma_str = NULL;
+}
+
+/* DMA burst read: program the reserved stream (P2M, PAR=DR, memory=bounce,
+ * MINC), start a continuous conversion burst, block until Transfer-Complete,
+ * then copy the 16-bit samples out to the caller's uint32_t buffer. The bounce
+ * is in main SRAM because DMA cannot touch CCM (a caller stack array might be
+ * in CCM). */
+static int adc_dma_read(adc *a, void *buf, size_t len)
+{
+    if (!a->dma_dev || !a->dma_str) return -1;
+    uint32_t nsamp = (uint32_t)(len / sizeof(uint32_t));
+    if (nsamp == 0) return -1;
+    uint16_t *tmp = (nsamp <= ADC_DMA_BOUNCE) ? a->dma_bounce
+                                               : (uint16_t *)malloc(nsamp * sizeof(uint16_t));
+    if (!tmp) return -1;
+    void *dr = adc_hal_get_dr_addr(a->hal);
+    a->dma_dev->fun->config(a->dma_dev, a->dma_str, dr, tmp, nsamp,
+                            DMA_DATA_16, 0 /*periph_inc*/, 1 /*mem_inc*/, DMA_PRIO_MED);
+    a->dma_dev->fun->start(a->dma_dev, a->dma_str, NULL, NULL);  /* arm stream (EN=1) BEFORE the ADC starts */
+    adc_hal_enable_dma(a->hal);                 /* CR2 DMA|CONT + SWSTART (now generates DMA requests) */
+    int rc = a->dma_dev->fun->wait_done(a->dma_dev, a->dma_str, 2000);
+    adc_hal_disable_dma(a->hal);
+    if (rc == 0) {
+        uint32_t *out = (uint32_t *)buf;
+        for (uint32_t i = 0; i < nsamp; i++) out[i] = tmp[i];
+    }
+    if (tmp != a->dma_bounce) free(tmp);
+    return rc == 0 ? (int)(nsamp * sizeof(uint32_t)) : -1;
+}
+
 /* --- unified device-interface virtual implementations --- */
 
 static int adc_dev_open(device *self)
 {
     adc_hw_init((adc *)self);
+    adc_dma_acquire((adc *)self);    /* reserve the hard-wired DMA stream (if any) */
     return 0;
 }
 
 static int adc_dev_close(device *self)
 {
-    (void)self;
+    adc_dma_release((adc *)self);    /* release the reserved DMA stream */
     return 0;
 }
 
@@ -136,7 +195,7 @@ static int adc_stream_read(stream_device *self, void *buf, size_t len)
 {
     adc *a = (adc *)self;
     if (len < sizeof(uint32_t)) return -1;
-    if (a->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    if (a->parent.mode == STREAM_MODE_DMA) return adc_dma_read(a, buf, len);
     if (a->parent.mode == STREAM_MODE_IRQ) {
         /* interrupt-driven: trigger the conversion, block on the EOC semaphore,
          * then take the value the ISR stashed into last_raw. */
@@ -207,13 +266,18 @@ static int adc_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+        if (m == STREAM_MODE_DMA && !a->dma_str) return -1;   /* no DMA engine here */
         a->parent.mode = m;
-        if (m == STREAM_MODE_IRQ) {
+        if (m == STREAM_MODE_DMA) {
+            /* DMA owns the data path; silence the EOC ISR so it cannot steal a
+             * sample the DMA is supposed to move (and re-fire forever on TC). */
+            adc_hal_disable_eoc_irq(a->hal);
+            irq_manager_disable(a->eoc_irq, adc_isr, a);
+        } else if (m == STREAM_MODE_IRQ) {
             irq_manager_set_priority(a->eoc_irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
             adc_hal_enable_eoc_irq(a->hal);
             irq_manager_enable(a->eoc_irq, adc_isr, a);    /* arm NVIC (cb attached) */
-        } else {
+        } else { /* POLL */
             adc_hal_disable_eoc_irq(a->hal);
             irq_manager_disable(a->eoc_irq, adc_isr, a);   /* mask NVIC (cb stays) */
         }

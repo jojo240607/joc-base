@@ -10,6 +10,9 @@
 /* virtual implementations dispatched through the unified device vtable */
 static int dac_dev_open(device *self);
 static int dac_dev_close(device *self);
+static int dac_dma_acquire(dac *p);
+static void dac_dma_release(dac *p);
+static int dac_dma_write(dac *p, const void *buf, size_t len);
 static int dac_dev_read(device *self, void *buf, size_t len);
 static int dac_dev_write(device *self, const void *buf, size_t len);
 static int dac_dev_ioctl(device *self, int cmd, void *arg);
@@ -50,6 +53,21 @@ device *dac_create(const void *config)
     if (!p->hal) { free(p); return NULL; }
     p->channel = c->channel;
     p->out_signal = c->out_signal;
+    p->dma_req = c->dma_req;              /* cached for re-acquire on reopen */
+    p->dma_dev = NULL; p->dma_str = NULL;
+    p->trig_tim = c->trig_tim;            /* cached trigger timer (TIM6) for DAC+DMA */
+    p->trig_hal = NULL; p->has_trigger = 0;
+    if (p->trig_tim) {
+        p->trig_hal = tim_hal_create(p->trig_tim);
+        if (p->trig_hal) {
+            tim_hal_enable_clock(p->trig_hal);
+            /* ~1 MHz trigger: plenty fast for a short burst, and any rate works
+             * since the DAC DMA blocks on Transfer-Complete. Route Update->TRGO. */
+            tim_hal_config(p->trig_hal, 84000000U, 1000000U);
+            tim_hal_master_trgo_update(p->trig_hal);
+            p->has_trigger = 1;
+        }
+    }
     /* Resolve the output signal name up front. */
     if (c->out_signal)
         pinmux_hal_resolve(c->out_signal, &p->port, &p->pin, &p->af);
@@ -89,15 +107,83 @@ static int dac_dev_open(device *self)
     }
     dac_hal_enable_clock(p->hal);
     dac_hal_enable_channel(p->hal, p->channel);
+    dac_dma_acquire(p);    /* reserve the hard-wired DMA stream (if any) */
     return 0;
 }
 
 static int dac_dev_close(device *self)
 {
     dac *p = (dac *)self;
+    dac_dma_release(p);    /* release the reserved DMA stream */
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) pm->fun->release_owner(pm, p->parent.parent.name);
     return 0;
+}
+
+/* --- DMA engine (STREAM_MODE_DMA, M2P: memory -> DAC_DHR) ---
+ * A DAC channel is hard-wired to ONE specific DMA stream (DAC1->DMA1_Stream5).
+ * We resolve that stream once at open() (via dma_hal_route) and keep it reserved;
+ * the DMA ISR (in drv/dma.c) gives the stream's done_sem on Transfer-Complete,
+ * so the write blocks until the whole burst has been streamed into the DAC. */
+static int dac_dma_acquire(dac *p)
+{
+    p->dma_dev = NULL; p->dma_str = NULL;
+    /* DAC+DMA needs BOTH a routed DMA stream AND a trigger timer (static mode
+     * never raises a DMA request). Without the timer, refuse so SET_MODE DMA
+     * is cleanly rejected and the BIST skips rather than hangs. */
+    if (p->dma_req == DMA_REQ_NONE || !p->has_trigger) return 0;
+    dma_route_t rt = dma_hal_route(p->dma_req);
+    if (!rt.name) return 0;
+    dma *dm = (dma *)device_manager_get(rt.name);
+    if (!dm) return 0;
+    dma_stream_t *s = dm->fun->acquire(dm, rt.stream, rt.channel, DMA_DIR_M2P);
+    if (s) { p->dma_dev = dm; p->dma_str = s; }
+    else log_printf(app_log(), LOG_DEBUG, "dac", "%s: DMA stream busy\n",
+                   p->parent.parent.name);
+    return (p->dma_str) ? 0 : -1;
+}
+
+/* Release the reserved DMA stream (called at close). */
+static void dac_dma_release(dac *p)
+{
+    if (p->dma_dev && p->dma_str) p->dma_dev->fun->free(p->dma_dev, p->dma_str);
+    p->dma_dev = NULL; p->dma_str = NULL;
+}
+
+/* DMA burst write: copy the caller's 12-bit samples into the main-SRAM bounce
+ * (DMA cannot touch CCM), program the reserved stream (M2P, PAR=DHR12Rx, memory=
+ * bounce, MINC), and CLOCK the burst with the trigger timer (TIM6 TRGO). Each
+ * timer overflow moves DHR->DOR and raises the DAC's DMA request, so the stream
+ * streams N samples without any CPU/ISR involvement. After Transfer-Complete we
+ * stop the timer and issue one software trigger to push the final held sample
+ * into DOR, which the BIST reads back to prove the path. */
+static int dac_dma_write(dac *p, const void *buf, size_t len)
+{
+    if (!p->dma_dev || !p->dma_str || !p->has_trigger) return -1;
+    uint32_t nsamp = (uint32_t)(len / sizeof(uint16_t));
+    if (nsamp == 0) return -1;
+    const uint16_t *src = (const uint16_t *)buf;
+    uint16_t *tmp = (nsamp <= DAC_DMA_BOUNCE) ? p->dma_bounce
+                                              : (uint16_t *)malloc(nsamp * sizeof(uint16_t));
+    if (!tmp) return -1;
+    for (uint32_t i = 0; i < nsamp; i++) tmp[i] = src[i] & 0x0FFFU;
+    void *dhr = dac_hal_get_dhr_addr(p->hal, p->channel);
+    p->dma_dev->fun->config(p->dma_dev, p->dma_str, dhr, tmp, nsamp,
+                            DMA_DATA_16, 0 /*periph_inc*/, 1 /*mem_inc*/, DMA_PRIO_MED);
+    p->dma_dev->fun->start(p->dma_dev, p->dma_str, NULL, NULL);  /* arm stream (EN=1) */
+    dac_hal_enable_dma(p->hal, p->channel);    /* DAC now raises DMA requests */
+    tim_hal_start(p->trig_hal);                /* timer TRGO clocks DHR->DOR + DMA req */
+    int rc = p->dma_dev->fun->wait_done(p->dma_dev, p->dma_str, 2000);
+    tim_hal_stop(p->trig_hal);                 /* freeze the trigger source */
+    /* Flush the final held sample. In trigger mode the last DMA write sits in
+     * DHR awaiting one more trigger edge; switching back to static mode (TENx=0)
+     * makes the held value auto-transfer to DOR, and we re-write it to be
+     * certain. (A software trigger alone did not reliably move it here.) */
+    dac_hal_disable_trigger(p->hal, p->channel);
+    dac_hal_write(p->hal, p->channel, tmp[nsamp - 1] & 0x0FFFU);
+    dac_hal_disable_dma(p->hal, p->channel);
+    if (tmp != p->dma_bounce) free(tmp);
+    return rc == 0 ? (int)(nsamp * sizeof(uint16_t)) : -1;
 }
 
 /* stream-class ops. A DAC is an output stream: one write() outputs one 12-bit
@@ -109,6 +195,7 @@ static int dac_stream_write(stream_device *self, const void *buf, size_t len)
 {
     dac *p = (dac *)self;
     if (len < sizeof(uint16_t)) return -1;
+    if (p->parent.mode == STREAM_MODE_DMA) return dac_dma_write(p, buf, len);
     dac_hal_write(p->hal, p->channel, *(const uint16_t *)buf);
     return (int)sizeof(uint16_t);
 }
@@ -146,8 +233,18 @@ static int dac_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m != STREAM_MODE_POLL) return -1;   /* DAC writes are synchronous only */
+        if (m != STREAM_MODE_POLL && m != STREAM_MODE_DMA) return -1;
+        if (m == STREAM_MODE_DMA && !p->dma_str) return -1;   /* no DMA engine here */
         p->parent.mode = m;
+        if (m == STREAM_MODE_DMA) {
+            /* Trigger mode is MANDATORY for DAC+DMA: static mode (TENx=0) never
+             * raises a DMA request, so the burst would starve. The timer TRGO
+             * (TIM6) clocks each DHR->DOR move + DMA request. */
+            if (p->has_trigger)
+                dac_hal_enable_trigger(p->hal, p->channel, 0 /*TIM6 TRGO*/);
+        } else {
+            dac_hal_disable_trigger(p->hal, p->channel);   /* back to static (poll) */
+        }
         return 0;
     }
     case STREAM_IOCTL_GET_MODE: {

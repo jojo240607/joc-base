@@ -100,6 +100,16 @@ void tim_hal_stop(tim_hal_handle_t *h)
     if (h) h->tim->CR1 &= ~TIM_CR1_CEN;
 }
 
+/* Route the Update event to TRGO (CR2.MMS = 0b010). Used by the DAC driver to
+ * clock a DMA burst: each timer overflow trips the DAC trigger, which moves
+ * DHR->DOR and raises the DAC's DMA request. No ISR is involved. CR2 is left
+ * otherwise untouched (tim_hal_config never writes CR2). */
+void tim_hal_master_trgo_update(tim_hal_handle_t *h)
+{
+    if (!h) return;
+    h->tim->CR2 = (h->tim->CR2 & ~TIM_CR2_MMS_Msk) | (0x2UL << TIM_CR2_MMS_Pos);
+}
+
 uint32_t tim_hal_get_counter(tim_hal_handle_t *h)
 {
     return h ? h->tim->CNT : 0U;

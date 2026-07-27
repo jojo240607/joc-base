@@ -167,6 +167,34 @@ uint32_t adc_hal_read_dr(adc_hal_handle_t *h)
     return (uint32_t)(h->adc->DR & 0x0FFFUL);
 }
 
+/* Return the ADC data-register address for the DMA PAR. ADC_DR is a 32-bit
+ * register whose lower 16 bits hold the right-aligned 12-bit result, so a
+ * 16-bit DMA transfer reads the sample correctly. */
+void *adc_hal_get_dr_addr(adc_hal_handle_t *h)
+{
+    return h ? (void *)&h->adc->DR : NULL;
+}
+
+/* Enable the ADC's DMA request and start a CONTINUOUS conversion burst: with
+ * CR2_CONT set, each EOC raises a DMA request that moves DR -> memory; after
+ * DMA has moved `count` samples it signals Transfer-Complete and disables
+ * itself. CR2_DMA must be set AFTER config_channel() (which assigns CR2 = EOCS,
+ * clearing DMA/CONT) and the stream must already be configured. SWSTART kicks
+ * the first conversion. */
+void adc_hal_enable_dma(adc_hal_handle_t *h)
+{
+    if (!h) return;
+    h->adc->CR2 |= (ADC_CR2_DMA | ADC_CR2_CONT | ADC_CR2_SWSTART);
+}
+
+/* Stop the continuous burst and silence the DMA request. ADON is left on so a
+ * later single/poll conversion still works. */
+void adc_hal_disable_dma(adc_hal_handle_t *h)
+{
+    if (!h) return;
+    h->adc->CR2 &= ~(ADC_CR2_DMA | ADC_CR2_CONT);
+}
+
 uint32_t adc_hal_to_mv(uint32_t raw, uint32_t vdda_mv)
 {
     return (raw * vdda_mv) / 4095UL;    /* 12-bit full scale */

@@ -34,6 +34,12 @@ void tim_hal_start(tim_hal_handle_t *h);    /* set CR1.CEN (begin counting) */
 void tim_hal_stop(tim_hal_handle_t *h);     /* clear CR1.CEN (freeze) */
 uint32_t tim_hal_get_counter(tim_hal_handle_t *h);
 
+/* Route this timer's UPDATE event to its TRGO output (CR2.MMS = 0b010). The DAC
+ * (or ADC) trigger logic samples TRGO to initiate a conversion / raise a DMA
+ * request, so this is how a timer clocks a DMA burst with no CPU or ISR
+ * involvement. No interrupt is enabled — TRGO is a pure hardware signal. */
+void tim_hal_master_trgo_update(tim_hal_handle_t *h);
+
 /* --- interrupt support (used by the driver via the platform-independent
  *     irq framework: it registers tim_hal_irq_id() with irq_manager) --- */
 irq_id_t tim_hal_irq_id(tim_hal_handle_t *h);          /* chip IRQn for this TIM */

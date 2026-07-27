@@ -4,10 +4,15 @@
 #include "iface/device.h"
 #include "iface/stream_device.h"  /* adc IS-A stream_device (sampling stream) */
 #include "adc_hal.h"          /* opaque handle ONLY — no STM32 types reach the driver */
+#include "drv/dma.h"          /* dma / dma_stream_t (DMA engine) + dma_req_id_t */
 #include "pinmux_hal.h"       /* pinmux_port_t (resolved port for the pinmux claim) */
 #include "osal/osal.h"        /* osal_sem_t (EOC completion) */
 #include "irq.h"              /* irq_id_t (cached ADC IRQ id) */
 #include <stdint.h>
+
+/* main-SRAM scratch for a DMA burst of ADC samples (DMA cannot touch CCM).
+ * Sized for a comfortable burst; larger reads fall back to a malloc. */
+#define ADC_DMA_BOUNCE 64
 
 /* device-level control commands for the ADC driver (passed to device_ioctl) */
 #define ADC_IOCTL_SET_CHANNEL  0x01   /* arg: const uint32_t* channel */
@@ -50,6 +55,15 @@ struct _adc {
     volatile uint32_t last_raw;  /* last conversion result (written by EOC ISR) */
     osal_sem_t eoc_sem;          /* signaled by the EOC ISR (IRQ-mode read) */
     irq_id_t  eoc_irq;           /* cached ADC IRQ id (from adc_hal_irq_id) */
+    /* DMA engine (STREAM_MODE_DMA). The ADC is hard-wired to one specific DMA
+     * stream (ADC1->DMA2_Stream0); resolved once at open() and kept reserved.
+     * The bounce buffer lives in main SRAM (malloc'd adc struct) — DMA cannot
+     * touch CCM, so it is NOT safe to DMA straight into a caller buffer that may
+     * live in CCM (e.g. a stack array). */
+    dma_req_id_t  dma_req;        /* cached from config (for re-acquire on reopen) */
+    dma          *dma_dev;        /* resolved dma controller (NULL if no route) */
+    dma_stream_t *dma_str;        /* reserved stream for this ADC (P2M) */
+    uint16_t      dma_bounce[ADC_DMA_BOUNCE];  /* main-SRAM sample scratch */
 };
 
 /* The board fills adc_config_t (defined below) as DATA and passes it in; the
@@ -73,6 +87,10 @@ typedef struct {
      * conflict is rejected before the analog GPIO register is touched. Leave
      * NULL for internal channels (16/17/18) that need no GPIO pin. */
     const char *ain_signal; /* e.g. "ADC1_IN0" */
+    /* Optional DMA request the ADC's data path is hard-wired to (e.g.
+     * DMA_REQ_ADC1). 0 (DMA_REQ_NONE) means "no DMA for this ADC" (the driver
+     * then refuses STREAM_MODE_DMA). */
+    dma_req_id_t dma_req;
 } adc_config_t;
 
 extern const struct adcFun adc_fun;

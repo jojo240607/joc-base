@@ -182,6 +182,13 @@ dma_route_t dma_hal_route(dma_req_id_t req)
     case DMA_REQ_SPI2_RX:   return (dma_route_t){ "dma1", 3, 3 };   /* I2S2 RX */
     case DMA_REQ_SPI3_TX:   return (dma_route_t){ "dma1", 5, 3 };   /* I2S3 TX */
     case DMA_REQ_SPI3_RX:   return (dma_route_t){ "dma1", 2, 3 };   /* I2S3 RX */
+    /* ---- ADC (DMA channel 0 on DMA2) ---- */
+    case DMA_REQ_ADC1:      return (dma_route_t){ "dma2", 0, 0 };
+    case DMA_REQ_ADC2:      return (dma_route_t){ "dma2", 2, 1 };
+    case DMA_REQ_ADC3:      return (dma_route_t){ "dma2", 1, 2 };
+    /* ---- DAC (DMA channel 7 on DMA1; TIM6_UP/TIM7_UP share the stream) ---- */
+    case DMA_REQ_DAC1:      return (dma_route_t){ "dma1", 5, 7 };
+    case DMA_REQ_DAC2:      return (dma_route_t){ "dma1", 6, 7 };
     default:
         return (dma_route_t){ NULL, 0, 0 };
     }
