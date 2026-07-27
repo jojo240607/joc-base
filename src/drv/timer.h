@@ -3,6 +3,8 @@
 
 #include "iface/event_device.h"   /* event_device base class (this driver IS-A event_device) */
 #include "tim_hal.h"              /* opaque HAL handle (driver never sees TIM_TypeDef) */
+#include "dma_hal.h"              /* dma_req_id_t — TIM update-event DMA request */
+#include "drv/dma.h"              /* dma / dma_stream_t — TIM DMA burst state */
 #include <stdint.h>
 
 /*
@@ -26,6 +28,11 @@ typedef struct {
     void *peripheral;        /* TIM2..TIM5 base (board supplies the real silicon) */
     uint32_t timer_clk_hz;   /* clock feeding this timer */
     uint32_t tick_hz;        /* desired overflow rate (Hz) */
+    /* TIM update-event DMA request (DMA_REQ_NONE = no DMA; the timer then runs
+     * as a plain periodic event source). When set, the driver reserves the
+     * fixed DMA stream for this TIM's UP event at open() so timer_dma_burst()
+     * can stream data into a CCR on every overflow (CPU-less PWM duty sweep). */
+    dma_req_id_t dma_req;
 } timer_config_t;
 
 struct _timer {
@@ -38,11 +45,27 @@ struct _timer {
     volatile uint32_t overflows;/* free-running overflow counter (ISR increments) */
     device_event_cb_t cb;       /* subscribed tick callback (or NULL) */
     void *cb_ctx;               /* callback context */
+    /* DMA state (reserved at open when dma_req != DMA_REQ_NONE). NULL otherwise. */
+    dma_req_id_t  dma_req;      /* cached from config */
+    dma          *dma_dev;      /* owning controller ("dma1"/"dma2") or NULL */
+    dma_stream_t *dma_str;      /* reserved stream for the UP-event DMA or NULL */
 };
 
 /* uniform create signature (device *(*)(const void *)) for the board node list */
 device *timer_create(const void *config);
 void timer_destroy(timer *self);
+
+/* TIMER DMA burst: on each Update (overflow) event, the reserved DMA stream
+ * moves the next 16-bit value from `buf` into TIMx_CCRx (ch = 1..4). This drives
+ * a CPU-less PWM duty sweep (or any CCR-fed peripheral). `buf` may live in CCM /
+ * Flash — it is copied into a main-SRAM staging buffer first (the DMA master
+ * cannot reach CCM). Returns 0 on success, -1 if DMA is unavailable or args bad.
+ * Requires the timer to be counting (event_device enable()) so overflows occur. */
+int timer_dma_burst(timer *t, int ch, const uint16_t *buf, uint16_t n);
+
+/* Read back the current compare register value (TIMx_CCRx). Useful to verify a
+ * DMA burst landed (after timer_dma_burst the last value must be in CCRx). */
+uint32_t timer_get_ccr(timer *t, int ch);
 
 /* ioctl commands (driver-specific) */
 #define TIMER_IOCTL_GET_OVERFLOWS  0x01   /* arg = uint32_t* : overflow count */

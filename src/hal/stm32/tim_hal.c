@@ -163,6 +163,30 @@ int tim_hal_uif_pending(tim_hal_handle_t *h)
     return (h && (h->tim->SR & TIM_SR_UIF)) ? 1 : 0;
 }
 
+/* ---------------------------------------------------------------------------
+ * TIMER DMA (Update-event burst). See tim_hal.h for the contract.
+ * ------------------------------------------------------------------------- */
+/* pwm_ccr is defined further down (static); declare it here so the DMA helpers
+ * below can reuse it to return the &TIMx_CCRx address for a DMA PAR. */
+static volatile uint32_t *pwm_ccr(tim_hal_handle_t *h, int ch);
+
+void tim_hal_dma_update_enable(tim_hal_handle_t *h)
+{
+    if (h) h->tim->DIER |= TIM_DIER_UDE;    /* Update DMA request enable */
+}
+void tim_hal_dma_update_disable(tim_hal_handle_t *h)
+{
+    if (h) h->tim->DIER &= ~TIM_DIER_UDE;   /* stop raising UP DMA requests */
+}
+volatile uint32_t *tim_hal_get_ccr(tim_hal_handle_t *h, int ch)
+{
+    return pwm_ccr(h, ch);                  /* &TIMx_CCRx — the DMA destination */
+}
+uint32_t tim_hal_get_arr(tim_hal_handle_t *h)
+{
+    return h ? (h->tim->ARR & 0xFFFFUL) : 0U;
+}
+
 /* ===========================================================================
  * PWM CHANNEL support — see tim_hal.h for the ownership/coordination contract.
  * =========================================================================== */

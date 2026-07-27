@@ -129,6 +129,11 @@ typedef enum {
     DMA_REQ_DAC1, DMA_REQ_DAC2,
     /* SDIO — DMA2, channel 4 */
     DMA_REQ_SDIO,
+    /* TIMER update-event DMA requests (TIMx_UP). A TIM's overflow (Update) event
+     * is itself a DMA request source — a stream can move a word into a CCR (e.g.
+     * a CPU-less PWM duty sweep) on every overflow. */
+    DMA_REQ_TIM2_UP, DMA_REQ_TIM3_UP, DMA_REQ_TIM4_UP,
+    DMA_REQ_TIM5_UP, DMA_REQ_TIM6_UP, DMA_REQ_TIM7_UP, DMA_REQ_TIM8_UP,
 } dma_req_id_t;
 
 /* Resolved route for a peripheral request. `name` is the dma device-manager

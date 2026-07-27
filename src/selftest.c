@@ -47,6 +47,7 @@ static int selftest_vtemp(selftest *self);
 static int selftest_vio(selftest *self);
 static int selftest_vmode(selftest *self);
 static int selftest_vtimer(selftest *self);
+static int selftest_vtimer_dma(selftest *self);
 static int selftest_vpwm(selftest *self);
 static int selftest_vexti(selftest *self);
 static int selftest_vadvtimer(selftest *self);
@@ -619,6 +620,45 @@ static int selftest_vtimer(selftest *self)
     /* Shared-line coexistence: TIM1+TIM10 on IRQ25, TIM8+TIM13 on IRQ44. */
     if (!selftest_timer_shared_line("timer1", "timer9"))  ok = 0;
     if (!selftest_timer_shared_line("timer4", "timer10")) ok = 0;
+
+    /* TIMER DMA: TIM2 (timer0) Update event drives a DMA that streams a buffer
+     * into CCR1 — proves the TIM2_UP DMA route + the CCR write path end-to-end.
+     * Folds into the timer BIST so a bad route fails [BIST] timer. */
+    if (!selftest_vtimer_dma(self)) ok = 0;
+    return ok;
+}
+
+/* TIMER DMA burst: TIM2's Update (overflow) event is itself a DMA request. We
+ * arm the stream reserved at open() (DMA_REQ_TIM2_UP) to move a buffer into CCR1
+ * on every overflow, producing a CPU-less duty sweep. After Transfer-Complete
+ * the LAST value must sit in CCR1 — that readback proves the route + CHSEL +
+ * PAR/M0AR + TC are all correct. TIM2 is otherwise just a 20 Hz TICK source, so
+ * this never disturbs the tick (its CCR1 is not wired to any pin here). */
+static int selftest_vtimer_dma(selftest *self)
+{
+    (void)self;
+    device *tim = device_manager_get("timer0");   /* TIM2 */
+    if (!tim) { log_printf(app_log(), LOG_DEBUG, "selftest", "       timer0 DMA: MISSING\n"); return 0; }
+    event_device *te = device_as_event(tim);
+    if (!te) { log_printf(app_log(), LOG_DEBUG, "selftest", "       timer0 DMA: not-event\n"); return 0; }
+
+    te->vtable->set_event_callback(te, DEVICE_EVENT_TICK, selftest_timer_cb, NULL);
+    tim->vtable->open(tim);
+    te->vtable->enable(te);                  /* counting => update events flow */
+
+    static const uint16_t buf[4] = { 1000, 5000, 20000, 40000 };
+    int rc = timer_dma_burst((timer *)tim, 1, buf, 4);
+    uint32_t ccr  = timer_get_ccr((timer *)tim, 1);
+    uint32_t ccr2 = timer_get_ccr((timer *)tim, 2);   /* adjacent reg: must be 0 */
+
+    te->vtable->disable(te);
+    te->vtable->clear_event_callback(te, DEVICE_EVENT_TICK);
+    tim->vtable->close(tim);
+
+    int ok = (rc == 0) && (ccr == 40000U) && (ccr2 == 0U);
+    log_printf(app_log(), LOG_DEBUG, "selftest",
+               "       timer0 DMA burst: CCR1=%lu (expect 40000), CCR2=%lu (expect 0), rc=%d -> %s\n",
+               (unsigned long)ccr, (unsigned long)ccr2, rc, ok ? "PASS" : "FAIL");
     return ok;
 }
 

@@ -111,7 +111,8 @@ static const uart_config_t g_uart0 = {
 static const gpio_config_t g_led   = { "led",   "GPIOD_12", 1 }; /* D12, output */
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
-static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20 }; /* TIM2,  APB1 84MHz, 20Hz, IRQ28 */
+static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
+                                     DMA_REQ_TIM2_UP }; /* TIM2_UP -> DMA1_Stream7 CH3 */
 static const timer_config_t g_timer1 = { "timer1", (void *)TIM1,  168000000, 20 }; /* TIM1,  APB2 168MHz, 20Hz, IRQ25(TIM1_UP) */
 static const timer_config_t g_timer2 = { "timer2", (void *)TIM6,  84000000, 20 }; /* TIM6,  APB1 84MHz, 20Hz, IRQ54 */
 static const timer_config_t g_timer3 = { "timer3", (void *)TIM7,  84000000, 20 }; /* TIM7,  APB1 84MHz, 20Hz, IRQ55 */

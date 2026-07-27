@@ -230,6 +230,18 @@ dma_route_t dma_hal_route(dma_req_id_t req)
      * per transfer (read = P2M, write = M2P). Both DMA2 Stream3 and Stream6 carry
      * the SDIO request (channel 4); we pick Stream6. */
     case DMA_REQ_SDIO:     return (dma_route_t){ "dma2", 6, 4 };
+    /* ---- TIMER update events (TIMx_UP) ----
+     * Each TIM's overflow is a DMA request. Routes per RM0090 Table 30/31
+     * (the TIM2_UP mapping is verified on hardware by the timer DMA self-test).
+     * TIM6_UP/TIM7_UP SHARE the DAC channel request lines (DAC1_CH1 / DAC2_CH1),
+     * so they must not be used while the DAC is streaming on the same request. */
+    case DMA_REQ_TIM2_UP:  return (dma_route_t){ "dma1", 7, 3 };
+    case DMA_REQ_TIM3_UP:  return (dma_route_t){ "dma1", 2, 5 };
+    case DMA_REQ_TIM4_UP:  return (dma_route_t){ "dma1", 3, 3 };
+    case DMA_REQ_TIM5_UP:  return (dma_route_t){ "dma1", 0, 7 };
+    case DMA_REQ_TIM6_UP:  return (dma_route_t){ "dma1", 1, 6 };
+    case DMA_REQ_TIM7_UP:  return (dma_route_t){ "dma1", 2, 6 };
+    case DMA_REQ_TIM8_UP:  return (dma_route_t){ "dma2", 1, 0 };
     default:
         return (dma_route_t){ NULL, 0, 0 };
     }

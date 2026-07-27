@@ -52,6 +52,16 @@ void tim_hal_clear_uif(tim_hal_handle_t *h);
  * on the same line doesn't spuriously trigger their handler. */
 int tim_hal_uif_pending(tim_hal_handle_t *h);           /* clear TIM_SR_UIF */
 
+/* --- TIMER DMA (Update-event burst) ---
+ * A TIM's Update (overflow) event is itself a DMA request source. Enabling it
+ * (DIER.UDE) lets a DMA stream move a word into any CCR on every overflow — e.g.
+ * a CPU-less PWM duty sweep, or feeding a DAC/ADC trigger. The driver supplies
+ * the stream (resolved from dma_hal_route) and the destination CCR address. */
+void tim_hal_dma_update_enable(tim_hal_handle_t *h);    /* set DIER.UDE (UP DMA req) */
+void tim_hal_dma_update_disable(tim_hal_handle_t *h);   /* clear DIER.UDE */
+volatile uint32_t *tim_hal_get_ccr(tim_hal_handle_t *h, int ch); /* &TIMx_CCRx (PAR) */
+uint32_t tim_hal_get_arr(tim_hal_handle_t *h);          /* ARR (bound CCR values) */
+
 /* ===========================================================================
  * PWM CHANNEL support — the SAME TIM peripheral, used as a waveform generator.
  *

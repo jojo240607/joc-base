@@ -1,6 +1,8 @@
 #include "timer.h"
 #include "irq.h"             /* platform-independent interrupt framework */
 #include "irq_manager.h"     /* centralized interrupt manager */
+#include "devmgr/device_manager.h"  /* resolve the dma controller by name */
+#include "drv/dma.h"         /* dma device API (acquire/config/start/wait) */
 #include <stdlib.h>
 #include <string.h>
 
@@ -98,6 +100,23 @@ static int timer_dev_open(device *self)
     tim_hal_enable_update_irq(t->hal);   /* peripheral UIE (gated by class) */
     irq_manager_set_priority(t->irq, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
     irq_manager_attach(t->irq, timer_isr, t);   /* register handler */
+
+    /* Reserve the hard-wired DMA stream for this TIM's Update event (if the
+     * board configured one). DAC-style: the route is fixed by the silicon, so we
+     * grab it once here and keep it until close. A busy/unavailable stream just
+     * leaves dma_str NULL and the timer stays usable as a plain event source. */
+    t->dma_dev = NULL; t->dma_str = NULL;
+    if (t->dma_req != DMA_REQ_NONE) {
+        dma_route_t rt = dma_hal_route(t->dma_req);
+        if (rt.name) {
+            dma *dm = (dma *)device_manager_get(rt.name);
+            if (dm) {
+                dma_stream_t *s = dm->fun->acquire(dm, rt.stream, rt.channel,
+                                                    DMA_DIR_M2P);
+                if (s) { t->dma_dev = dm; t->dma_str = s; }
+            }
+        }
+    }
     return 0;
 }
 
@@ -105,6 +124,10 @@ static int timer_dev_close(device *self)
 {
     timer_disable((event_device *)self);
     timer *t = (timer *)self;
+    if (t->dma_dev && t->dma_str) {        /* release the reserved DMA stream */
+        t->dma_dev->fun->free(t->dma_dev, t->dma_str);
+        t->dma_dev = NULL; t->dma_str = NULL;
+    }
     irq_manager_detach(t->irq, timer_isr, t);   /* mask NVIC + uninstall callback */
     return 0;
 }
@@ -161,6 +184,9 @@ device *timer_create(const void *config)
     t->overflows = 0;
     t->cb = NULL;
     t->cb_ctx = NULL;
+    t->dma_req = c->dma_req;          /* cached so open() can reserve the stream */
+    t->dma_dev = NULL;
+    t->dma_str = NULL;
 
     return &t->parent.parent;
 }
@@ -171,4 +197,47 @@ void timer_destroy(timer *self)
     irq_manager_detach(self->irq, timer_isr, self);
     tim_hal_destroy(self->hal);
     free(self);
+}
+
+/* ---------------------------------------------------------------------------
+ * TIMER DMA burst — stream a buffer into a CCR on every Update event.
+ *
+ * The TIM's overflow is a DMA request (DIER.UDE). We arm a one-shot M2P transfer
+ * from a main-SRAM staging copy of `buf` into TIMx_CCRx; each overflow moves the
+ * next word, so after Transfer-Complete the last value sits in CCRx (verifiable
+ * with timer_get_ccr). The staging copy is mandatory: the caller's buffer may be
+ * in CCM/Flash, which the DMA master cannot access. The timer MUST be counting
+ * (event_device enable) or the overflows — and thus the transfer — never occur.
+ * ------------------------------------------------------------------------- */
+int timer_dma_burst(timer *t, int ch, const uint16_t *buf, uint16_t n)
+{
+    if (!t || !t->dma_str || ch < 1 || ch > 4 || !buf || n == 0)
+        return -1;
+
+    /* Staging copy in main SRAM (DMA-safe). */
+    uint16_t *tmp = (uint16_t *)malloc((size_t)n * sizeof(uint16_t));
+    if (!tmp) return -1;
+    for (uint16_t i = 0; i < n; i++) tmp[i] = buf[i];
+
+    volatile uint32_t *ccr = tim_hal_get_ccr(t->hal, ch);
+    t->dma_dev->fun->config(t->dma_dev, t->dma_str, (const void *)ccr, tmp,
+                            (uint32_t)n, DMA_DATA_16, 0 /*periph_inc*/,
+                            1 /*mem_inc*/, DMA_PRIO_MED);
+    t->dma_dev->fun->start(t->dma_dev, t->dma_str, NULL, NULL); /* arm DMA */
+    tim_hal_dma_update_enable(t->hal);   /* overflows now raise DMA requests */
+
+    int rc = t->dma_dev->fun->wait_done(t->dma_dev, t->dma_str, 2000);
+    tim_hal_dma_update_disable(t->hal);  /* stop raising UP DMA requests */
+    free(tmp);
+    return (rc == 0) ? 0 : -1;
+}
+
+uint32_t timer_get_ccr(timer *t, int ch)
+{
+    if (!t || ch < 1 || ch > 4) return 0U;
+    /* CCRx is a 16-bit register; reading it as 32 bits also pulls in the adjacent
+     * CCR(x+1) (e.g. on TIM2, *(&CCR1) as uint32_t = (CCR2<<16)|CCR1). Mask to the
+     * 16-bit compare value the DMA actually wrote. */
+    volatile uint32_t *p = tim_hal_get_ccr(t->hal, ch);
+    return (uint32_t)(*(volatile uint16_t *)p);
 }

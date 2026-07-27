@@ -24,6 +24,7 @@
 #include "drv/temp_sensor.h"
 #include "drv/usb.h"
 #include "drv/i2c.h"
+#include "drv/timer.h"         /* TIMERDMA: timer_dma_burst / timer_get_ccr */
 #include "drv/pinmux.h"
 #include "drv/exti.h"           /* BTN/ BTN2 命令：软件触发按键边沿以演示上下半部 */
 #include "task/task_button_wq.h" /* BTN2C 命令：读工作队列版按键中断计数 */
@@ -360,6 +361,36 @@ static void cmd_uartdma(app_ctx_t *c, const char *line)
                         : "UARTDMA TX-OK RX-FAIL\r\n");
 }
 
+/* ---- TIMER DMA 验证命令：让 TIM2(timer0) 的 Update 事件驱动一条 DMA 把一组
+ * 16-bit 计数搬进 CCR1，再回读 CCR1 看是否等于最后一个值。这证明 TIM2_UP 的
+ * DMA 路由 + CHSEL + PAR/M0AR + TC 整条通路正确（等价于 DAC DMA 回读 DOR）。
+ * TIM2 只是个 20Hz 心跳源，其 CCR1 未接到任何引脚，所以不影响心跳。 */
+static void cmd_timerdma(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    device *tim = device_manager_get("timer0");   /* TIM2 */
+    if (!tim) { usb_reply(c, "TIMERDMA: no timer0\r\n"); return; }
+    event_device *te = device_as_event(tim);
+    if (!te) { usb_reply(c, "TIMERDMA: not-event\r\n"); return; }
+
+    tim->vtable->open(tim);
+    te->vtable->enable(te);                  /* counting => overflows drive DMA */
+    static const uint16_t buf[4] = { 1000, 5000, 20000, 40000 };
+    int rc = timer_dma_burst((timer *)tim, 1, buf, 4);
+    uint32_t ccr = timer_get_ccr((timer *)tim, 1);
+    te->vtable->disable(te);
+    tim->vtable->close(tim);
+
+    char out[96];
+    int n = snprintf(out, sizeof(out),
+                     "TIMERDMA: CCR1=%lu (expect 40000) rc=%d %s\r\n",
+                     (unsigned long)ccr, rc,
+                     (rc == 0 && ccr == 40000U) ? "OK" : "FAIL");
+    c->console->vtable->write(c->console, out, (size_t)n);
+    usb_reply(c, (rc == 0 && ccr == 40000U) ? "TIMERDMA OK\r\n"
+                                            : "TIMERDMA FAIL\r\n");
+}
+
 /* ---- 命令表：加命令只需在此追加一行 + 对应 handler ---- */
 static const cmd_entry_t g_cmds[] = {
     { "PING",     cmd_ping,     0 },
@@ -391,6 +422,7 @@ static const cmd_entry_t g_cmds[] = {
     { "BTN2C",    cmd_btn2c,    0 },
     { "IOXFER",   cmd_ioxfer,   0 },
     { "UARTDMA",  cmd_uartdma,  0 },
+    { "TIMERDMA", cmd_timerdma, 0 },
 };
 
 static void dispatch(app_ctx_t *c, const char *line)
