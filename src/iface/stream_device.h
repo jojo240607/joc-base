@@ -35,18 +35,17 @@
  * first-class. True non-blocking (callback) transfers are a SEPARATE, additive
  * extension (submit_read / submit_write + completion callback) and are NOT part
  * of this vtable, so every stream driver is not forced to implement async.
+ *
+ * NOTE: `mode` describes ONLY the low-level TRANSFER ENGINE (POLL/IRQ/DMA).
+ * It is deliberately USART-agnostic — IDLE-line frame-end detection is a UART
+ * concept and lives as a SEPARATE axis (see uart_frame_t in drv/uart.h), NOT
+ * here, so IRQ and DMA engines can BOTH use IDLE without the generic interface
+ * knowing anything about it.
  */
 typedef enum {
     STREAM_MODE_POLL = 0,   /* CPU spins until done */
     STREAM_MODE_IRQ,        /* interrupt-driven, blocking API */
     STREAM_MODE_DMA,        /* DMA engine, blocking API (driver may return -ENOSYS) */
-    /* DMA + IDLE-line: a CIRCULAR RX DMA keeps draining DR into a ring; the
-     * USART IDLE interrupt (bus idle >1 byte-time) marks the END of a
-     * variable-length frame. The IDLE ISR copies the received chunk into the
-     * device RX ring so read()/getc() stay non-blocking and frame-length
-     * agnostic. TX still uses the IRQ state machine. This is the recommended
-     * default for a UART console: zero per-byte RX ISR overhead. */
-    STREAM_MODE_DMA_IDLE,
 } stream_xfer_mode_t;
 
 /* ioctl commands understood by EVERY stream device (passed via device_ioctl) */

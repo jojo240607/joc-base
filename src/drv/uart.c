@@ -38,6 +38,16 @@ static void uart_rx_putc(uart *self, char c);
 static char uart_rx_getc(uart *self);
 static void uart_isr(void *ctx);
 
+/* per-engine state management (defined below). */
+static uart_ctl_t *uart_ctl(uart *u);          /* control block (IRQ/DMA; NULL for POLL) */
+static void uart_free_engine(uart *u);         /* disarm idle + free ring + eng (idempotent) */
+static int uart_setup_engine(uart *u, stream_xfer_mode_t engine, uart_frame_t framing);
+static void uart_select_rx_engine(uart *u);   /* enable/disable RX producer for (engine,framing) */
+/* IDLE-line DMA RX helpers (defined further below, forward-declared for the ISR
+ * and uart_select_rx_engine which call them before their definition). */
+static void uart_idle_dma_arm(uart *u);
+static void uart_idle_flush(uart *u);
+
 const struct uartFun uart_fun = {
     .destroy      = uart_destroy,
     .init         = uart_init,
@@ -73,6 +83,8 @@ device *uart_create(const void *config)
     self->dma_tx_req = c->dma_tx_req;        /* cache DMA request IDs for open() */
     self->dma_rx_req = c->dma_rx_req;
     uart_init(self);
+    self->parent.mode = c->engine;   /* RX engine from board config (POLL/IRQ/DMA) */
+    self->framing     = c->framing;  /* framing axis (NONE/IDLE) from board config */
     if (c->is_console) uart_set_console(self);
     return (device *)self;
 }
@@ -80,8 +92,8 @@ device *uart_create(const void *config)
 void uart_destroy(uart *self)
 {
     if (!self) return;
+    uart_free_engine(self);          /* disarm idle + free ring + eng (idempotent) */
     uart_deinit(self);
-    stream_device_free_ringbuffer((stream_device *)self);  /* release RX ring (heap) */
     uart_hal_destroy(self->hal);   /* mirror create: free the HAL handle */
     free(self);
 }
@@ -93,9 +105,10 @@ void uart_init(uart *self)
     self->parent.vtable        = &uart_stream_vtable; /* stream-class vtable */
     self->parent.parent.type   = DEVICE_TYPE_UART;
     self->parent.parent.class  = DEVICE_CLASS_STREAM;
-    self->parent.mode          = STREAM_MODE_DMA_IDLE;/* RX: circular DMA + IDLE (zero per-byte ISR) */
+    /* engine (parent.mode) and framing are set from the board config in
+     * uart_create(); the per-engine state (semaphores, bounce, ring) is
+     * heap-allocated in open() via uart_setup_engine(). */
     self->fun = &uart_fun;
-    osal_sem_init(&self->tx_idle, 1);  /* line starts free; the TXE ISR gives it back */
     /* hardware bring-up is deferred to open() (see uart_dev_open) */
 }
 
@@ -119,11 +132,15 @@ void uart_set_console(uart *self)
 void uart_console_putc(char c)
 {
     if (!g_console) return;
-    /* Route through the TX state machine in IRQ and DMA_IDLE modes so printf
-     * output is serialized with stream writes on the same UART (no wire
-     * corruption). Only the bulk STREAM_MODE_DMA path falls back to polling. */
-    if (g_console->parent.mode == STREAM_MODE_IRQ ||
-        g_console->parent.mode == STREAM_MODE_DMA_IDLE)
+    /* Route through the TX state machine (IRQ engine, or DMA engine with IDLE
+     * framing) so printf output is serialized with stream writes on the same
+     * UART (no wire corruption). The bulk DMA (framing==NONE) and POLL paths
+     * fall back to polling. The TX state machine lives in the per-engine control
+     * block, so it is only present for IRQ / DMA engines (g_console->eng != NULL). */
+    if (g_console->eng &&
+        (g_console->parent.mode == STREAM_MODE_IRQ ||
+         (g_console->parent.mode == STREAM_MODE_DMA &&
+          g_console->framing == UART_FRAME_IDLE)))
         uart_tx_blocking(g_console, &c, 1);
     else
         uart_hal_putc(g_console->hal, c);
@@ -155,36 +172,27 @@ static char uart_rx_getc(uart *self)
     return (char)c;
 }
 
-/* --- IDLE-line DMA RX (STREAM_MODE_DMA_IDLE) ---
- * A CIRCULAR RX DMA continuously drains DR into dma_bounce; the USART IDLE
- * interrupt (bus idle >1 byte-time) marks the END of a variable-length frame.
- * On IDLE we compute how many bytes the DMA has written since the last flush
- * (via NDTR), copy that chunk from the circular buffer into the RX ring, and
- * re-arm. This gives a zero per-byte-ISR RX path while keeping read()/getc()
- * non-blocking and frame-length agnostic. */
+/* ---------------------------------------------------------------------------
+ * Per-engine state management
+ *
+ * The engine (POLL/IRQ/DMA) and the framing (NONE/IDLE) are two ORTHOGONAL axes.
+ * At open() (and on every runtime STREAM_IOCTL_SET_MODE / UART_IOCTL_SET_FRAMING)
+ * we (re)allocate exactly the state the chosen (engine, framing) needs and wire
+ * up the RX producer:
+ *   POLL            : eng == NULL (zero state)
+ *   IRQ             : uart_irq_t   (control block + 64 B ring storage)
+ *   DMA + NONE      : uart_dma_t   (control block + 256 B bounce, no IDLE ring)
+ *   DMA + IDLE      : uart_dma_t   (control block + 256 B bounce + 256 B IDLE ring)
+ * The control block (TX state machine + async-RX handoff) is the FIRST member of
+ * every variant, so it is reached with a single cast regardless of engine.
+ * ------------------------------------------------------------------------- */
 
-/* Arm the circular RX DMA for idle-line reception. */
-static void uart_idle_dma_arm(uart *u)
-{
-    if (!u->dma_dev || !u->dma_rx) return;
-    void *dr = uart_hal_get_dr_addr(u->hal);
-    u->dma_idle_bufsize = UART_DMA_BOUNCE;
-    /* P2M, PAR=DR, memory=dma_idle_buf, MINC, 8-bit, circular (start_circular).
-     * A SEPARATE buffer from dma_bounce so TX DMA never clobbers RX data. */
-    u->dma_dev->fun->config(u->dma_dev, u->dma_rx, dr, u->dma_idle_buf,
-                            UART_DMA_BOUNCE, DMA_DATA_8, 0 /*periph_inc*/,
-                            1 /*mem_inc*/, DMA_PRIO_MED);
-    u->dma_dev->fun->start_circular(u->dma_dev, u->dma_rx);
-    uart_hal_enable_rx_dma(u->hal);      /* DMAR: USART raises DMA requests */
-    uart_hal_clear_idle(u->hal);         /* clear any stale IDLE (read SR then DR) */
-    uart_hal_enable_idle_irq(u->hal);    /* IDLEIE: interrupt at frame end */
-    u->dma_idle_total = 0;               /* NDTR-based running total */
-}
+/* Control block accessor — valid only for IRQ / DMA engines (eng != NULL). */
+static uart_ctl_t *uart_ctl(uart *u)
+    { return (uart_ctl_t *)u->eng; }
 
-/* Stop idle-line reception (disable IDLE + DMAR). The circular RX stream is also
- * paused (EN=0) so it does not linger in a CIRC/EN=1 state across the mode switch
- * — otherwise a later bulk uart_dma_read that re-programs the SAME stream could
- * inherit stale circular state. Re-arming (uart_idle_dma_arm) re-configs it. */
+/* Disarm idle-line reception (disable IDLE + DMAR; pause the circular stream).
+ * Keeps the stream from lingering in a CIRC/EN=1 state across a re-config. */
 static void uart_idle_dma_disarm(uart *u)
 {
     uart_hal_disable_idle_irq(u->hal);
@@ -193,22 +201,149 @@ static void uart_idle_dma_disarm(uart *u)
         u->dma_dev->fun->stop(u->dma_dev, u->dma_rx);   /* EN=0, no TC/TE IRQ */
 }
 
+/* Tear down the current per-engine state. Idempotent: safe to call when eng is
+ * already NULL. Disarms idle (if active), frees the RX ring, frees eng. */
+static void uart_free_engine(uart *u)
+{
+    if (!u->eng) return;
+    if (u->parent.mode == STREAM_MODE_DMA && u->framing == UART_FRAME_IDLE)
+        uart_idle_dma_disarm(u);          /* stop the circular RX DMA first */
+    stream_device_free_ringbuffer((stream_device *)u);  /* release RX ring (heap) */
+    free(u->eng);
+    u->eng = NULL;
+}
+
+/* (Re)build per-engine state for (engine, framing) and select the RX producer.
+ * Validates BEFORE tearing down the current state, so an invalid request leaves
+ * the uart untouched. Returns 0 on success, -1 on rejection. */
+static int uart_setup_engine(uart *u, stream_xfer_mode_t engine, uart_frame_t framing)
+{
+    /* --- validate first (engines/framing combos) --- */
+    if (engine != STREAM_MODE_POLL && engine != STREAM_MODE_IRQ &&
+        engine != STREAM_MODE_DMA)
+        return -1;
+    if (framing != UART_FRAME_NONE && framing != UART_FRAME_IDLE)
+        return -1;
+    /* IDLE needs an interrupt/DMA producer; POLL has neither. */
+    if (framing == UART_FRAME_IDLE && engine == STREAM_MODE_POLL)
+        return -1;
+    /* DMA engine requires a reserved DMA stream (acquired at open). */
+    if (engine == STREAM_MODE_DMA && !u->dma_tx && !u->dma_rx)
+        return -1;
+
+    /* --- tear down current state --- */
+    uart_free_engine(u);
+
+    /* --- allocate + init the state the new (engine, framing) needs --- */
+    if (engine == STREAM_MODE_IRQ) {
+        uart_irq_t *e = (uart_irq_t *)malloc(sizeof(uart_irq_t));
+        if (!e) return -1;
+        memset(e, 0, sizeof(*e));
+        osal_sem_init(&e->ctl.tx_idle, 1);   /* line starts free */
+        u->eng = e;
+        /* embedded ring storage (no extra heap alloc for the 64 B buffer) */
+        stream_device_init_ringbuffer((stream_device *)u,
+                                      (uint8_t *)e->rx_storage, UART_RX_BUF_SIZE);
+    } else if (engine == STREAM_MODE_DMA) {
+        /* omit the IDLE tail when framing == NONE to save ~264 B */
+        size_t sz = (framing == UART_FRAME_IDLE)
+                        ? sizeof(uart_dma_t)
+                        : offsetof(uart_dma_t, idle_buf);
+        uart_dma_t *e = (uart_dma_t *)malloc(sz);
+        if (!e) return -1;
+        memset(e, 0, sz);
+        osal_sem_init(&e->ctl.tx_idle, 1);
+        u->eng = e;
+        if (framing == UART_FRAME_IDLE) {
+            e->idle_bufsize = UART_DMA_BOUNCE;
+            e->idle_total   = 0;
+            /* ring so IDLE-flushed bytes are readable via read()/getc() */
+            stream_device_init_ringbuffer((stream_device *)u, NULL, UART_RX_BUF_SIZE);
+        }
+        /* DMA + NONE uses bulk per-read DMA and needs no standing RX ring. */
+    } else { /* POLL: zero state */
+        u->eng = NULL;
+    }
+
+    u->parent.mode  = engine;
+    u->framing      = framing;
+    uart_select_rx_engine(u);   /* enable/disable RXNE / IDLE / DMAR */
+    return 0;
+}
+
+/* Enable/disable the RX producer according to (engine, framing). Called after
+ * (re)allocating the per-engine state. Silences everything first, then arms the
+ * one producer the active combination uses. */
+static void uart_select_rx_engine(uart *u)
+{
+    stream_xfer_mode_t e  = u->parent.mode;
+    uart_frame_t       fr = u->framing;
+
+    uart_hal_disable_rx_irq(u->hal);    /* start silent */
+    uart_hal_disable_idle_irq(u->hal);
+    uart_hal_disable_rx_dma(u->hal);
+
+    if (e == STREAM_MODE_POLL) {
+        /* CPU polls DR; no IRQs, no DMA */
+    } else if (e == STREAM_MODE_IRQ) {
+        uart_hal_enable_rx_irq(u->hal);             /* RXNE -> ring */
+        if (fr == UART_FRAME_IDLE)
+            uart_hal_enable_idle_irq(u->hal);       /* IDLE marks frame end */
+    } else { /* STREAM_MODE_DMA */
+        if (fr == UART_FRAME_IDLE)
+            uart_idle_dma_arm(u);                   /* circular RX DMA + IDLE */
+        /* NONE: bulk uart_dma_read arms the one-shot RX DMA per call */
+    }
+}
+
+/* --- IDLE-line DMA RX (engine=DMA, framing=IDLE) ---
+ * A CIRCULAR RX DMA continuously drains DR into the IDLE ring; the USART IDLE
+ * interrupt (bus idle >1 byte-time) marks the END of a variable-length frame.
+ * On IDLE we compute how many bytes the DMA has written since the last flush
+ * (via NDTR), copy that chunk from the circular buffer into the RX ring, and
+ * re-arm. This gives a zero per-byte-ISR RX path while keeping read()/getc()
+ * non-blocking and frame-length agnostic. (The same framing axis is also usable
+ * with the IRQ engine — there RXNE already fills the ring and IDLE just marks
+ * the frame boundary; the ISR clears IDLE but copies nothing extra.) */
+
+/* Arm the circular RX DMA for idle-line reception. */
+static void uart_idle_dma_arm(uart *u)
+{
+    if (!u->dma_dev || !u->dma_rx) return;
+    uart_dma_t *e = (uart_dma_t *)u->eng;
+    if (!e) return;
+    void *dr = uart_hal_get_dr_addr(u->hal);
+    e->idle_bufsize = UART_DMA_BOUNCE;
+    /* P2M, PAR=DR, memory=idle_buf, MINC, 8-bit, circular (start_circular).
+     * A SEPARATE buffer from dma_bounce so TX DMA never clobbers RX data. */
+    u->dma_dev->fun->config(u->dma_dev, u->dma_rx, dr, e->idle_buf,
+                            UART_DMA_BOUNCE, DMA_DATA_8, 0 /*periph_inc*/,
+                            1 /*mem_inc*/, DMA_PRIO_MED);
+    u->dma_dev->fun->start_circular(u->dma_dev, u->dma_rx);
+    uart_hal_enable_rx_dma(u->hal);      /* DMAR: USART raises DMA requests */
+    uart_hal_clear_idle(u->hal);         /* clear any stale IDLE (read SR then DR) */
+    uart_hal_enable_idle_irq(u->hal);    /* IDLEIE: interrupt at frame end */
+    e->idle_total = 0;                   /* NDTR-based running total */
+}
+
 /* Copy the bytes the circular RX DMA has written since the last flush into the
  * RX ring. Uses the running NDTR total so wrap-around is handled correctly. */
 static void uart_idle_flush(uart *u)
 {
-    uint32_t n   = u->dma_idle_bufsize;
+    uart_dma_t *e = (uart_dma_t *)u->eng;
+    if (!e) return;
+    uint32_t n   = e->idle_bufsize;
     if (!n) return;
     uint32_t rem = u->dma_dev->fun->remaining(u->dma_dev, u->dma_rx); /* NDTR */
     uint32_t total = n - rem;             /* bytes written since arming (mod n) */
-    int32_t d = (int32_t)total - (int32_t)u->dma_idle_total;
+    int32_t d = (int32_t)total - (int32_t)e->idle_total;
     if (d < 0) d += (int32_t)n;           /* wrapped at least once */
     uint32_t newb = (uint32_t)d;
-    uint32_t src  = u->dma_idle_total % n;
+    uint32_t src  = e->idle_total % n;
     ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)u);
     for (uint32_t i = 0; i < newb; i++)
-        if (rb) rb->fun->put(rb, u->dma_idle_buf[(src + i) % n]);
-    u->dma_idle_total = total;
+        if (rb) rb->fun->put(rb, e->idle_buf[(src + i) % n]);
+    e->idle_total = total;
 }
 
 /* Drain any bytes already buffered in the RX ring into an in-progress async
@@ -216,28 +351,33 @@ static void uart_idle_flush(uart *u)
  * paths (the producer is whichever engine is active). */
 static void uart_rx_drain_async(uart *u)
 {
-    if (!u->async_rx) return;
-    io_xfer_t *x = u->async_rx;
+    uart_ctl_t *c = uart_ctl(u);
+    if (!c || !c->async_rx) return;
+    io_xfer_t *x = c->async_rx;
     ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)u);
-    uint8_t c;
-    while (x->done < x->len && rb && rb->fun->get(rb, &c) == 0)
-        ((char *)x->buf)[x->done++] = (char)c;
+    uint8_t cc;
+    while (x->done < x->len && rb && rb->fun->get(rb, &cc) == 0)
+        ((char *)x->buf)[x->done++] = (char)cc;
     if (x->done >= x->len) {        /* transfer complete */
-        u->async_rx = NULL;
+        c->async_rx = NULL;
         io_xfer_complete(x, 0);      /* wake sync waiter + invoke callback */
     }
 }
 
 /* The receive ISR callback. Registered with the framework via irq_register()
- * (see uart_dev_open); `ctx` is the uart instance. In STREAM_MODE_DMA_IDLE the
- * IDLE interrupt flushes the circular DMA chunk into the RX ring; in IRQ mode
+ * (see uart_dev_open); `ctx` is the uart instance. In DMA+IDLE mode the IDLE
+ * interrupt flushes the circular DMA chunk into the RX ring; in IRQ mode
  * each RXNE pushes a single byte. After either producer runs we drain the ring
  * into any in-progress async read. */
 static void uart_isr(void *ctx)
 {
     uart *u = (uart *)ctx;
-    /* IDLE: a variable-length frame just ended — flush the DMA chunk to the ring. */
-    if (u->parent.mode == STREAM_MODE_DMA_IDLE && uart_hal_idle_pending(u->hal)) {
+    /* IDLE: a variable-length frame just ended (engine=DMA, framing=IDLE) —
+     * flush the circular-DMA chunk to the RX ring. For IRQ+IDLE the ring is
+     * already fed by RXNE, so we just clear the flag below. */
+    if (u->parent.mode == STREAM_MODE_DMA &&
+        u->framing == UART_FRAME_IDLE &&
+        uart_hal_idle_pending(u->hal)) {
         uart_idle_flush(u);
         uart_hal_clear_idle(u->hal);   /* read SR then DR to clear IDLE */
     }
@@ -266,20 +406,22 @@ static void uart_isr(void *ctx)
  * async writer signal the xfer instead. */
 static void uart_tx_isr(uart *u)
 {
-    if (u->tx_rem > 0) {
-        uart_hal_write_dr(u->hal, *u->tx_ptr++);
-        u->tx_rem--;
-        if (u->tx_rem == 0) {
+    uart_ctl_t *c = uart_ctl(u);
+    if (!c) return;
+    if (c->tx_rem > 0) {
+        uart_hal_write_dr(u->hal, *c->tx_ptr++);
+        c->tx_rem--;
+        if (c->tx_rem == 0) {
             uart_hal_disable_tx_irq(u->hal);
-            if (u->async_tx) {
-                io_xfer_t *x = u->async_tx;
-                u->async_tx = NULL;
+            if (c->async_tx) {
+                io_xfer_t *x = c->async_tx;
+                c->async_tx = NULL;
                 x->done = x->len;
-                osal_sem_give(&u->tx_idle);   /* line free for the next TX */
+                osal_sem_give(&c->tx_idle);   /* line free for the next TX */
                 io_xfer_complete(x, 0);        /* wake async waiter + callback */
             } else {
-                osal_sem_give(&u->tx_idle);
-                osal_sem_give(&u->tx_done_sem);/* wake the blocking writer */
+                osal_sem_give(&c->tx_idle);
+                osal_sem_give(&c->tx_done_sem);/* wake the blocking writer */
             }
         }
     } else {
@@ -289,17 +431,18 @@ static void uart_tx_isr(uart *u)
 
 /* Blocking transmit through the TX state machine. Serialized with every other
  * TX (printf, async submit) via tx_idle, so they can never interleave on the
- * wire. Used by uart_stream_write (IRQ mode) and uart_console_putc. */
+ * wire. Used by uart_stream_write (IRQ engine) and uart_console_putc. */
 static int uart_tx_blocking(uart *u, const char *s, size_t len)
 {
-    if (len == 0) return 0;
-    osal_sem_wait(&u->tx_idle);          /* wait for the line to be free */
-    u->async_tx = NULL;
-    u->tx_ptr   = s;
-    u->tx_rem   = len;
-    osal_sem_init(&u->tx_done_sem, 0);
+    uart_ctl_t *c = uart_ctl(u);
+    if (!c || len == 0) return 0;
+    osal_sem_wait(&c->tx_idle);          /* wait for the line to be free */
+    c->async_tx = NULL;
+    c->tx_ptr   = s;
+    c->tx_rem   = len;
+    osal_sem_init(&c->tx_done_sem, 0);
     uart_hal_enable_tx_irq(u->hal);      /* TXE ISR drains tx_rem */
-    osal_sem_wait(&u->tx_done_sem);      /* block until the last byte is sent */
+    osal_sem_wait(&c->tx_done_sem);      /* block until the last byte is sent */
     return (int)len;
 }
 
@@ -363,12 +506,14 @@ static void uart_dma_release(uart *u)
 static int uart_dma_write(uart *u, const char *s, size_t len)
 {
     if (!u->dma_dev || !u->dma_tx) return -1;
+    uart_dma_t *e = (uart_dma_t *)u->eng;
+    if (!e) return -1;
     void *dr = uart_hal_get_dr_addr(u->hal);
     const uint8_t *src = (const uint8_t *)s;
     uint8_t *tmp = NULL;
     if (len <= UART_DMA_BOUNCE) {
-        memcpy(u->dma_bounce, s, len);
-        src = u->dma_bounce;
+        memcpy(e->dma_bounce, s, len);
+        src = e->dma_bounce;
     } else {
         /* oversize: heap is in main SRAM, so a malloc'd temp is DMA-accessible.
          * uart_dma_write runs from thread context (never an ISR), so malloc is OK. */
@@ -394,8 +539,10 @@ static int uart_dma_write(uart *u, const char *s, size_t len)
 static int uart_dma_read(uart *u, void *buf, size_t len)
 {
     if (!u->dma_dev || !u->dma_rx) return -1;
+    uart_dma_t *e = (uart_dma_t *)u->eng;
+    if (!e) return -1;
     void *dr = uart_hal_get_dr_addr(u->hal);
-    uint8_t *tmp = (len <= UART_DMA_BOUNCE) ? u->dma_bounce : (uint8_t *)malloc(len);
+    uint8_t *tmp = (len <= UART_DMA_BOUNCE) ? e->dma_bounce : (uint8_t *)malloc(len);
     if (!tmp) return -1;
     u->dma_dev->fun->config(u->dma_dev, u->dma_rx, dr, tmp, (uint32_t)len,
                             DMA_DATA_8, 0 /*periph_inc*/, 1 /*mem_inc*/, DMA_PRIO_MED);
@@ -405,7 +552,7 @@ static int uart_dma_read(uart *u, void *buf, size_t len)
     int rc = u->dma_dev->fun->wait_done(u->dma_dev, u->dma_rx, 2000);
     uart_hal_disable_rx_dma(u->hal);
     if (rc == 0) memcpy(buf, tmp, len);
-    if (tmp != u->dma_bounce) free(tmp);
+    if (tmp != e->dma_bounce) free(tmp);
     return rc == 0 ? (int)len : -1;
 }
 
@@ -463,9 +610,13 @@ static int uart_dev_open(device *self)
      * idempotent across open/close — close() releases them. */
     uart_dma_acquire(u);
 
-    /* Attach our RX storage to the embedded ring buffer (common/ringbuffer) so
-     * the receive ISR can push bytes and read()/getc() can drain them. */
-    stream_device_init_ringbuffer((stream_device *)u, (uint8_t *)u->rx_buf, UART_RX_BUF_SIZE);
+    /* (Re)build the per-engine state for the chosen (engine, framing) and wire
+     * the RX producer (RXNE / IDLE / circular-DMA). POLL needs no state. */
+    if (uart_setup_engine(u, u->parent.mode, u->framing) != 0) {
+        /* requested engine unavailable (e.g. DMA requested but no DMA route
+         * resolved) → fall back to interrupt-driven RX so the UART stays usable */
+        uart_setup_engine(u, STREAM_MODE_IRQ, UART_FRAME_NONE);
+    }
 
     /* Wire the RX interrupt through the PLATFORM-INDEPENDENT irq framework.
      * The driver registers a callback + its own context; the HAL supplies the
@@ -474,15 +625,6 @@ static int uart_dev_open(device *self)
      * buffer; read()/getc() then drain it. */
     irq_id_t id = uart_hal_irq_id(u->hal);
     irq_manager_set_priority(id, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
-    /* Choose the RX engine: DMA_IDLE arms a circular RX DMA + IDLE interrupt
-     * (zero per-byte ISR); IRQ enables the per-byte RXNE ISR; POLL/DMA(bulk)
-     * leave the data IRQs off (the loop or DMA-complete drives reception). */
-    if (u->parent.mode == STREAM_MODE_DMA_IDLE) {
-        if (u->dma_rx) uart_idle_dma_arm(u);
-        else uart_hal_enable_rx_irq(u->hal);   /* no DMA route: fall back to IRQ */
-    } else if (u->parent.mode == STREAM_MODE_IRQ) {
-        uart_hal_enable_rx_irq(u->hal);
-    }
     irq_manager_attach(id, uart_isr, u);    /* register handler via the manager */
     irq_manager_enable(id, uart_isr, u);    /* arm NVIC (safe: callback present) */
     return 0;
@@ -491,34 +633,39 @@ static int uart_dev_open(device *self)
 static int uart_dev_close(device *self)
 {
     uart *u = (uart *)self;
-    uart_dma_release(u);               /* release reserved DMA streams */
     irq_id_t id = uart_hal_irq_id(u->hal);
     irq_manager_detach(id, uart_isr, u); /* mask NVIC + uninstall callback */
     uart_hal_disable_rx_irq(u->hal);
     uart_hal_disable_tx_irq(u->hal);
+    uart_free_engine(u);               /* disarm idle DMA (needs dma stream) + free ring + eng */
+    uart_dma_release(u);               /* release reserved DMA streams (after disarm) */
     uart_hal_deinit(u->hal);
     return 0;
 }
 
 /* stream-class ops — the REAL implementations; the base deviceVtable forwards
  * here so there is a single source of truth for the data path. The transfer
- * engine is chosen by self->parent.mode (POLL/IRQ/DMA, see stream_device.h). */
+ * engine is chosen by self->parent.mode (POLL/IRQ/DMA, see stream_device.h);
+ * framing only affects how RX detects frame boundaries (IDLE). */
 static int uart_stream_read(stream_device *self, void *buf, size_t len)
 {
     uart *u = (uart *)self;
     if (len < 1 || !buf) return -1;
-    if (u->parent.mode == STREAM_MODE_DMA) return uart_dma_read(u, buf, len);
     if (u->parent.mode == STREAM_MODE_POLL) {
         while (!uart_hal_rx_pending(u->hal)) { }        /* busy-wait, no ISR */
         *(char *)buf = uart_hal_read_dr(u->hal);
         return 1;
     }
-    /* IRQ mode: the ISR feeds a ring buffer. Return NON-blocking so a caller can
-     * poll without stalling its loop (the main command loop also services other
-     * devices such as USB). If a byte is present, pop it immediately. */
+    /* bulk one-shot DMA RX only when engine==DMA AND framing==NONE; otherwise the
+     * RX producer (RXNE ISR, or circular-DMA+IDLE flush) feeds the ring. */
+    if (u->parent.mode == STREAM_MODE_DMA && u->framing == UART_FRAME_NONE)
+        return uart_dma_read(u, buf, len);
+    /* IRQ, or DMA+IDLE: the ISR feeds a ring buffer. Return NON-blocking so a
+     * caller can poll without stalling its loop (the main command loop also
+     * services other devices such as USB). If a byte is present, pop it now. */
     ringbuffer *rb = stream_device_get_ringbuffer(self);
     if (rb && rb->fun->is_empty(rb)) return 0;
-    *(char *)buf = uart_rx_getc(u);      /* IRQ: ISR-fed ring — byte is ready */
+    *(char *)buf = uart_rx_getc(u);      /* ISR-fed ring — byte is ready */
     return 1;
 }
 
@@ -527,9 +674,10 @@ static int uart_stream_write(stream_device *self, const void *buf, size_t len)
     uart *u = (uart *)self;
     const char *s = (const char *)buf;
     if (!buf) return -1;
-    if (u->parent.mode == STREAM_MODE_DMA) return uart_dma_write(u, s, len);
+    if (u->parent.mode == STREAM_MODE_DMA)
+        return uart_dma_write(u, s, len);             /* DMA engine TX */
     if (u->parent.mode == STREAM_MODE_IRQ)
-        return uart_tx_blocking(u, s, len);             /* interrupt-driven TX */
+        return uart_tx_blocking(u, s, len);           /* interrupt-driven TX */
     for (size_t i = 0; i < len; i++)
         uart_hal_putc(u->hal, s[i]);    /* polling TX */
     return (int)len;
@@ -562,7 +710,12 @@ static int uart_stream_submit(stream_device *self, io_xfer_t *xfer)
 {
     uart *u = (uart *)self;
     if (!xfer || !xfer->buf) return -1;
-    if (u->parent.mode == STREAM_MODE_DMA) return -1;   /* no DMA engine here */
+    /* Bulk one-shot DMA (engine=DMA && framing=NONE) has no standing RX ring or
+     * TX state machine to drive an async transfer, so it cannot submit — this
+     * mirrors the old STREAM_MODE_DMA (rejected). All other combos (POLL, IRQ,
+     * and DMA+IDLE, whose RX is ring-fed by the IDLE flush) DO support submit. */
+    if (u->parent.mode == STREAM_MODE_DMA && u->framing == UART_FRAME_NONE)
+        return -1;
 
     if (xfer->dir == IO_XFER_DIR_WRITE) {
         if (u->parent.mode == STREAM_MODE_POLL) {
@@ -573,16 +726,19 @@ static int uart_stream_submit(stream_device *self, io_xfer_t *xfer)
             io_xfer_complete(xfer, 0);          /* signal + callback (inline) */
             return 0;
         }
-        /* IRQ: drive TX from the TXE ISR (serialized via tx_idle). The ISR
-         * calls io_xfer_complete() when the last byte leaves. */
-        osal_sem_wait(&u->tx_idle);
-        u->async_tx = xfer;
-        u->tx_ptr   = (const char *)xfer->buf;
-        u->tx_rem   = xfer->len;
+        /* IRQ (and DMA+IDLE RX, but TX here uses the IRQ state machine): drive TX
+         * from the TXE ISR (serialized via ctl->tx_idle). The ISR calls
+         * io_xfer_complete() when the last byte leaves. */
+        uart_ctl_t *c = uart_ctl(u);
+        if (!c) return -1;
+        osal_sem_wait(&c->tx_idle);
+        c->async_tx = xfer;
+        c->tx_ptr   = (const char *)xfer->buf;
+        c->tx_rem   = xfer->len;
         xfer->done  = 0;
         if (xfer->len == 0) {
-            u->async_tx = NULL;
-            osal_sem_give(&u->tx_idle);
+            c->async_tx = NULL;
+            osal_sem_give(&c->tx_idle);
             io_xfer_complete(xfer, 0);
             return 0;
         }
@@ -599,15 +755,18 @@ static int uart_stream_submit(stream_device *self, io_xfer_t *xfer)
         io_xfer_complete(xfer, 0);
         return 0;
     }
-    /* IRQ: hand off to the RX ISR. Drain any bytes already buffered, then let
-     * uart_isr() finish the rest and call io_xfer_complete(). */
-    u->async_rx = xfer;
+    /* IRQ (and DMA+IDLE, whose IDLE flush fills the same ring): hand off to the
+     * RX ISR. Drain any bytes already buffered, then let uart_isr() finish the
+     * rest and call io_xfer_complete(). */
+    uart_ctl_t *c = uart_ctl(u);
+    if (!c) return -1;
+    c->async_rx = xfer;
     ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)u);
-    uint8_t c;
-    while (xfer->done < xfer->len && rb && rb->fun->get(rb, &c) == 0)
-        ((char *)xfer->buf)[xfer->done++] = (char)c;
+    uint8_t cc;
+    while (xfer->done < xfer->len && rb && rb->fun->get(rb, &cc) == 0)
+        ((char *)xfer->buf)[xfer->done++] = (char)cc;
     if (xfer->done >= xfer->len) {          /* all available already */
-        u->async_rx = NULL;
+        c->async_rx = NULL;
         io_xfer_complete(xfer, 0);
     }
     return 0;                               /* started; ISR completes if not done */
@@ -642,36 +801,25 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
-        if (m != STREAM_MODE_POLL && m != STREAM_MODE_IRQ &&
-            m != STREAM_MODE_DMA && m != STREAM_MODE_DMA_IDLE)
-            return -1;
-        /* Leaving DMA_IDLE: stop the idle-line receiver (IDLE + DMAR). */
-        if (u->parent.mode == STREAM_MODE_DMA_IDLE)
-            uart_idle_dma_disarm(u);
-        if (m == STREAM_MODE_DMA) {
-            /* only allowed if this UART reserved a DMA stream at open() */
-            if (!u->dma_tx && !u->dma_rx) return -1;
-            /* DMA moves the bytes itself; silence the UART's own data IRQs so the
-             * ISR cannot steal a byte the DMA is supposed to transfer. */
-            uart_hal_disable_tx_irq(u->hal);
-            uart_hal_disable_rx_irq(u->hal);
-        }
-        u->parent.mode = m;
-        /* (Re)select the RX engine for the new mode. */
-        if (m == STREAM_MODE_DMA_IDLE) {
-            if (u->dma_rx) uart_idle_dma_arm(u);
-            else uart_hal_enable_rx_irq(u->hal);   /* no DMA route: fall back */
-        } else if (m == STREAM_MODE_IRQ) {
-            uart_hal_enable_rx_irq(u->hal);
-        } else {
-            uart_hal_disable_rx_irq(u->hal);
-            uart_hal_disable_tx_irq(u->hal);
-        }
-        return 0;
+        /* (re)build per-engine state for the new engine, keeping the current
+         * framing. uart_setup_engine validates the combo and returns -1 (leaving
+         * the uart untouched) if the engine is unavailable. */
+        return uart_setup_engine(u, m, u->framing);
     }
     case STREAM_IOCTL_GET_MODE:
         if (!arg) return -1;
         *(stream_xfer_mode_t *)arg = u->parent.mode;
+        return 0;
+    case UART_IOCTL_SET_FRAMING: {
+        if (!arg) return -1;
+        uart_frame_t fr = *(const uart_frame_t *)arg;
+        /* (re)build per-engine state for the new framing, keeping the current
+         * engine. uart_setup_engine rejects IDLE with POLL, etc. */
+        return uart_setup_engine(u, u->parent.mode, fr);
+    }
+    case UART_IOCTL_GET_FRAMING:
+        if (!arg) return -1;
+        *(uart_frame_t *)arg = u->framing;
         return 0;
     default:
         return -1;

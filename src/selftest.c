@@ -481,7 +481,19 @@ static int selftest_vmode(selftest *self)
     m = STREAM_MODE_POLL;                       /* restore polling default */
     adc->vtable->ioctl(adc, STREAM_IOCTL_SET_MODE, &m);
 
-    /* UART: mode switching roundtrip (POLL <-> IRQ). */
+    /* UART: mode switching roundtrip (POLL <-> IRQ).
+     * POLL has no transfer engine of its own, so it is incompatible with the
+     * IDLE framing axis (IDLE is an RX-engine concept). Do the engine roundtrip
+     * with framing=NONE, then restore the boot default engine+framing so the
+     * console is left exactly as it was. */
+    uart_frame_t fr_saved = UART_FRAME_IDLE;
+    uart->vtable->ioctl(uart, UART_IOCTL_GET_FRAMING, &fr_saved);
+    stream_xfer_mode_t eng_saved = STREAM_MODE_DMA;
+    uart->vtable->ioctl(uart, STREAM_IOCTL_GET_MODE, &eng_saved);
+
+    uart_frame_t fr_none = UART_FRAME_NONE;
+    uart->vtable->ioctl(uart, UART_IOCTL_SET_FRAMING, &fr_none);
+
     m = STREAM_MODE_POLL;
     uart->vtable->ioctl(uart, STREAM_IOCTL_SET_MODE, &m);
     stream_xfer_mode_t got = STREAM_MODE_IRQ;
@@ -491,6 +503,10 @@ static int selftest_vmode(selftest *self)
     uart->vtable->ioctl(uart, STREAM_IOCTL_SET_MODE, &m);
     uart->vtable->ioctl(uart, STREAM_IOCTL_GET_MODE, &got);
     if (got != STREAM_MODE_IRQ) ok = 0;
+
+    /* restore boot default engine+framing */
+    uart->vtable->ioctl(uart, UART_IOCTL_SET_FRAMING, &fr_saved);
+    uart->vtable->ioctl(uart, STREAM_IOCTL_SET_MODE, &eng_saved);
 
     log_printf(app_log(), LOG_DEBUG, "selftest", "       adc irq read=%lu, uart mode switch %s\n",
            (unsigned long)adc_irq, ok ? "ok" : "FAIL");

@@ -342,8 +342,11 @@ static void cmd_uartdma(app_ctx_t *c, const char *line)
     char rx[4];
     int n = u->vtable->read(u, rx, sizeof(rx));     /* DMA RX 读（阻塞 <=2s） */
 
-    m = STREAM_MODE_DMA_IDLE;
-    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m);  /* 恢复默认 DMA+IDLE */
+    /* 恢复默认：engine=DMA + framing=IDLE（原 STREAM_MODE_DMA_IDLE 的等价组合） */
+    stream_xfer_mode_t m2 = STREAM_MODE_DMA;
+    u->vtable->ioctl(u, STREAM_IOCTL_SET_MODE, &m2);
+    uart_frame_t fr = UART_FRAME_IDLE;
+    u->vtable->ioctl(u, UART_IOCTL_SET_FRAMING, &fr);
 
     char out[120];
     int k;
