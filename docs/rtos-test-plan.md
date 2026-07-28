@@ -135,7 +135,10 @@ RTOSALL      → 串联以上全部（编译期段收集，自动遍历）
 
 > 进度：§6.1（`rtos_task_delete`）、§6.2（`rtos_mutex_timedlock`）、§6.3（软件定时器 / Tick 48 天翻转）
 > 已完成；§6.5（栈水位 / 优先级边界）已完成。`RTOSROBUST` 覆盖 DelBlockedTask / MutexTimedLock；
-> §6.3 由独立 `RTOSTIMER` 命令（并注册进 `RTOSALL` "timer" 条目）覆盖。剩余 4 / 6 仍待后续阶段。
+> §6.3 由独立 `RTOSTIMER` 命令（并注册进 `RTOSALL` "timer" 条目）覆盖；§6.4 由
+> `RTOSMARATHON` 命令（长跑任务组 + 可选 ARM 看门狗）与 `RTOSALL` "watchdog" 条目
+> （复位原因解码 + 喂狗路径 + 周期喂狗定时器集成，均安全不 arming）覆盖。
+> 进度：§6.1–§6.5 已完成；仅剩 §6.6（代码覆盖）待后续。
 
 1. **`rtos_task_delete`**：✅ 已完成（commit 见 git 历史）。`rtos_task_delete(t)` 从就绪/睡眠/
    等待队列摘除并置 `TASK_DEAD`，TCB 槽可被 `rtos_task_create` 复用；`t==NULL/自身` 删自身。
@@ -157,7 +160,19 @@ RTOSALL      → 串联以上全部（编译期段收集，自动遍历）
      触发 / 无符号比较纯数学跨边界(pre/at/post0/post1) / 集成(把 g_tick 强制到翻转前启动跨边界定时器) /
      `rtos_delay_until` 翻转数学 + 真实冒烟(~10 tick)。均在 `irq_lock` 窗口内冻结真实 sysTick、手动推进
      `g_tick` 做快速确定性断言，脱离 1kHz 节拍。
-4. **马拉松 72h + IWDG 喂狗 + 复位原因**：准则 §4；需新增长跑任务组与看门狗集成。⏸ 待 P3。
+4. **马拉松 72h + IWDG 喂狗 + 复位原因**：✅ 已完成（准则 §4，docs/rtos-test-plan.md §6.4）。
+   - 看门狗喂狗用 §6.3 的软件定时器原语驱动：把 IWDG 刷新注册为**周期 rtos_timer**，
+     回调在定时器任务(特权态)上下文执行（可写 KR 备份域）。系统在某高优先级任务死锁时
+     定时器任务抢不到 CPU → IWDG 超时复位（看门狗意义）。`rtos_watchdog_enable(timeout_ms)`
+     配置 PR/RLR 并 ARM（IWDG 存活至复位，仅马拉松模式显式调用）；`rtos_watchdog_feed` 手动喂。
+   - 复位原因：`board_decode_reset_reason`/`board_report_reset_reason` 读 RCC->CSR 解码
+     （IWDG/WWDG 同位→统一 IWDG；优先级 IWDG>SOFT>POR>PIN>LPWR），在 BIST 开头打印并清标志；
+     马拉松看门狗复位后会再次打印 `IWDG/WWDG`。
+   - 马拉松长跑任务组：`rtos_marathon_start/stop` 派生 N 个心跳任务（不同优先级，常驻）；
+     72h 是让它一直跑。`RTOSMARATHON` 命令触发（参数含 `wdt` 时同时 ARM 看门狗）。
+   - 自测 `RTOSALL` "watchdog" 条目（`rtos_watchdog_selftest`，**不 arming**，安全）：
+     复位原因解码(9 种 CSR 组合含优先级) / 喂狗路径计数 +1 / 周期喂狗定时器在 irq_lock 窗口
+     内手动推进 g_tick 驱动回调触发。
 5. **栈水位(0xEE 填充) / 优先级边界(1 tick 抢占)**：✅ 已完成（P1）。
    - 栈水位：内核新增 `rtos_stack_fill_watermark`（创建任务时把“跳过栈底哨兵区、到初始帧底”的
      未使用区填 `0xEEEEEEEE`）+ `rtos_stack_used`/`rtos_stack_free`（**自下而上**数连续 0xEE 算高水位，

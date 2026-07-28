@@ -189,6 +189,18 @@ static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_re
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
 static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSUSR", rtos_usr_selftest()); }
 
+/* 马拉松长跑（§6.4）：派生长跑心跳任务组常驻；参数含 "wdt" 时同时 ARM 看门狗
+ * （IWDG 存活至复位，仅马拉松模式用）。返回即后台运行，72h 是让它一直跑。 */
+static void cmd_rtosmarathon(app_ctx_t *c, const char *line)
+{
+    uint8_t arm = (uint8_t)((line && strstr(line, "wdt")) ? 1 : 0);
+    rtos_marathon_start(arm);
+    char out[64];
+    int n = snprintf(out, sizeof(out), "RTOSMARATHON START wdt=%s\r\n",
+                     rtos_watchdog_is_armed() ? "ARMED" : "DISARMED");
+    c->console->vtable->write(c->console, out, (size_t)n);
+}
+
 static void cmd_rtoskobj(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -418,6 +430,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSFPU",  cmd_rtosfpu,  0 },
     { "RTOSBH",   cmd_rtosbh,   0 },
     { "RTOSTIMER", cmd_rtostimer, 0 },
+    { "RTOSMARATHON", cmd_rtosmarathon, 0 },
     { "RTOSUSR",  cmd_rtosusr,  0 },
     { "RTOSKOBJ", cmd_rtoskobj, 0 },
     { "USBOPEN",  cmd_usbopen,  0 },

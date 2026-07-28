@@ -134,6 +134,21 @@ static inline uint32_t rtos_tick_elapsed(uint32_t start, uint32_t now) {
     return (uint32_t)(now - start);
 }
 
+/* ---- 看门狗喂狗 + 马拉松长跑（docs/rtos-test-plan.md §6.4，准则 §4）----
+ * 用 §6.3 的软件定时器原语驱动周期喂狗：回调在定时器任务(特权态)上下文刷新 IWDG。
+ * 系统在某高优先级任务死锁时定时器任务抢不到 CPU -> IWDG 超时复位（看门狗意义）。
+ * 注意：rtos_watchdog_enable 会 START(KR=0xCCCC) IWDG，该状态存活至下次复位，
+ * 故仅马拉松模式显式调用；自测绝不 arming（仅验证喂狗/定时器路径）。 */
+void rtos_watchdog_compute(uint32_t timeout_ms, uint32_t *pr, uint32_t *rlr);
+void rtos_watchdog_feed(void);                       /* 手动喂狗（安全，不 arming） */
+int  rtos_watchdog_enable(uint32_t timeout_ms);      /* 配置+ARM（致命，马拉松模式） */
+int  rtos_watchdog_is_armed(void);
+uint32_t rtos_watchdog_feeds(void);
+
+int  rtos_marathon_start(uint8_t arm_wdt);           /* 派生长跑心跳任务组(常驻) */
+void rtos_marathon_stop(void);
+int  rtos_marathon_is_running(void);
+
 /* ---- 查询 ---- */
 task_t     *rtos_running(void);
 uint32_t    rtos_tick_count(void);
@@ -391,6 +406,11 @@ int rtos_bh_selftest(void);
  * 覆盖准则 §2.5：单次/周期定时器、停止、无符号 tick 比较的 48 天翻转安全、
  * 绝对延时 rtos_delay_until 的翻转安全。 */
 int rtos_timer_selftest(void);
+
+/* ---- 看门狗喂狗 + 马拉松长跑自测（从 RTOSMARATHON 命令触发，并注册进 RTOSALL
+ *      "watchdog" 条目）：仅验证安全、确定性部分（复位原因解码 / 喂狗路径 /
+ *      周期喂狗定时器集成）；不 arming IWDG，避免把板子锁进复位循环。 */
+int rtos_watchdog_selftest(void);
 
 /* ===========================================================================
  * 编译期段收集（见 docs/rtos-design.md 第 5 章 / P4）

@@ -24,6 +24,7 @@
 #include "drv/rng.h"
 #include "drv/crc.h"
 #include "drv/iwdg.h"
+#include "system_init.h"   /* board_report_reset_reason（复位原因，§6.4） */
 #include "drv/wwdg.h"
 #include "drv/flash.h"
 #include "drv/i2s.h"
@@ -204,6 +205,8 @@ int selftest_run(selftest *self)
     int r;
 
     log_printf(app_log(), LOG_DEBUG, "selftest", "\n--- On-board self-test (BIST) ---\n");
+
+    board_report_reset_reason();   /* 复位原因（§6.4）：读 CSR、打印、清标志 */
 
     irq_manager_dump();   /* dump the centralized interrupt registry (verify wiring) */
 
