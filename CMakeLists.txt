@@ -120,6 +120,7 @@ if(RTOS)
     # 内核核心（core/ 拆分实现，见 docs/rtos-design.md §10）
     src/rtos/core/sched.c
     src/rtos/core/task.c
+    src/rtos/core/timer.c      # 软件定时器原语 + 48 天 tick 翻转安全（§6.3）
     src/rtos/core/kobj.c
     src/rtos/core/syscalls.c
     src/rtos/core/bh.c
@@ -135,6 +136,7 @@ if(RTOS)
     src/rtos/rtos_basic.c       # T01-T05 + §2.2 调度锁/临界区/SysTick 唤醒（RTOSBASIC）
     src/rtos/rtos_ipc2.c        # S01/S03/S04/S05 边界与 FromISR（RTOSIPC2）
     src/rtos/rtos_robust.c      # §3.1 异常注入 + §3.2 中断风暴 + §3.3 安全正例（RTOSROBUST）
+    src/rtos/rtos_timer.c       # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER）
     # arch 层（与底层硬件的唯一边界）：Cortex-M4 实现
     src/rtos/arch/cortex_m/port.c
     src/rtos/arch/cortex_m/context.S

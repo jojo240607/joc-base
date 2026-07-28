@@ -150,6 +150,7 @@ void rtos_start(void) {
     rtos_cycle_init();           /* 使能 DWT 周期计数器（P4 延迟/有界性测量用） */
     rtos_instantiate_sections(); /* 编译期段收集：自动建任务/IPC/BH（P4） */
     rtos_workq_init();            /* 提前建好共享工作队列 worker（任务上下文，避免 ISR 内建任务） */
+    rtos_timer_init_daemon();      /* 提前建好专用定时器任务（任务上下文，避免 ISR 内建任务） */
 
     /* 启动期中断优先级契约审计：启用零延迟 IRQ（RTOS_MAX_ZERO_LATENCY_IRQS>0）时，
      * 任何调用内核 API 的 ISR 必须落在可被 BASEPRI 屏蔽的优先级带（prio >= 阈值），

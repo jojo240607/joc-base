@@ -74,6 +74,17 @@ extern volatile uint32_t g_tick;
 extern int             g_rtos_started;
 /* g_in_svc 已在 rtos.h 声明（extern volatile int g_in_svc;） */
 
+/* 软件定时器（core/timer.c，docs/rtos-test-plan.md §6.3）：
+ *  - rtos_timer_tick 由 rtos_tick_isr 调用（ISR 上下文，已处于临界区），
+ *    扫描活动定时器、到期者置 pending 并唤醒定时器任务；
+ *  - rtos_timer_init_daemon 由 rtos_start 调用，创建专用定时器任务（任务上下文，
+ *    切到首个任务之前），绝不在 ISR 里懒建任务。 */
+void rtos_timer_tick(void);
+void rtos_timer_init_daemon(void);
+/* 处理所有 pending 定时器（执行回调于任务上下文）。定时器任务体与确定性自测共用：
+ * 自测在 irq_lock 窗口内冻结真实 sysTick 后直接调用，脱离 1kHz 节拍做快速断言。 */
+void rtos_timer_run_pending(void);
+
 /* 任务计数（sched.c 定义并在 rtos_init 中复位；task.c 创建/查询用） */
 extern int g_task_count;
 

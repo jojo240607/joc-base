@@ -89,6 +89,51 @@ void rtos_msleep(uint32_t ms);
  * 的就绪任务时才让出 CPU；否则继续当前任务。区别于 rtos_yield（无条件让出）。 */
 void rtos_schedule(void);
 
+/* ---- 软件定时器（docs/rtos-test-plan.md §6.3，准则 rtos-test.md §2.5）----
+ * 用户分配 rtos_timer_t（静态/栈）并 rtos_timer_init，再 start/stop。回调在
+ * 专用“定时器任务”上下文执行（非 ISR），可做任意耗时操作（栈见定时器任务）。
+ * 过期判定用【无符号 tick 比较】，故 32 位 g_tick 在 0xFFFFFFFF→0 翻转后仍能
+ * 正确判定唤醒点（48 天翻转安全）。周期定时器锚定原始相位 + period，无累积漂移。 */
+typedef enum {
+    RTOS_TIMER_ONESHOT = 0,
+    RTOS_TIMER_PERIODIC
+} rtos_timer_mode_t;
+typedef struct rtos_timer rtos_timer_t;
+typedef void (*rtos_timer_cb_t)(rtos_timer_t *t, void *arg);
+
+struct rtos_timer {
+    const char        *name;        /* 调试名（可选） */
+    rtos_timer_cb_t    cb;          /* 到期回调（任务上下文） */
+    void              *arg;         /* 回调参数 */
+    rtos_timer_mode_t  mode;        /* 单次 / 周期 */
+    uint32_t           period_ticks;/* 周期（tick）；one-shot 为首次延时 */
+    uint32_t           expire;      /* 绝对过期 tick（无符号比较，翻转安全） */
+    uint8_t            active;      /* 内部：1=在活动链表中 */
+    uint8_t            pending;     /* 内部：1=已到期待回调 */
+    rtos_timer_t      *next;        /* 内部：活动链表 */
+};
+
+void rtos_timer_init(rtos_timer_t *t, const char *name, rtos_timer_cb_t cb, void *arg);
+void rtos_timer_start(rtos_timer_t *t, rtos_timer_mode_t mode, uint32_t period_ms);
+void rtos_timer_start_ticks(rtos_timer_t *t, rtos_timer_mode_t mode, uint32_t period_ticks);
+void rtos_timer_stop(rtos_timer_t *t);
+int  rtos_timer_is_active(rtos_timer_t *t);
+
+/* 绝对延时（准则 §2.5 vTaskDelayUntil）：delay 直到 *last + inc_ticks，翻转安全。
+ * 典型用法：uint32_t next = rtos_tick_count();
+ *           for (;;) { work(); rtos_delay_until(&next, 10); }  // 每 10 tick 一次，无漂移 */
+void rtos_delay_until(uint32_t *last, uint32_t inc_ticks);
+
+/* 无符号 tick 比较辅助（翻转安全，见准则 §2.5）：
+ *   rtos_tick_expired(d, now)  : now 已到/过截止点 d（含 d 本身）
+ *   rtos_tick_elapsed(s, now)  : 从 s 到 now 流逝的 tick 数（翻转安全） */
+static inline int      rtos_tick_expired(uint32_t deadline, uint32_t now) {
+    return (int32_t)(now - deadline) >= 0;
+}
+static inline uint32_t rtos_tick_elapsed(uint32_t start, uint32_t now) {
+    return (uint32_t)(now - start);
+}
+
 /* ---- 查询 ---- */
 task_t     *rtos_running(void);
 uint32_t    rtos_tick_count(void);
@@ -341,6 +386,11 @@ int rtos_fpu_selftest(void);
  * 验证上半部(模拟 ISR) trigger -> 下半部高优先级任务被唤醒并执行；
  * 以及工作队列提交 -> 共享 worker 执行。见 docs/rtos-design.md 第 4 章(P3)。 */
 int rtos_bh_selftest(void);
+
+/* ---- 软件定时器 / 48 天 tick 翻转自测（从 RTOSTIMER 命令调用，并注册进 RTOSALL） ----
+ * 覆盖准则 §2.5：单次/周期定时器、停止、无符号 tick 比较的 48 天翻转安全、
+ * 绝对延时 rtos_delay_until 的翻转安全。 */
+int rtos_timer_selftest(void);
 
 /* ===========================================================================
  * 编译期段收集（见 docs/rtos-design.md 第 5 章 / P4）

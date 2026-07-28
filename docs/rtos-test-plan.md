@@ -133,9 +133,9 @@ RTOSALL      → 串联以上全部（编译期段收集，自动遍历）
 
 ## 6. 已知缺口与后续
 
-> 进度：§6.1（`rtos_task_delete`）、§6.2（`rtos_mutex_timedlock`）已完成并接入
-> `RTOSROBUST`（用例 `DelBlockedTask` / `MutexTimedLock`，均发 `[RESULT]` 行，RTOSALL 已覆盖）。
-> 剩余 3–6 仍待后续阶段。
+> 进度：§6.1（`rtos_task_delete`）、§6.2（`rtos_mutex_timedlock`）、§6.3（软件定时器 / Tick 48 天翻转）
+> 已完成；§6.5（栈水位 / 优先级边界）已完成。`RTOSROBUST` 覆盖 DelBlockedTask / MutexTimedLock；
+> §6.3 由独立 `RTOSTIMER` 命令（并注册进 `RTOSALL` "timer" 条目）覆盖。剩余 4 / 6 仍待后续阶段。
 
 1. **`rtos_task_delete`**：✅ 已完成（commit 见 git 历史）。`rtos_task_delete(t)` 从就绪/睡眠/
    等待队列摘除并置 `TASK_DEAD`，TCB 槽可被 `rtos_task_create` 复用；`t==NULL/自身` 删自身。
@@ -145,7 +145,18 @@ RTOSALL      → 串联以上全部（编译期段收集，自动遍历）
    与睡眠链表上，tick ISR 到期时摘除并置 `timed_out`，unlock handoff 提前拿到锁时取消计时项）。
    已由 `RTOSROBUST` 的 `MutexTimedLock` 用例验证：空闲锁立即拿到(0)、持锁者不释放时超时返回(-1)
    且耗时≈`timeout_ms`。
-3. **软件定时器 / Tick 溢出(48天翻转)**：准则 §2.5；当前 RTOS 仅 `msleep`，无软件定时器原语。⏸ 待 P2。
+3. **软件定时器 / Tick 溢出(48天翻转)**：✅ 已完成（docs/rtos-design.md §6.3，准则 §2.5）。
+   - 软件定时器原语：`rtos_timer_t`（单次/周期）+ `rtos_timer_init/start/start_ticks/stop/is_active`；
+     回调在专用“定时器任务”上下文执行（非 ISR，可做耗时操作），该任务在 `rtos_start` 里一次性创建
+     （与 workqueue 同款约束，绝不在 ISR 懒建任务）。节拍 ISR（`rtos_tick_isr -> rtos_timer_tick`）
+     扫描活动定时器、到期者置 pending 并唤醒定时器任务；周期定时器锚定 `expire += period`，无累积漂移。
+   - 48 天翻转安全：过期判定统一走无符号 tick 比较 `rtos_tick_expired(d, now) = (int32_t)(now-d)>=0`，
+     故 32 位 `g_tick` 在 `0xFFFFFFFF→0` 翻转后唤醒点仍正确；新增 `rtos_delay_until(last, inc)`（准则
+     §2.5 vTaskDelayUntil，绝对延时，翻转安全）与 `rtos_tick_elapsed` 辅助。
+   - 自测 `RTOSTIMER`（注册进 RTOSALL "timer"）：单次恰好触发一次 / 周期每 period 触发一次 / 停止后不再
+     触发 / 无符号比较纯数学跨边界(pre/at/post0/post1) / 集成(把 g_tick 强制到翻转前启动跨边界定时器) /
+     `rtos_delay_until` 翻转数学 + 真实冒烟(~10 tick)。均在 `irq_lock` 窗口内冻结真实 sysTick、手动推进
+     `g_tick` 做快速确定性断言，脱离 1kHz 节拍。
 4. **马拉松 72h + IWDG 喂狗 + 复位原因**：准则 §4；需新增长跑任务组与看门狗集成。⏸ 待 P3。
 5. **栈水位(0xEE 填充) / 优先级边界(1 tick 抢占)**：✅ 已完成（P1）。
    - 栈水位：内核新增 `rtos_stack_fill_watermark`（创建任务时把“跳过栈底哨兵区、到初始帧底”的

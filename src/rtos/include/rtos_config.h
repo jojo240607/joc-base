@@ -46,6 +46,17 @@
   #define RTOS_PRIO_BH_MED  6   /* 下半部中优先级带：非关键延迟工作(共享 workqueue) */
 #endif
 
+/* 软件定时器（docs/rtos-test-plan.md §6.3，准则 rtos-test.md §2.5）：单次/周期定时器，
+ * 回调在专用“定时器任务”上下文执行；过期判定用无符号 tick 比较，故 32 位 g_tick 在
+ * 48 天(0xFFFFFFFF→0)翻转后仍正确。定时器任务在 rtos_start 里一次性创建（与 workqueue
+ * 同款约束：绝不从 ISR 懒建任务），默认随 RTOS 编译进内核。 */
+#ifndef RTOS_USE_TIMERS
+  #define RTOS_USE_TIMERS 1
+#endif
+#ifndef RTOS_PRIO_TIMER
+  #define RTOS_PRIO_TIMER 5   /* 定时器任务优先级：高于应用(main 16)、低于零延迟 ISR */
+#endif
+
 /* 是否启用 MPU（固定区域 + 栈哨兵 + MemManage 恢复；任务保持特权故对现行任务透明）。
  * 默认开启：P2 阶段已验证 MPU 自测（越权捕获/恢复）与 BIST 共存无回归。 */
 #ifndef RTOS_USE_MPU

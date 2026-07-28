@@ -186,6 +186,7 @@ static void cmd_rtosp4(app_ctx_t *c, const char *line) { (void)line; selftest_re
 static void cmd_rtosall(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSALL", rtos_selftest_run_all()); }
 static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFPU", rtos_fpu_selftest()); }
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
+static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
 static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSUSR", rtos_usr_selftest()); }
 
 static void cmd_rtoskobj(app_ctx_t *c, const char *line)
@@ -416,6 +417,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSALL",  cmd_rtosall,  0 },
     { "RTOSFPU",  cmd_rtosfpu,  0 },
     { "RTOSBH",   cmd_rtosbh,   0 },
+    { "RTOSTIMER", cmd_rtostimer, 0 },
     { "RTOSUSR",  cmd_rtosusr,  0 },
     { "RTOSKOBJ", cmd_rtoskobj, 0 },
     { "USBOPEN",  cmd_usbopen,  0 },

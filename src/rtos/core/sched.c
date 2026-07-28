@@ -196,6 +196,23 @@ void rtos_msleep(uint32_t ms) {
     rtos_schedule_request();
 }
 
+/* 绝对延时（docs/rtos-test-plan.md §6.3，准则 §2.5 vTaskDelayUntil）：delay 直到
+ * *last + inc_ticks。用无符号 tick 算术计算剩余 tick（翻转安全），再经相对倒计时
+ * rtos_msleep 睡眠——相对倒计时本身亦翻转安全。典型用法：循环里把 next 累加 inc_ticks
+ * 得稳定节拍，无累积漂移；48 天(0xFFFFFFFF→0)翻转后 remain 计算仍正确。 */
+void rtos_delay_until(uint32_t *last, uint32_t inc_ticks) {
+    if (!g_rtos_started) return;
+    if (!last) return;
+    uint32_t now  = g_tick;
+    uint32_t next = (uint32_t)(*last + inc_ticks);   /* 翻转安全加法 */
+    *last = next;
+    uint32_t remain = (uint32_t)(next - now);        /* 翻转安全剩余 tick */
+    if (remain == 0) return;
+    uint32_t ms = (remain * 1000U + (RTOS_TICK_HZ - 1U)) / RTOS_TICK_HZ;
+    if (ms == 0) ms = 1;
+    rtos_msleep(ms);
+}
+
 /* 抢占点（docs/rtos-design.md §3）：仅当存在更高（或同优先级 FIFO 中更靠前）
  * 的就绪任务时才让出 CPU；否则继续当前任务。常用于“临界区内插入调度点”。 */
 void rtos_schedule(void) {
@@ -293,6 +310,10 @@ void rtos_tick_isr(void *ctx) {
         }
     }
 #endif
+    /* 软件定时器（docs/rtos-test-plan.md §6.3）：扫描活动定时器，到期者置 pending
+     * 并唤醒“定时器任务”；回调在定时器任务上下文执行（任务模式，可耗时）。
+     * 过期判定用无符号 tick 比较，48 天(0xFFFFFFFF→0)翻转安全。 */
+    rtos_timer_tick();
     rtos_crit_exit(st);
     if (awoke) rtos_schedule_request();
 }
