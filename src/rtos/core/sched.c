@@ -150,6 +150,11 @@ void rtos_msleep(uint32_t ms) {
     uint32_t ticks = (ms * RTOS_TICK_HZ + 999U) / 1000U;
     if (ticks == 0) ticks = 1;
     unsigned st = rtos_crit_enter();
+    /* 防护：若此前在 sched_lock(屏蔽 PendSV) 区间内调用过 rtos_yield，本任务可能已被
+     * 加入就绪队列(state==READY)而切换未发生；睡眠前必须先将其从就绪队列摘除，否则会
+     * 同时挂在“就绪”与“睡眠”两条链表上，破坏链表（节拍 ISR 遍历时死循环/越界）。
+     * 正常运行态下本任务为 RUNNING，不会命中此分支，零回归。 */
+    if (g_running->state == TASK_READY) ready_remove(g_running);
     g_running->state = TASK_SLEEPING;
     g_running->delay_ticks = ticks;
     sleep_add(g_running);
@@ -251,6 +256,9 @@ void rtos_tick_isr(void *ctx) {
 /* 阻塞当前任务 / 唤醒最高等待者（调用方须持调度锁/关中断） */
 void rtos_pend(void **q) {
     if (!g_running) return;
+    /* 同 rtos_msleep 的防护：sched_lock 区间内 yield 后本任务可能残留于就绪队列，
+     * 阻塞前摘除，避免同时挂在“就绪”与“等待”链表。 */
+    if (g_running->state == TASK_READY) ready_remove(g_running);
     g_running->state = TASK_BLOCKED;
     g_running->wait_obj = q;
     rtos_waitq_add(q, g_running);

@@ -33,7 +33,12 @@ void bist_task(void *arg)
     int pmok = pinmux_run_selftest((pinmux *)d_pinmux);
     log_printf(app_log(), LOG_INFO, "main", "[BIST] pinmux: %s\n", pmok ? "PASS" : "FAIL");
 
-    for (;;) rtos_yield();   /* BIST 完成(或卡死在上面)；在此安静让出 */
+    /* BIST 完成后本任务无事可做：必须【阻塞】而非忙等 rtos_yield()。
+     * rtos_yield() 只让给“同级或更高优先级”任务，若此处忙等，则任何优先级
+     * 低于 bist(24) 的任务(如 prio=28/31)将永得不到 CPU，造成人为饿死。
+     * 改用 msleep 阻塞：任务进入阻塞态，调度器才会选更低优先级就绪任务运行，
+     * 既空出 CPU 又保持“BIST 后安静”。1s 周期唤醒仅用于佐证调度器存活。 */
+    for (;;) rtos_msleep(1000);
 }
 
 RTOS_TASK(bist, "bist", bist_task, RTOS_PRIO_BIST, g_bist_stack, sizeof(g_bist_stack), &g_app_ctx, 1);

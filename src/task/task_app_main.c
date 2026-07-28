@@ -71,7 +71,8 @@ void app_main_task(void *arg)
                "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / "
                "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / BTN / BTN2 / "
                "RTOS / RTOSIPC / RTOSBUS / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSBH / "
-               "RTOSP4 / RTOSUSR / RTOSRR / RTOSKOBJ / RTOSALL\n");
+               "RTOSP4 / RTOSUSR / RTOSRR / RTOSKOBJ / RTOSALL / "
+               "RTOSBASIC / RTOSIPC2 / RTOSROBUST\n");
 
     console_run(c);   /* 永不返回：读命令 -> 查表派发 */
 }

@@ -25,6 +25,8 @@ volatile int      g_mpu_violation  = 0;
 volatile int      g_mpu_test_active = 0;
 volatile int      g_stack_overflow  = 0;
 volatile uint32_t g_fault_cfsr     = 0;
+volatile int      g_robust_fault_active = 0;
+volatile uint32_t g_robust_fault_cfsr   = 0;
 volatile uint32_t g_fault_pc       = 0;
 volatile uint32_t g_fault_mmfar    = 0;
 volatile uint32_t g_fault_lr       = 0;
@@ -193,6 +195,19 @@ int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
         *pc_slot = *lr_slot;                 /* 异常返回即“函数返回”，跳过越权指令 */
         SCB->CFSR = cfsr;                    /* 写 1 清除故障位 */
         __set_CONTROL(0x2u);                 /* 恢复特权(nPRIV=0)，线程继续用 PSP */
+        __ISB();
+        return 1;
+    }
+
+    /* 鲁棒性自测（RTOSROBUST）：捕获“除零 / 未定义指令”等 UsageFault。
+     * 与 MPU 越权恢复同构——把异常返回 PC 改为返回地址(LR)，跳过故障指令本身，
+     * 触发故障的任务从下一指令继续执行（系统存活，不进入 WFI 停机）。faulting 任务
+     * 在特权态运行，无需改 CONTROL；清除 CFSR 后返回 1 表示已恢复。 */
+    if (g_robust_fault_active) {
+        g_robust_fault_cfsr = cfsr;
+        uint32_t *lr_slot = frame + fo + 5u;
+        *pc_slot = *lr_slot;                 /* 跳过故障指令，回到调用者 */
+        SCB->CFSR = cfsr;                    /* 写 1 清除故障状态位 */
         __ISB();
         return 1;
     }

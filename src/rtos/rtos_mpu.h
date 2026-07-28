@@ -41,4 +41,11 @@ extern volatile int     g_mpu_test_active;  /* 自测进行中：故障处理器
 extern volatile int     g_stack_overflow;   /* 检测到任务栈溢出 */
 extern volatile uint32_t g_fault_cfsr;      /* 最近一次故障的 CFSR（调试） */
 
+/* 鲁棒性自测（RTOSROBUST）故障恢复钩子：与 g_mpu_test_active 同构，但用于捕获
+ * “除零 / 未定义指令”等 UsageFault——置位期间，故障处理器跳过故障指令（PC=LR）并
+ * 清除故障状态，使触发故障的任务继续运行、系统不崩。真实故障(未置位)仍走 WFI 停机。
+ * 生产路径零回归（仅当测试显式置位时生效）。 */
+extern volatile int      g_robust_fault_active;
+extern volatile uint32_t g_robust_fault_cfsr;  /* RTOSROBUST 捕获的故障 CFSR */
+
 #endif /* JOC_RTOS_MPU_H */

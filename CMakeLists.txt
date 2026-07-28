@@ -132,6 +132,9 @@ if(RTOS)
     src/rtos/rtos_stress.c
     src/rtos/rtos_p4.c
     src/rtos/rtos_usr.c
+    src/rtos/rtos_basic.c       # T01-T05 + §2.2 调度锁/临界区/SysTick 唤醒（RTOSBASIC）
+    src/rtos/rtos_ipc2.c        # S01/S03/S04/S05 边界与 FromISR（RTOSIPC2）
+    src/rtos/rtos_robust.c      # §3.1 异常注入 + §3.2 中断风暴 + §3.3 安全正例（RTOSROBUST）
     # arch 层（与底层硬件的唯一边界）：Cortex-M4 实现
     src/rtos/arch/cortex_m/port.c
     src/rtos/arch/cortex_m/context.S

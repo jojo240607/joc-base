@@ -43,7 +43,10 @@ static void task_stack_init(task_t *t) {
 
 static void rtos_task_exit(void) {
     unsigned st = rtos_crit_enter();
-    if (g_running) g_running->state = TASK_DEAD;
+    if (g_running) {
+        rtos_kobj_deregister(KOBJ_TASK, g_running);   /* 回收内核对象表条目，避免 RTOSALL 串联时注册表溢出 */
+        g_running->state = TASK_DEAD;
+    }
     rtos_crit_exit(st);
     /* 非特权任务返回时也需请求切换，但 rtos_schedule_request() 直接写 ICSR
      * (仅特权)，会导致 BusFault。改用 rtos_yield()：它在非特权态会经 SVC 门

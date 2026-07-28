@@ -215,6 +215,7 @@ typedef enum {
     KOBJ_SEM = 0, KOBJ_MUTEX, KOBJ_MQ, KOBJ_EVENT, KOBJ_BUS, KOBJ_TASK, KOBJ_OTHER
 } rtos_kobj_type_t;
 int  rtos_kobj_register(const char *name, rtos_kobj_type_t type, void *ptr);
+void rtos_kobj_deregister(rtos_kobj_type_t type, void *ptr);   /* 任务退出时回收槽位 */
 void *rtos_kobj_lookup(const char *name);
 void rtos_kobj_foreach(void (*cb)(const char *name, rtos_kobj_type_t type, void *ptr));
 /* SVC 门用它校验“用户态传入的内核对象指针”是否真实登记过，防伪造指针越权访问。 */
@@ -284,6 +285,15 @@ int rtos_usr_selftest(void);
 
 /* ---- IPC 运行时自测（从 RTOSIPC 命令调用） ---- */
 int rtos_ipc_selftest(void);
+
+/* ---- 任务/调度基础自测（从 RTOSBASIC 命令调用，并注册进 RTOSALL） ---- */
+int rtos_basic_selftest(void);
+
+/* ---- 同步与通信边界自测（从 RTOSIPC2 命令调用，并注册进 RTOSALL） ---- */
+int rtos_ipc2_selftest(void);
+
+/* ---- 鲁棒性/异常注入自测（从 RTOSROBUST 命令调用，并注册进 RTOSALL） ---- */
+int rtos_robust_selftest(void);
 
 /* ---- 时间片轮转（Round-Robin）自测（从 RTOSRR 命令调用，并注册进 RTOSALL） ---- */
 int rtos_rr_selftest(void);

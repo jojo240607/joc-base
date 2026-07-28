@@ -175,6 +175,9 @@ static void selftest_reply(app_ctx_t *c, const char *name, int ok)
 }
 
 static void cmd_rtosipc(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSIPC", rtos_ipc_selftest()); }
+static void cmd_rtosbasic(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBASIC", rtos_basic_selftest()); }
+static void cmd_rtosipc2(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSIPC2", rtos_ipc2_selftest()); }
+static void cmd_rtosrobust(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSROBUST", rtos_robust_selftest()); }
 static void cmd_rtosrr (app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSRR",  rtos_rr_selftest()); }
 static void cmd_rtosbus(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBUS", rtos_bus_selftest()); }
 static void cmd_rtosmpu(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSMPU", rtos_mpu_selftest()); }
@@ -402,6 +405,9 @@ static const cmd_entry_t g_cmds[] = {
     { "TICKS",    cmd_ticks,    0 },
     { "RTOS",     cmd_rtos,     0 },
     { "RTOSIPC",  cmd_rtosipc,  0 },
+    { "RTOSBASIC", cmd_rtosbasic, 0 },
+    { "RTOSIPC2", cmd_rtosipc2, 0 },
+    { "RTOSROBUST", cmd_rtosrobust, 0 },
     { "RTOSRR",   cmd_rtosrr,   0 },
     { "RTOSBUS",  cmd_rtosbus,  0 },
     { "RTOSMPU",  cmd_rtosmpu,  0 },
