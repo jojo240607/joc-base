@@ -56,6 +56,14 @@ static inline void rtos_crit_exit(unsigned st) {
 /* 就绪队列 pick / remove（sched.c 定义；task.c 的 rtos_start 使用） */
 task_t *ready_pick(void);
 void    ready_remove(task_t *t);
+/* 睡眠链表加入（sched.c 定义；ipc_mutex.c 的 rtos_mutex_timedlock 用于挂计时项） */
+void    sleep_add(task_t *t);
+
+/* 把任务从它当前所在的队列（就绪/睡眠/等待，含计时阻塞双链）摘除（sched.c）。 */
+void rtos_task_unlink(task_t *t);
+/* 取消任务的计时阻塞（mutex handoff 在超时前拿到锁时调用）：仅当 wait_armed==1
+ * 时摘除其睡眠链表条目并清标记，避免误删未计时的任务。 */
+void rtos_cancel_timed_wait(task_t *t);
 
 /* IPC 内部：判断“真 ISR（排除 SVC 重入）”（ipc_sem.c 定义；各 ipc_*.c 共用） */
 int rtos_ipc_in_isr(void);

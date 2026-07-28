@@ -30,6 +30,47 @@ int rtos_mutex_trylock(rtos_mutex_t *m) {
     return -1;
 }
 
+int rtos_mutex_timedlock(rtos_mutex_t *m, uint32_t timeout_ms) {
+    if (!m || !rtos_is_started()) return -1;
+    if (rtos_ipc_in_isr()) { g_ipc_misuse++; return -1; }   /* ISR 中不可阻塞：误用计数 */
+    if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MUTEX_TIMEDLOCK, (uint32_t)m, timeout_ms, 0);
+    if (timeout_ms == 0) return rtos_mutex_trylock(m);      /* 等价非阻塞 */
+    unsigned st = rtos_crit_enter();
+    if (m->owner == rtos_running()) { rtos_crit_exit(st); return -1; }   /* 不支持递归 */
+    if (m->owner == (task_t *)0) {
+        m->owner = rtos_running();
+        rtos_set_eff_prio(rtos_running(), (rtos_running()->prio < m->ceil_prio)
+                                      ? rtos_running()->prio : m->ceil_prio);
+        rtos_crit_exit(st);
+        return 0;
+    }
+    /* 有竞争：阻塞并挂超时（双链——互斥量 waitq + 睡眠链表计时）。
+     * 防护：若此前在 sched_lock 区间内 yield 过，本任务可能残留于就绪队列，
+     * 阻塞前摘除，避免同时挂在“就绪”与“等待”两条链表上破坏结构。 */
+    uint32_t ticks = (timeout_ms * RTOS_TICK_HZ + 999U) / 1000U;
+    if (ticks == 0) ticks = 1;
+    if (g_running->state == TASK_READY) ready_remove(g_running);
+    g_running->state     = TASK_BLOCKED;
+    g_running->wait_obj  = &m->waitq;
+    g_running->wait_armed = 1;
+    g_running->timed_out  = 0;
+    g_running->delay_ticks = ticks;
+    rtos_waitq_add(&m->waitq, g_running);
+    sleep_add(g_running);            /* 计时：随节拍递减 delay_ticks，到期置 timed_out */
+    rtos_crit_exit(st);
+    rtos_schedule_request();
+    /* 被唤醒（handoff 拿到锁）或超时（timed_out=1）后在此继续 */
+    st = rtos_crit_enter();
+    int got = (m->owner == g_running);
+    int to  = g_running->timed_out;
+    g_running->wait_armed = 0;
+    g_running->timed_out  = 0;
+    rtos_crit_exit(st);
+    if (got) return 0;
+    if (to)  return -1;
+    return -1;   /* 兜底（理论上不会到达） */
+}
+
 int rtos_mutex_lock(rtos_mutex_t *m) {
     if (!m || !rtos_is_started()) return -1;
     if (rtos_ipc_in_isr()) { g_ipc_misuse++; return -1; }   /* ISR 中不可阻塞：误用计数 */
@@ -60,6 +101,7 @@ int rtos_mutex_unlock(rtos_mutex_t *m) {
     /* handoff：唤醒最高优先级等待者并立为 owner（提升到天花板） */
     task_t *t = rtos_waitq_pop_highest(&m->waitq);
     if (t) {
+        rtos_cancel_timed_wait(t);   /* 若它挂了超时睡眠项，摘除并清标记（已脱离 waitq） */
         m->owner = t;
         t->wait_obj = (void *)0;
         t->state = TASK_READY;

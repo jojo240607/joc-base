@@ -102,6 +102,32 @@ void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
     if (name) rtos_kobj_register(name, KOBJ_TASK, t);   /* 任务注册进内核对象表（按名可取） */
 }
 
+/* 删除任务（docs/rtos-test-plan.md §6.1）：从当前所在队列摘除并置 TASK_DEAD。
+ * 删除自身时标记 DEAD 后让出 CPU 且不再返回（栈不再使用），由下一个任务接管。 */
+void rtos_task_delete(task_t *t) {
+    if (!g_rtos_started) return;
+    if (rtos_need_svc()) {
+        rtos_syscall(RTOS_SYS_TASK_DELETE, (uint32_t)t, 0, 0);
+        return;
+    }
+    unsigned st = rtos_crit_enter();
+    if (!t) t = g_running;
+    /* 单核下唯一 RUNNING 任务是 g_running；若 t 既非自身也非 RUNNING，则它必处于
+     * 就绪/睡眠/阻塞中的某一队列，可直接摘除。删除自身走下方 self 分支。 */
+    int self = (t == g_running);
+    rtos_task_unlink(t);                 /* 从就绪/睡眠/等待队列摘除 */
+    rtos_kobj_deregister(KOBJ_TASK, t);  /* 回收内核对象表条目 */
+    t->state = TASK_DEAD;                /* TCB 槽可被后续 rtos_task_create 复用 */
+    rtos_crit_exit(st);
+    if (self) {
+        /* 当前任务进入 DEAD：g_running 仍指向本任务，但 pend 路径不会再把 DEAD
+         * 任务入就绪队列；请求切换后下一个 READY 任务接管，本任务栈不再被使用。 */
+        rtos_yield();
+        for (;;) { }
+    }
+    rtos_schedule_request();
+}
+
 /* 编译期段收集（P4，见 docs/rtos-design.md 第 5 章）：遍历 ._rtos_tasks /
  * ._rtos_ipc / ._rtos_bh 段，自动建任务 / 消息队列 / 下半部任务。
  * 一次性执行（加功能只需在源文件里放一个 RTOS_TASK/MSGQ/BH 宏，无需改此处）。

@@ -18,8 +18,8 @@
  *    跳过故障指令使任务继续、系统存活；真实故障仍走 WFI 停机（生产零回归）。
  *  - 栈溢出仅测“检测函数”（破坏栈底哨兵→rtos_stack_check_sentinel 报溢出），不做
  *    破坏性真溢出，避免踩坏相邻 CCM。
- *  - §3.3 真死锁超时 / 删阻塞任务 需未来内核 API(rtos_mutex_timedlock / rtos_task_delete)，
- *    本次以“天花板防反转(无死锁) + 阻塞任务释放恢复”正例覆盖（见 docs/rtos-test-plan.md §6）。
+ *  - §3.3 真死锁超时 / 删阻塞任务 已由内核新 API(rtos_mutex_timedlock / rtos_task_delete)
+ *    补齐，本文件新增 MutexTimedLock / DelBlockedTask 两个用例覆盖（见 docs/rtos-test-plan.md §6）。
  * ------------------------------------------------------------------------- */
 
 /* ===================== §3.1 除零 =====================
@@ -171,6 +171,27 @@ static volatile int g_rb_ex_stop;
 static void rb_ex_filler(void *arg) {
     (void)arg;
     while (!g_rb_ex_stop) rtos_msleep(50);
+}
+
+/* ===================== §3.3 死锁超时（rtos_mutex_timedlock） ===================== */
+static rtos_mutex_t g_rb_dl_m;
+static volatile int g_rb_dl_holding;
+static void rb_dl_holder(void *arg) {
+    (void)arg;
+    rtos_mutex_lock(&g_rb_dl_m);     /* 长期持锁，远超测试超时 */
+    g_rb_dl_holding = 1;
+    rtos_msleep(500);                /* 持锁 500ms */
+    rtos_mutex_unlock(&g_rb_dl_m);
+    rtos_msleep(10);
+}
+
+/* ===================== §3.3 删除阻塞任务（队列满时发送者被删，rtos_task_delete） ===================== */
+static uint8_t      g_rb_db_buf[1 * 4];   /* cap=1 的 MQ 缓冲 */
+static rtos_mq_t    g_rb_db_q;
+static void rb_db_sender(void *arg) {
+    (void)arg;
+    int v = 0x12345678;
+    for (;;) rtos_mq_send(&g_rb_db_q, &v);   /* 队列满 -> 阻塞，等被删除 */
 }
 
 int rtos_robust_selftest(void) {
@@ -336,6 +357,56 @@ int rtos_robust_selftest(void) {
                    b, made, limit, lok ? "PASS" : "FAIL");
         RTOS_TEST_RESULT("ResExhaustAlive", lok);
         g_rb_ex_stop = 1; rtos_msleep(100);   /* 释放 filler */
+    }
+
+    /* ---------- §3.3 死锁超时（rtos_mutex_timedlock） ---------- */
+    {
+        rtos_mutex_init(&g_rb_dl_m, 5);
+        /* 1) 空闲锁应立即拿到（0），随后释放 */
+        int fast = rtos_mutex_timedlock(&g_rb_dl_m, 100);
+        rtos_mutex_unlock(&g_rb_dl_m);
+        /* 2) 持锁者长期不释放 -> 超时返回 -1（约 timeout_ms） */
+        g_rb_dl_holding = 0;
+        RTOS_TASK_STACK(stdl, 512);
+        rtos_task_create("rbdlh", rb_dl_holder, (void *)0, 14, stdl, sizeof(stdl));
+        uint32_t w = 0;
+        while (!g_rb_dl_holding && w < 1000) { rtos_msleep(1); w++; }
+        uint32_t tk0 = rtos_tick_count();
+        int r = rtos_mutex_timedlock(&g_rb_dl_m, 60);   /* 应超时 -1，约 60ms */
+        uint32_t dt = rtos_tick_count() - tk0;
+        int lok = (fast == 0) && (r == -1) && (dt >= 40 && dt <= 200);
+        if (!lok) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[ROBUST] mutex timedlock: fast=%d timeout_ret=%d dt=%lu %s\n",
+                   (int)fast, (int)r, (unsigned long)dt, lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("MutexTimedLock", lok);
+        rtos_msleep(550);   /* 等 holder 释放并退出，避免影响后续用例 */
+    }
+
+    /* ---------- §3.3 删除阻塞任务（队列满时发送者被删，rtos_task_delete） ---------- */
+    {
+        rtos_mq_init(&g_rb_db_q, g_rb_db_buf, 4, 1);   /* cap=1 */
+        int fill = 0xA5A5A5A5;
+        rtos_mq_send(&g_rb_db_q, &fill);               /* 填满 */
+        RTOS_TASK_STACK(stdb, 512);
+        rtos_task_create("rbdbs", rb_db_sender, (void *)0, 14, stdb, sizeof(stdb));
+        task_t *s = (task_t *)rtos_kobj_lookup("rbdbs");
+        uint32_t w = 0;
+        while (s && s->state != TASK_BLOCKED && w < 1000) { rtos_msleep(1); w++; }
+        int was_blocked = (s && s->state == TASK_BLOCKED);
+        uint32_t tk0 = rtos_tick_count();
+        rtos_task_delete(s);                           /* 删除阻塞的发送者 */
+        rtos_msleep(100);                              /* 系统应继续运行 */
+        int v = 0;
+        rtos_mq_tryrecv(&g_rb_db_q, &v);               /* 队列仍含原 1 项（未被破坏） */
+        int lok = was_blocked && (s && s->state == TASK_DEAD)
+                  && (rtos_tick_count() > tk0) && (v == fill);
+        if (!lok) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[ROBUST] delete blocked task: was_blocked=%d dead=%d qval=0x%lx %s\n",
+                   (int)was_blocked, (s ? (int)(s->state == TASK_DEAD) : 0),
+                   (unsigned long)v, lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("DelBlockedTask", lok);
     }
 
     log_printf(app_log(), LOG_INFO, "rtos", "[ROBUST] self-test: %s\n", ok ? "PASS" : "FAIL");

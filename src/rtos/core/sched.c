@@ -68,8 +68,42 @@ task_t *ready_pick(void) {
     return g_ready_head[p];
 }
 
+/* 睡眠链表辅助（定义见下文；rtos_task_unlink / rtos_cancel_timed_wait 需前向引用）。 */
+void    sleep_add(task_t *t);
+static void sleep_remove(task_t *t);
+
+/* 把任务从它当前所在的队列（就绪/睡眠/等待，含计时阻塞双链）摘除。调用方持锁。
+ * 单核下唯一 RUNNING 任务是 g_running；删除/清理路径对 RUNNING 不做队列操作
+ * （其 sp 由上下文切换直接管理）。 */
+void rtos_task_unlink(task_t *t) {
+    if (!t) return;
+    if (t->wait_armed) {            /* 计时阻塞：先摘除睡眠链表条目（双链之一） */
+        sleep_remove(t);
+        t->wait_armed = 0;
+        t->timed_out = 0;
+    }
+    switch (t->state) {
+    case TASK_READY:    ready_remove(t); break;
+    case TASK_SLEEPING: sleep_remove(t);  break;
+    case TASK_BLOCKED:
+        if (t->wait_obj) { rtos_waitq_remove(t->wait_obj, t); t->wait_obj = (void *)0; }
+        break;
+    default: break;   /* RUNNING / DEAD：不在就绪/睡眠/等待链表中 */
+    }
+}
+
+/* 取消计时阻塞（rtos_mutex_unlock 的 handoff 在超时前唤醒等待者时调用）。
+ * 仅当任务确已挂超时睡眠项(wait_armed==1)时才操作睡眠链表，避免误删未计时任务。 */
+void rtos_cancel_timed_wait(task_t *t) {
+    if (t && t->wait_armed) {
+        sleep_remove(t);
+        t->wait_armed = 0;
+        t->timed_out  = 0;
+    }
+}
+
 /* ---- 睡眠链表操作（调用方持锁） ---- */
-static void sleep_add(task_t *t) {
+void sleep_add(task_t *t) {
     t->sched_prev = (task_t *)0;
     t->sched_next = g_sleep_head;
     if (g_sleep_head) g_sleep_head->sched_prev = t;
@@ -226,8 +260,18 @@ void rtos_tick_isr(void *ctx) {
         if (t->delay_ticks > 0) {
             if (--t->delay_ticks == 0) {
                 sleep_remove(t);
-                t->state = TASK_READY;
-                ready_add(t);
+                if (t->state == TASK_SLEEPING) {
+                    t->state = TASK_READY;
+                    ready_add(t);
+                } else if (t->state == TASK_BLOCKED) {
+                    /* 计时阻塞（rtos_mutex_timedlock）到期：从等待队列摘除并标记超时，
+                     * 使被唤醒的任务走“超时未拿到锁”分支返回 -1。 */
+                    if (t->wait_obj) { rtos_waitq_remove(t->wait_obj, t); t->wait_obj = (void *)0; }
+                    t->wait_armed = 0;
+                    t->timed_out  = 1;
+                    t->state = TASK_READY;
+                    ready_add(t);
+                }
                 awoke = 1;
             }
         }

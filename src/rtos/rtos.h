@@ -49,6 +49,11 @@ struct task {
     /* 事件标志等待条件（仅 event 使用，任务同时只等一个对象） */
     uint32_t       wait_mask;
     uint8_t        wait_mode;   /* 1=ALL(与), 0=ANY(或) */
+    /* 计时阻塞（rtos_mutex_timedlock）辅助：wait_armed=1 表示任务当前同时挂在
+     * “睡眠链表(计时)”与“某互斥量等待队列”上（双链）；timed_out=1 表示
+     * 节拍超时已触发、任务已从等待队列摘除并置 READY。 */
+    uint8_t        wait_armed;
+    uint8_t        timed_out;
 };
 
 /* ---- 内核生命周期 ---- */
@@ -56,6 +61,14 @@ void rtos_init(void);   /* 初始化内部表 + 在 systick 线上注册 RTOS �
 void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
                       uint8_t prio, void *stack, size_t stack_size);
 void rtos_start(void);  /* 选取首个任务并切换到任务模式（不再返回到原线程） */
+
+/* 删除任务（补齐 docs/rtos-test-plan.md §6 缺口）：t==NULL 或 t==当前运行任务
+ * 时删除自身；否则删除指定任务。实现从“就绪/睡眠/等待”队列摘除并置 TASK_DEAD，
+ * 其 TCB 槽可被后续 rtos_task_create 复用（与任务正常返回等价，无泄漏）。
+ * 约定：不要删除仍持有互斥量的任务——其 owner 指针会悬挂，等待者将永久阻塞。
+ * 可安全删除的对象：就绪/睡眠中、或阻塞在某 IPC 等待队列上的任务（含“队列满时
+ * 被阻塞的发送者”这类 §3.3 场景）。 */
+void rtos_task_delete(task_t *t);
 
 /* 声明一块“2 的幂大小 + 基址对齐到该大小”的任务栈，供 MPU 每任务栈 region(R4)
  * 作为【栈底 subregion 溢出哨兵】使用（见 docs/rtos-design.md §6 R3）。
@@ -136,6 +149,10 @@ void rtos_mutex_init(rtos_mutex_t *m, uint8_t ceil_prio);
 int  rtos_mutex_lock(rtos_mutex_t *m);    /* 阻塞直到获得；自锁返回 -1 */
 int  rtos_mutex_trylock(rtos_mutex_t *m); /* 非阻塞 */
 int  rtos_mutex_unlock(rtos_mutex_t *m);  /* 释放；非持有者返回 -1 */
+/* 带超时互斥锁：timeout_ms 内拿到锁返回 0；超时（未拿到）返回 -1。
+ * 其余语义同 rtos_mutex_lock（天花板协议、不支持递归）。超时基于系统节拍，
+ * 粒度 = 1/RTOS_TICK_HZ；timeout_ms==0 退化为 rtos_mutex_trylock。 */
+int  rtos_mutex_timedlock(rtos_mutex_t *m, uint32_t timeout_ms);
 
 /* ---- 消息队列（定长项、环形缓冲、阻塞收发） ---- */
 typedef struct {
@@ -251,7 +268,9 @@ typedef enum {
     RTOS_SYS_EVENT_WAIT,     /* a0: rtos_event_t*, a1: mask, a2: wait_all, a3: block -> flags/-1 */
     RTOS_SYS_BUS_WAIT,       /* a0: rtos_bus_wait_args_t* */
     RTOS_SYS_BUS_PUBLISH,    /* a0: rtos_bus_publish_args_t* */
-    RTOS_SYS_TASK_CREATE     /* a0: rtos_task_create_args_t* */
+    RTOS_SYS_TASK_CREATE,    /* a0: rtos_task_create_args_t* */
+    RTOS_SYS_MUTEX_TIMEDLOCK,/* a0: rtos_mutex_t*, a1: timeout_ms -> 0/-1 */
+    RTOS_SYS_TASK_DELETE     /* a0: task_t* (NULL=删除自身) */
 } rtos_syscall_nr_t;
 
 /* 非特权任务调用：从用户态触发 SVC，回到特权 Handler 模式执行系统调用。

@@ -92,6 +92,13 @@ void rtos_svc_dispatch(uint32_t *frame, uint32_t nr) {
         ret = rtos_bus_publish(p->bus, p->topic, p->data, p->len);
         break;
     }
+    case RTOS_SYS_MUTEX_TIMEDLOCK:
+        ret = rtos_kobj_validate((void *)u0, KOBJ_MUTEX)
+              ? (uint32_t)rtos_mutex_timedlock((rtos_mutex_t *)u0, u1) : (uint32_t)-1;
+        break;
+    case RTOS_SYS_TASK_DELETE:
+        rtos_task_delete((task_t *)u0);
+        break;
     default: ret = (uint32_t)-1; break;
     }
     frame[0] = ret;   /* 返回值经 r0 带回用户态任务 */

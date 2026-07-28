@@ -131,13 +131,20 @@ RTOSALL      → 串联以上全部（编译期段收集，自动遍历）
 
 ---
 
-## 6. 已知缺口与后续（非本次范围）
+## 6. 已知缺口与后续
 
-1. **`rtos_task_delete`**：§3.3「队列满时发送任务被删」需它；当前内核无 delete API，任务靠
-   返回变 DEAD 由 `create` 复用。后续若加 `rtos_task_delete`，需正确处理「从等待链表摘除 +
-   释放 TCB」。
-2. **`rtos_mutex_timedlock`**：§3.3「死锁超时放弃」需它；当前阻塞 IPC 不实现超时（见
-   `rtos.h` 注释）。本次用「天花板防反转 + 阻塞恢复」正例覆盖，真死锁超时留待该 API。
+> 进度：§6.1（`rtos_task_delete`）、§6.2（`rtos_mutex_timedlock`）已完成并接入
+> `RTOSROBUST`（用例 `DelBlockedTask` / `MutexTimedLock`，均发 `[RESULT]` 行，RTOSALL 已覆盖）。
+> 剩余 3–6 仍待后续阶段。
+
+1. **`rtos_task_delete`**：✅ 已完成（commit 见 git 历史）。`rtos_task_delete(t)` 从就绪/睡眠/
+   等待队列摘除并置 `TASK_DEAD`，TCB 槽可被 `rtos_task_create` 复用；`t==NULL/自身` 删自身。
+   已由 `RTOSROBUST` 的 `DelBlockedTask` 用例验证「队列满时发送者被删」场景——系统存活、
+   队列未被破坏、被删任务变 `DEAD`。约定：不要删除仍持有互斥量的任务（owner 指针会悬挂）。
+2. **`rtos_mutex_timedlock`**：✅ 已完成。基于系统节拍实现计时阻塞（任务同时挂在互斥量等待队列
+   与睡眠链表上，tick ISR 到期时摘除并置 `timed_out`，unlock handoff 提前拿到锁时取消计时项）。
+   已由 `RTOSROBUST` 的 `MutexTimedLock` 用例验证：空闲锁立即拿到(0)、持锁者不释放时超时返回(-1)
+   且耗时≈`timeout_ms`。
 3. **软件定时器 / Tick 溢出(48天翻转)**：准则 §2.5；当前 RTOS 仅 `msleep`，无软件定时器原语。
 4. **马拉松 72h + IWDG 喂狗 + 复位原因**：准则 §4；需新增长跑任务组与看门狗集成。
 5. **栈水位(0xEE 填充) / 优先级边界(1 tick 抢占)**：准则 §5；需加栈填充统计与最高/最低优先级
