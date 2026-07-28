@@ -150,6 +150,17 @@ cmake --build build -j4
 
 产物：`build/stm32f407_minimal.elf`、`.bin`、`.hex`。
 
+### 发布构建（剔除全部自测代码）
+
+开发 / 覆盖率构建默认带 RTOS 自测 + 板载 BIST（`RTOS_SELFTEST=ON`）。发布构建关闭该开关即可从固件中彻底剔除自测源码、BIST 后台任务、`.rtos_selftests` 链接段与全部 `RTOS*` 控制台命令：
+
+```bat
+cmake -S . -B build_rel -G Ninja -DRTOS_SELFTEST=OFF
+cmake --build build_rel -j4
+```
+
+实测发布镜像比开发镜像小约 47 KB FLASH、约 28 KB 主 RAM、约 40 KB CCM（自测任务 TCB/栈随之消失）。
+
 ## 烧录（ST-Link）
 
 ```bat

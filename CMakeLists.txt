@@ -16,6 +16,10 @@ set(HSE_VALUE 8000000)   # Discovery board external crystal = 8 MHz
 # tools/coverage_collect.py 收帧落盘并跑 gcov 出报告。常态关闭，不影响正常构建。
 option(COVERAGE "Build with gcov coverage instrumentation (--coverage)" OFF)
 
+# 是否包含 RTOS 自测 + 板载 BIST。开发/覆盖率构建默认 ON；发布构建设为 OFF，
+# 剔除全部自测代码与攻击面（rtos 自测文件、BIST、RTOS* 控制台命令、.rtos_selftests 段）。
+option(RTOS_SELFTEST "Build with jOS RTOS self-tests + board BIST (OFF for release)" ON)
+
 add_executable(${PROJECT_NAME}.elf
     # startup MUST come early so its sections are at the base of .text.
     # When placed last, any growth in .o files before it shifts startup
@@ -28,7 +32,7 @@ add_executable(${PROJECT_NAME}.elf
     src/task/task_app_main.c # main 任务：设备拉起 + 起 BIST + 跑控制台
     src/task/task_blink.c    # blink 演示任务
     src/task/task_idle.c     # 空闲任务
-    src/task/task_bist.c     # 板级自测后台任务
+    # src/task/task_bist.c  # 板级自测后台任务（RTOS_SELFTEST=OFF 时剔除，见下方条件编译）
     src/task/task_button.c   # 按键中断示例(BH 任务版)：上半部(ISR) -> 下半部(专属 BH 任务)
     src/task/task_button_wq.c # 按键中断示例(工作队列版)：上半部(ISR) -> 下半部(共享 wq 任务，不建新任务)
     src/task/task_template.c # 普通任务模板（复制改名即可新建任务）
@@ -116,7 +120,7 @@ add_executable(${PROJECT_NAME}.elf
     src/hal/stm32/st_usb/usbd_ioreq.c
     src/hal/stm32/st_usb/usb_bsp.c
     src/hal/stm32/st_usb/usbd_cdc_core.c
-    src/selftest.c
+    # src/selftest.c         # 板载集成自测（RTOS_SELFTEST=OFF 时剔除，见下方条件编译）
 )
 
 # ---- RTOS 开关：ON 接入 jOS 调度器（osal_rtos.c + rtos/*），OFF 退回裸机 ----
@@ -136,19 +140,27 @@ if(RTOS)
     src/rtos/core/ipc_mq.c
     src/rtos/core/ipc_event.c
     src/rtos/core/ipc_bus.c
-    src/rtos/rtos_selftest.c
-    src/rtos/rtos_stress.c
-    src/rtos/rtos_p4.c
-    src/rtos/rtos_usr.c
-    src/rtos/rtos_basic.c       # T01-T05 + §2.2 调度锁/临界区/SysTick 唤醒（RTOSBASIC）
-    src/rtos/rtos_ipc2.c        # S01/S03/S04/S05 边界与 FromISR（RTOSIPC2）
-    src/rtos/rtos_robust.c      # §3.1 异常注入 + §3.2 中断风暴 + §3.3 安全正例（RTOSROBUST）
-    src/rtos/rtos_timer.c       # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER）
     src/rtos/rtos_watchdog.c    # §6.4 看门狗喂狗(定时任务驱动) + 马拉松长跑任务组 + 复位原因
+                                #     （含生产函数 rtos_watchdog_*/rtos_marathon_*，常编；仅末尾
+                                #      自测函数 rtos_watchdog_selftest 受 #if RTOS_SELFTEST 门控）
     # arch 层（与底层硬件的唯一边界）：Cortex-M4 实现
     src/rtos/arch/cortex_m/port.c
     src/rtos/arch/cortex_m/context.S
     src/rtos/arch/cortex_m/mpu.c)
+
+  # ---- RTOS 纯自测源码（仅 RTOS_SELFTEST=ON 编译；发布构建剔除，不进固件）----
+  if(RTOS_SELFTEST)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+      src/rtos/rtos_selftest.c
+      src/rtos/rtos_stress.c
+      src/rtos/rtos_p4.c
+      src/rtos/rtos_usr.c
+      src/rtos/rtos_basic.c       # T01-T05 + §2.2 调度锁/临界区/SysTick 唤醒（RTOSBASIC）
+      src/rtos/rtos_ipc2.c        # S01/S03/S04/S05 边界与 FromISR（RTOSIPC2）
+      src/rtos/rtos_robust.c      # §3.1 异常注入 + §3.2 中断风暴 + §3.3 安全正例（RTOSROBUST）
+      src/rtos/rtos_timer.c)      # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER；生产定时器在 core/timer.c）
+  endif()
+
   target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/rtos
     src/rtos/include
@@ -157,6 +169,18 @@ if(RTOS)
 else()
   target_sources(${PROJECT_NAME}.elf PRIVATE
     src/osal/osal_baremetal.c)
+endif()
+
+# ---- 板级 BIST + RTOS 自测宏（RTOS_SELFTEST=ON 才编译；发布构建剔除，不进固件）----
+# 关闭时定义 RTOS_SELFTEST=0 以覆盖 rtos_config.h 的默认 1，使各 TU 的 #if RTOS_SELFTEST
+# 门控与编译期段收集（RTOS_SELFTEST_ADD）no-op 生效，自测代码整体不进入发布镜像。
+if(RTOS_SELFTEST)
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RTOS_SELFTEST=1)
+  target_sources(${PROJECT_NAME}.elf PRIVATE
+    src/selftest.c               # 板载集成自测（外设统一 device 接口驱动）
+    src/task/task_bist.c)        # BIST 后台任务（prio 24，跑完后阻塞）
+else()
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RTOS_SELFTEST=0)
 endif()
 
 target_include_directories(${PROJECT_NAME}.elf PRIVATE
@@ -209,7 +233,7 @@ if(COVERAGE)
 endif()
 
 if(COVERAGE AND RTOS)
-  set_source_files_properties(
+  set(_cov_srcs
     src/osal/osal_rtos.c
     src/rtos/core/sched.c
     src/rtos/core/task.c
@@ -222,18 +246,21 @@ if(COVERAGE AND RTOS)
     src/rtos/core/ipc_mq.c
     src/rtos/core/ipc_event.c
     src/rtos/core/ipc_bus.c
-    src/rtos/rtos_selftest.c
-    src/rtos/rtos_stress.c
-    src/rtos/rtos_p4.c
-    src/rtos/rtos_usr.c
-    src/rtos/rtos_basic.c
-    src/rtos/rtos_ipc2.c
-    src/rtos/rtos_robust.c
-    src/rtos/rtos_timer.c
-    src/rtos/rtos_watchdog.c
     src/rtos/arch/cortex_m/port.c
-    src/rtos/arch/cortex_m/mpu.c
-    PROPERTIES COMPILE_FLAGS --coverage)
+    src/rtos/arch/cortex_m/mpu.c)
+  if(RTOS_SELFTEST)
+    list(APPEND _cov_srcs
+      src/rtos/rtos_selftest.c
+      src/rtos/rtos_stress.c
+      src/rtos/rtos_p4.c
+      src/rtos/rtos_usr.c
+      src/rtos/rtos_basic.c
+      src/rtos/rtos_ipc2.c
+      src/rtos/rtos_robust.c
+      src/rtos/rtos_timer.c
+      src/rtos/rtos_watchdog.c)
+  endif()
+  set_source_files_properties(${_cov_srcs} PROPERTIES COMPILE_FLAGS --coverage)
 endif()
 
 # ---- Post-build: generate .bin / .hex and print size ----

@@ -15,7 +15,10 @@
 #include "iface/stream_device.h"
 #include "iface/io_xfer.h"
 #include "devmgr/device_manager.h"
+#include "rtos_config.h"          /* RTOS_SELFTEST 开关：早于下方 selftest.h 门控 */
+#if RTOS_SELFTEST
 #include "selftest.h"
+#endif
 #include "board.h"
 #include "drv/clock.h"
 #include "drv/uart.h"
@@ -56,6 +59,7 @@ static void cmd_echo(app_ctx_t *c, const char *line)
     c->console->vtable->write(c->console, out, (size_t)n);
 }
 
+#if RTOS_SELFTEST
 static void cmd_bist(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -64,6 +68,7 @@ static void cmd_bist(app_ctx_t *c, const char *line)
                __DATE__, __TIME__);
     if (c->st) selftest_run(c->st);
 }
+#endif /* RTOS_SELFTEST */
 
 static void cmd_adc(app_ctx_t *c, const char *line)
 {
@@ -167,6 +172,7 @@ static void cmd_rtos(app_ctx_t *c, const char *line)
     }
 }
 
+#if RTOS_SELFTEST
 /* ---- RTOS 自测类命令（统一 PASS/FAIL 回显） ---- */
 static void selftest_reply(app_ctx_t *c, const char *name, int ok)
 {
@@ -189,6 +195,7 @@ static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_r
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
 static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSUSR", rtos_usr_selftest()); }
+#endif /* RTOS_SELFTEST */
 
 /* §6.6 覆盖率：触发把当前累积的 gcov 计数以 .gcda 二进制帧经控制台导出。
  * host 端 tools/coverage_collect.py 连上串口、发 RTOSCOV、收帧、落盘并跑 gcov。
@@ -434,12 +441,15 @@ static void cmd_timerdma(app_ctx_t *c, const char *line)
 static const cmd_entry_t g_cmds[] = {
     { "PING",     cmd_ping,     0 },
     { "ECHO",     cmd_echo,     1 },
+#if RTOS_SELFTEST
     { "BIST",     cmd_bist,     0 },
+#endif
     { "ADC",      cmd_adc,      1 },
     { "TEMP",     cmd_temp,     0 },
     { "I2C_IRQ",  cmd_i2c_irq,  0 },
     { "TICKS",    cmd_ticks,    0 },
     { "RTOS",     cmd_rtos,     0 },
+#if RTOS_SELFTEST
     { "RTOSIPC",  cmd_rtosipc,  0 },
     { "RTOSBASIC", cmd_rtosbasic, 0 },
     { "RTOSIPC2", cmd_rtosipc2, 0 },
@@ -453,8 +463,11 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSFPU",  cmd_rtosfpu,  0 },
     { "RTOSBH",   cmd_rtosbh,   0 },
     { "RTOSTIMER", cmd_rtostimer, 0 },
+#endif
     { "RTOSMARATHON", cmd_rtosmarathon, 0 },
+#if RTOS_SELFTEST
     { "RTOSUSR",  cmd_rtosusr,  0 },
+#endif
     { "RTOSCOV",  cmd_rtoscov,  0 },   /* §6.6 覆盖率：导出 gcov .gcda 帧 */
     { "RTOSKOBJ", cmd_rtoskobj, 0 },
     { "USBOPEN",  cmd_usbopen,  0 },

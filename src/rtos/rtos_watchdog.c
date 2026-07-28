@@ -148,6 +148,7 @@ void rtos_marathon_stop(void)
 
 int rtos_marathon_is_running(void) { return g_marathon_on; }
 
+#if RTOS_SELFTEST
 /* ---- 自测（RTOSALL "watchdog" 条目）：仅验证安全、可确定性判定的部分 ----
  * 1) 复位原因解码（纯函数，跨各种 CSR 位组合，含优先级）；
  * 2) 喂狗路径（rtos_watchdog_feed 计数 +1，不 arming，安全）；
@@ -202,3 +203,4 @@ int rtos_watchdog_selftest(void)
     return ok;
 }
 RTOS_SELFTEST_ADD("watchdog", rtos_watchdog_selftest);
+#endif /* RTOS_SELFTEST */

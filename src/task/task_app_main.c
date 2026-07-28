@@ -67,12 +67,19 @@ void app_main_task(void *arg)
     c->console   = d_uart;        /* 默认控制台为 UART；USB CDC 收到命令时动态切换 */
     g_rtos_demo_ready = 1;        /* blink 此后可安全独占 LED */
 
+#if RTOS_SELFTEST
     log_printf(app_log(), LOG_INFO, "main",
                "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / "
                "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / BTN / BTN2 / "
                "RTOS / RTOSIPC / RTOSBUS / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSBH / "
                "RTOSP4 / RTOSUSR / RTOSRR / RTOSKOBJ / RTOSALL / "
                "RTOSBASIC / RTOSIPC2 / RTOSROBUST\n");
+#else
+    log_printf(app_log(), LOG_INFO, "main",
+               "READY. Commands: PING / ECHO <text> / ADC [ch] / TEMP / TICKS / "
+               "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / BTN / BTN2 / "
+               "RTOS / RTOSMARATHON / RTOSKOBJ / RTOSCOV\n");
+#endif
 
     console_run(c);   /* 永不返回：读命令 -> 查表派发 */
 }

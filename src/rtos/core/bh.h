@@ -58,7 +58,9 @@ void rtos_work_submit(rtos_work_t *w);
  * 使 rtos_work_submit 可安全地从 ISR 调用（不会在中断上下文建任务）。 */
 void rtos_workq_init(void);
 
+#if RTOS_SELFTEST
 /* 运行时自测（RTOSBH 命令触发；并注册进 RTOSALL） */
 int rtos_bh_selftest(void);
+#endif /* RTOS_SELFTEST */
 
 #endif /* JOC_RTOS_BH_H */

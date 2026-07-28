@@ -2,7 +2,11 @@
 #define CONSOLE_H
 
 #include "iface/device.h"
+#include "rtos_config.h"          /* RTOS_SELFTEST 开关：决定 st 字段 / selftest.h 是否参与 */
+
+#if RTOS_SELFTEST
 #include "selftest.h"
+#endif
 
 /* 命令处理器共享的“应用上下文”：把 main 里散落的全局句柄/状态打包成一个结构体，
  * 通过参数传给每个命令 handler，避免 console.c 反向依赖 main.c 的全局变量。
@@ -15,7 +19,9 @@ typedef struct app_ctx {
     device *temp;        /* 温度传感器设备 */
     device *clk;         /* 时钟设备 */
     device *console;     /* 当前响应端口：读循环随输入来源在 UART/USB 间切换 */
+#if RTOS_SELFTEST
     selftest *st;        /* BIST 句柄（由 bist 任务填充，BIST 命令读取重跑） */
+#endif
     volatile uint32_t *heartbeat;  /* 指向 app_shared.c 的 g_heartbeat（RTOS 命令读取） */
     volatile int      *demo_ready; /* 指向 app_shared.c 的 g_rtos_demo_ready（blink 等待） */
 } app_ctx_t;

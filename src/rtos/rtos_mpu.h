@@ -32,8 +32,10 @@ void rtos_mpu_set_task_stack_region(task_t *t);
 /* 故障处理：MemManage_Handler 把栈帧交给它；返回非 0 表示已“恢复”（自测用） */
 int  rtos_fault_handler(uint32_t *frame, uint32_t lr);
 
+#if RTOS_SELFTEST
 /* 运行时自测（RTOSMPU 命令触发） */
 int  rtos_mpu_selftest(void);
+#endif /* RTOS_SELFTEST */
 
 /* 诊断导出（OpenOCD/串口可读） */
 extern volatile int     g_mpu_violation;   /* 自测中成功捕获 MPU 越权 */

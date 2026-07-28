@@ -85,6 +85,21 @@
   #define RTOS_MAX_ZERO_LATENCY_IRQS 4
 #endif
 
+/* ---------------------------------------------------------------------------
+ * 是否包含 RTOS 自测（RTOS_SELFTEST_ADD 段收集 + 各 rtos_*_selftest + RTOS* 控制台
+ * 命令 + 板载 BIST）。
+ *
+ *  - 开发 / 覆盖率构建默认开启（见 CMake 的 RTOS_SELFTEST 选项，经 -D 控制）。
+ *  - 发布构建关闭：剔除全部自测代码与攻击面；公开头 rtos.h 不再暴露 *_selftest()
+ *    声明；链接段 .rtos_selftests 为空，rtos_selftest_run_all 不被编译。
+ *  - 关闭后 RTOS_SELFTEST_ADD 退化为 no-op 宏（见 rtos.h），故即使在混合文件中
+ *    残留注册调用也不会产生段内容。
+ * 此处仅提供默认值；CMake 通过 -D 覆盖（#ifndef 保证两者一致）。
+ * ------------------------------------------------------------------------- */
+#ifndef RTOS_SELFTEST
+  #define RTOS_SELFTEST 1
+#endif
+
 /* 配套的语义化优先级带（定义在 src/irq/irq.h，驱动经 irq_manager_set_priority 使用，
  * 取代散落的魔法数字）：
  *   IRQ_PRIO_KERNEL=5       调用内核 API 的 ISR（必须 >= 本阈值，才会被 BASEPRI 屏蔽）

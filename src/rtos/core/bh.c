@@ -141,6 +141,7 @@ void rtos_work_submit(rtos_work_t *w) {
     rtos_sem_give(&g_wq_sem);          /* ISR 安全：唤醒 worker */
 }
 
+#if RTOS_SELFTEST
 /* ===========================================================================
  * BH / 工作队列 运行时自测（RTOSBH 命令 + 注册进 RTOSALL）
  * 验证：上半部（模拟 ISR）trigger -> 下半部高优先级任务被唤醒并执行；
@@ -213,3 +214,4 @@ int rtos_bh_selftest(void) {
 
 /* 编译期注册：RTOSALL 会遍历该段依次执行 */
 RTOS_SELFTEST_ADD("bh", rtos_bh_selftest);
+#endif /* RTOS_SELFTEST */

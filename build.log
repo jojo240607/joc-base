@@ -1,33 +1,221 @@
-[1/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/main.c.obj
-[2/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_idle.c.obj
-[3/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_blink.c.obj
-[4/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/system_init.c.obj
-[5/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_template.c.obj
-[6/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_app_main.c.obj
-[7/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_bist.c.obj
-[8/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_button_wq.c.obj
-[9/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_button.c.obj
-[10/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/osal/osal_rtos.c.obj
-[11/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/syscalls.c.obj
-[12/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_sem.c.obj
-[13/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/kobj.c.obj
-[14/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/arch/cortex_m/port.c.obj
-[15/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_event.c.obj
-[16/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_stress.c.obj
-[17/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_mutex.c.obj
-[18/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_bus.c.obj
-[19/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/task.c.obj
-[20/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_mq.c.obj
-[21/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_usr.c.obj
-[22/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/bh.c.obj
-[23/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/arch/cortex_m/mpu.c.obj
-[24/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/sched.c.obj
-[25/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_p4.c.obj
-[26/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_selftest.c.obj
-[27/28] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/console.c.obj
-[28/28] Linking C executable stm32f407_minimal.elf
+-- Configuring done (1.2s)
+-- Generating done (0.0s)
+-- Build files have been written to: D:/project/mcu/oop/joc-base/build
+[1/111] Building ASM object CMakeFiles/stm32f407_minimal.elf.dir/startup/startup_stm32f407xx.s.obj
+[2/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/app_shared.c.obj
+[3/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/common/gcov_dump.c.obj
+[4/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/main.c.obj
+[5/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/iface/io_xfer.c.obj
+[6/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_template.c.obj
+[7/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_idle.c.obj
+[8/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_blink.c.obj
+[9/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/iface/stream_device.c.obj
+[10/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_button.c.obj
+[11/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/log/app_log.c.obj
+[12/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/system_stm32f4xx.c.obj
+[13/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_app_main.c.obj
+[14/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_button_wq.c.obj
+[15/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/clock.c.obj
+[16/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/common/list.c.obj
+[17/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/common/pool.c.obj
+[18/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/irq/irq.c.obj
+[19/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/bus/bus.c.obj
+[20/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/systick.c.obj
+[21/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/common/hash.c.obj
+[22/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/log/log.c.obj
+[23/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/system_init.c.obj
+[24/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/common/ringbuffer.c.obj
+[25/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/temp_sensor.c.obj
+[26/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/timer.c.obj
+[27/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/iwdg.c.obj
+[28/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/rng.c.obj
+[29/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/crc.c.obj
+[30/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/gpio_pin.c.obj
+[31/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/wwdg.c.obj
+[32/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/exti.c.obj
+[33/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/rtc.c.obj
+[34/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/pwm.c.obj
+[35/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/pinmux.c.obj
+[36/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/temp_hal.c.obj
+[37/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/devmgr/device_manager.c.obj
+[38/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/pinmux_af_stm32f4.c.obj
+[39/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/clock_hal.c.obj
+[40/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/syscalls.c.obj
+[41/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/adc.c.obj
+[42/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/sdio.c.obj
+[43/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/irq/irq_manager.c.obj
+[44/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/irq_hal.c.obj
+[45/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/i2c.c.obj
+[46/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/dac.c.obj
+[47/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/sd_card.c.obj
+D:/project/mcu/oop/joc-base/src/drv/sd_card.c: In function 'sc_init':
+D:/project/mcu/oop/joc-base/src/drv/sd_card.c:170:5: warning: this 'if' clause does not guard... [-Wmisleading-indentation]
+  170 |     if (sc_cmd(p, SD_CMD3, 0, 1, &r1)) return -1; p->rca = (uint16_t)(r1 >> 16);
+      |     ^~
+D:/project/mcu/oop/joc-base/src/drv/sd_card.c:170:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the 'if'
+  170 |     if (sc_cmd(p, SD_CMD3, 0, 1, &r1)) return -1; p->rca = (uint16_t)(r1 >> 16);
+      |                                                   ^
+[48/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/can.c.obj
+[49/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/spi.c.obj
+[50/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/gpio_hal.c.obj
+[51/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/osal/osal_rtos.c.obj
+[52/111] Building ASM object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/arch/cortex_m/context.S.obj
+[53/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/pinmux_hal.c.obj
+[54/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/dma.c.obj
+[55/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/i2s.c.obj
+[56/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/flash.c.obj
+[57/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/adc_hal.c.obj
+[58/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/crc_hal.c.obj
+[59/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/uart.c.obj
+[60/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/rng_hal.c.obj
+[61/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/rtc_hal.c.obj
+[62/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/uart_hal.c.obj
+[63/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/spi_hal.c.obj
+[64/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/iwdg_hal.c.obj
+[65/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/dac_hal.c.obj
+[66/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/exti_hal.c.obj
+[67/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/arch/cortex_m/port.c.obj
+[68/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/flash_hal.c.obj
+[69/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/wwdg_hal.c.obj
+[70/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/syscalls.c.obj
+[71/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_sem.c.obj
+[72/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usb_bsp.c.obj
+[73/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/console.c.obj
+[74/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/i2s_hal.c.obj
+[75/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/kobj.c.obj
+[76/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/board/stm32f4_discovery.c.obj
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:116:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  116 | static const timer_config_t g_timer1 = { "timer1", (void *)TIM1,  168000000, 20 }; /* TIM1,  APB2 168MHz, 20Hz, IRQ25(TIM1_UP) */
+      | ^~~~~~
+In file included from D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:30:
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:117:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  117 | static const timer_config_t g_timer2 = { "timer2", (void *)TIM6,  84000000, 20 }; /* TIM6,  APB1 84MHz, 20Hz, IRQ54 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:118:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  118 | static const timer_config_t g_timer3 = { "timer3", (void *)TIM7,  84000000, 20 }; /* TIM7,  APB1 84MHz, 20Hz, IRQ55 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:119:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  119 | static const timer_config_t g_timer4 = { "timer4", (void *)TIM8,  168000000, 20 }; /* TIM8,  APB2 168MHz, 20Hz, IRQ44(TIM8_UP) */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:120:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  120 | static const timer_config_t g_timer5 = { "timer5", (void *)TIM9,  168000000, 20 }; /* TIM9,  APB2 168MHz, 20Hz, IRQ24 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:121:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  121 | static const timer_config_t g_timer6 = { "timer6", (void *)TIM11, 168000000, 20 }; /* TIM11, APB2 168MHz, 20Hz, IRQ26 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:122:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  122 | static const timer_config_t g_timer7 = { "timer7", (void *)TIM12, 84000000, 20 }; /* TIM12, APB1 84MHz, 20Hz, IRQ43 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:123:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  123 | static const timer_config_t g_timer8 = { "timer8", (void *)TIM14, 84000000, 20 }; /* TIM14, APB1 84MHz, 20Hz, IRQ45 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:127:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  127 | static const timer_config_t g_timer9  = { "timer9",  (void *)TIM10, 168000000, 20 }; /* TIM10, APB2 168MHz, 20Hz, IRQ25 (shares w/ TIM1) */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:128:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  128 | static const timer_config_t g_timer10 = { "timer10", (void *)TIM13, 84000000,  20 }; /* TIM13, APB1 84MHz, 20Hz, IRQ44 (shares w/ TIM8) */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:131:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  131 | static const timer_config_t g_timer11 = { "timer11", (void *)TIM3, 84000000, 20 }; /* TIM3,  APB1 84MHz, 20Hz, IRQ29 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:132:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  132 | static const timer_config_t g_timer12 = { "timer12", (void *)TIM4, 84000000, 20 }; /* TIM4,  APB1 84MHz, 20Hz, IRQ30 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+D:/project/mcu/oop/joc-base/src/board/stm32f4_discovery.c:133:1: warning: missing initializer for field 'dma_req' of 'timer_config_t' [-Wmissing-field-initializers]
+  133 | static const timer_config_t g_timer13 = { "timer13", (void *)TIM5, 84000000, 20 }; /* TIM5,  APB1 84MHz, 20Hz, IRQ50 */
+      | ^~~~~~
+D:/project/mcu/oop/joc-base/src/drv/timer.h:35:18: note: 'dma_req' declared here
+   35 |     dma_req_id_t dma_req;
+      |                  ^~~~~~~
+[77/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_event.c.obj
+[78/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usbd_ioreq.c.obj
+[79/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usbd_core.c.obj
+D:/project/mcu/oop/joc-base/src/hal/stm32/st_usb/usbd_core.c:114:1: warning: missing initializer for field 'DevConnected' of 'USBD_DCD_INT_cb_TypeDef' {aka 'struct _USBD_DCD_INT'} [-Wmissing-field-initializers]
+  114 | };
+      | ^
+In file included from D:/project/mcu/oop/joc-base/src/hal/stm32/st_usb/usbd_core.c:32:
+D:/project/mcu/oop/joc-base/src/hal/stm32/st_usb/usb_dcd_int.h:63:14: note: 'DevConnected' declared here
+   63 |   uint8_t (* DevConnected) (USB_OTG_CORE_HANDLE *pdev);
+      |              ^~~~~~~~~~~~
+[80/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usb_dcd.c.obj
+[81/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/sdio_hal.c.obj
+[82/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_bus.c.obj
+[83/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/timer.c.obj
+[84/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_stress.c.obj
+[85/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_mutex.c.obj
+[86/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/task.c.obj
+[87/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/ipc_mq.c.obj
+[88/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/task/task_bist.c.obj
+[89/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/tim_hal.c.obj
+[90/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usbd_cdc_core.c.obj
+[91/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usbd_req.c.obj
+[92/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usb_dcd_int.c.obj
+[93/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/bh.c.obj
+[94/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/dma_hal.c.obj
+[95/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/usb_hal.c.obj
+[96/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_usr.c.obj
+[97/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_watchdog.c.obj
+[98/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/arch/cortex_m/mpu.c.obj
+[99/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/core/sched.c.obj
+[100/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_timer.c.obj
+[101/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/can_hal.c.obj
+[102/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_p4.c.obj
+[103/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/i2c_hal.c.obj
+[104/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_basic.c.obj
+[105/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_selftest.c.obj
+[106/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/hal/stm32/st_usb/usb_core.c.obj
+D:/project/mcu/oop/joc-base/src/hal/stm32/st_usb/usb_core.c: In function 'USB_OTG_WritePacket':
+D:/project/mcu/oop/joc-base/src/hal/stm32/st_usb/usb_core.c:187:7: warning: 'packed' attribute ignored for type 'uint32_t *' {aka 'long unsigned int *'} [-Wattributes]
+  187 |       USB_OTG_WRITE_REG32( fifo, *((__packed uint32_t *)src) );
+      |       ^~~~~~~~~~~~~~~~~~~
+D:/project/mcu/oop/joc-base/src/hal/stm32/st_usb/usb_core.c: In function 'USB_OTG_ReadPacket':
+D:/project/mcu/oop/joc-base/src/hal/stm32/st_usb/usb_core.c:213:5: warning: 'packed' attribute ignored for type 'uint32_t *' {aka 'long unsigned int *'} [-Wattributes]
+  213 |     *(__packed uint32_t *)dest = USB_OTG_READ_REG32(fifo);
+      |     ^
+[107/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/drv/usb.c.obj
+[108/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_ipc2.c.obj
+[109/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/rtos/rtos_robust.c.obj
+[110/111] Building C object CMakeFiles/stm32f407_minimal.elf.dir/src/selftest.c.obj
+[111/111] Linking C executable stm32f407_minimal.elf
 Memory region         Used Size  Region Size  %age Used
-           FLASH:      103776 B         1 MB      9.90%
-             RAM:       88968 B       128 KB     67.88%
+           FLASH:      134432 B         1 MB     12.82%
+             RAM:       42904 B       128 KB     32.73%
+          CCMRAM:         60 KB        63 KB     95.24%
    text	   data	    bss	    dec	    hex	filename
- 103368	    400	  80776	 184544	  2d0e0	D:/project/mcu/oop/joc-base/build/stm32f407_minimal.elf
+ 134000	    424	 103832	 238256	  3a2b0	D:/project/mcu/oop/joc-base/build/stm32f407_minimal.elf

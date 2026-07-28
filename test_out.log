@@ -1,40 +1,9 @@
-=== [1/3] Build ===
-ninja: no work to do.
-=== [2/3] Flash (OpenOCD connect-under-reset) ===
-[1/2] Flashing via OpenOCD program (interface/stlink.cfg + target/stm32f4x.cfg)...
-  connect-under-reset (srst_only) so it works even if the core is asleep.
-  --- attempt 1/18 ---
-ERROR: Input redirection is not supported, exiting the process immediately.
-[OK] Flashed build\stm32f407_minimal.bin via OpenOCD
-=== [3/3] Companion self-test (COM8 @ 115200) ===
-[companion] opening COM8 @ 115200 ...
-  board> BIST
-  board> --- On-board self-test (BIST) ---
-  board> [BIST] clock : PASS
-  board> [BIST] uart  : PASS
-  board> [BIST] gpio  : PASS
-  board> VREFINT raw=1517 (expect ~1500)
-  board> [BIST] adc   : PASS
-  board> die temp = 47.5 C (cal1=941 cal2=1197)
-  board> [BIST] temp  : PASS
-  board> SELF-TEST: PASS
-  board> PING
-  board> PONG
-  board> ECHO hello-companion
-  board> hello-companion
-  board> ADC
-  board> ADC CH0 raw=1369 mV=1091
-  board> ADC 16
-  board> ADC CH16 raw=1000 mV=805
-  board> TEMP
-  board> TEMP raw=996 cal1=941 cal2=1197 C=48.1
-
-[companion] RESULTS:
-  bist  : PASS
-  ping  : PASS
-  echo  : PASS
-  adc   : PASS
-  adc_temp: PASS
-  temp  : PASS
-[companion] OVERALL: PASS
-=== ALL GREEN: build + flash + self-test PASS ===
+[verify] board reset, waiting for boot + BIST to finish...
+RT1_TX_PA9 / GPIOD_12 / ADC1_IN0) - Jul 27 2026 16
+[verify] RESULTS:
+  bist    : FAIL
+  ping    : FAIL
+  echo    : FAIL
+  rtosping: FAIL
+  uartdma : FAIL
+[verify] OVERALL: FAIL

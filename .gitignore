@@ -1,5 +1,6 @@
 build/
 build_cov/
+build_rel/
 __pycache__/
 *.pyc
 *.map

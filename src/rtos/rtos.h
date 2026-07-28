@@ -368,6 +368,7 @@ typedef struct {
 void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
                          uint8_t prio, void *stack, size_t stack_size, uint8_t priv);
 
+#if RTOS_SELFTEST
 /* 非特权任务经 SVC 门使用内核对象的端到端自测（RTOSUSR 命令 + RTOSALL） */
 int rtos_usr_selftest(void);
 
@@ -411,6 +412,7 @@ int rtos_timer_selftest(void);
  *      "watchdog" 条目）：仅验证安全、确定性部分（复位原因解码 / 喂狗路径 /
  *      周期喂狗定时器集成）；不 arming IWDG，避免把板子锁进复位循环。 */
 int rtos_watchdog_selftest(void);
+#endif /* RTOS_SELFTEST */
 
 /* ===========================================================================
  * 编译期段收集（见 docs/rtos-design.md 第 5 章 / P4）
@@ -477,6 +479,7 @@ extern const rtos_bh_def_t   __rtos_bh_end[];
 /* 遍历上述三个链接段，自动实例化所有段收集到的对象（rtos_start() 调用一次）。 */
 void rtos_instantiate_sections(void);
 
+#if RTOS_SELFTEST
 /* ---- 编译期段收集 + 收尾自测（从 RTOSP4 命令调用，并注册进 RTOSALL） ----
  * 覆盖：(1) 段收集机制验证（宏→链接段→自动建对象且运行）；
  *       (2) 调度延迟（DWT CYCCNT 测上半部触发→下半部运行的 wake latency）；
@@ -514,5 +517,10 @@ extern const rtos_selftest_entry_t __rtos_selftest_end[];
 
 /* 遍历编译期收集的所有自测并依次运行，返回整体是否全部 PASS */
 int rtos_selftest_run_all(void);
+#else
+  /* 发布构建：自测注册退化为 no-op，链接段 .rtos_selftests 自然为空；
+   * rtos_selftest_run_all 不被编译（其调用方 RTOSALL 命令同样被门控）。 */
+  #define RTOS_SELFTEST_ADD(_name, _fn)  /* no-op（发布构建剔除自测） */
+#endif /* RTOS_SELFTEST */
 
 #endif /* JOC_RTOS_H */

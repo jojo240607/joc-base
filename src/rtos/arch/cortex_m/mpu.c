@@ -180,6 +180,7 @@ size_t rtos_stack_used(task_t *t) {
  * 用 naked 函数：无 prologue/epilogue，不改动 PSP；因此故障帧里的 LR 直接指向
  * selftest 调用点的下一条指令，且异常返回时 PSP 已正确落回 selftest 栈帧。
  * 故障处理器只需把 PC 恢复为 LR，即可干净跳过本函数（无需猜指令长度/布局）。 */
+#if RTOS_SELFTEST
 __attribute__((naked))
 static void rtos_mpu_do_violation(void) {
     __asm volatile(
@@ -189,6 +190,7 @@ static void rtos_mpu_do_violation(void) {
         : : "r"(MEMMAP_PERIPH_BASE) : "r3", "memory"
     );
 }
+#endif /* RTOS_SELFTEST */
 
 /* ---- 故障处理（MemManage_Handler 调用） ----
  * 注意：故障处理器运行在异常上下文，UART TX 需要的 TXE 中断被自身屏蔽，
@@ -264,6 +266,7 @@ int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     for (;;) { __WFI(); }
 }
 
+#if RTOS_SELFTEST
 /* ---- SRAM 隔离（§6 R2/R3）隔离子测试 ----
  * 启动一个“对齐栈(RTOS_TASK_STACK)”任务，验证：
  *  (a) 每任务栈 region(R4) 已编程：读回 RBAR/RASR 校验 base/size/AP/XN 正确；
@@ -387,3 +390,4 @@ int rtos_mpu_selftest(void) {
 
 /* 编译期注册：RTOSALL 会遍历该段依次执行 */
 RTOS_SELFTEST_ADD("mpu", rtos_mpu_selftest);
+#endif /* RTOS_SELFTEST */
