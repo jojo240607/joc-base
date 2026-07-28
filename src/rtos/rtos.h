@@ -97,6 +97,7 @@ int         rtos_task_count(void);
 const char *rtos_task_name(int i);
 uint8_t     rtos_task_prio(int i);
 task_state_t rtos_task_state(int i);
+task_t     *rtos_task_ptr(int i);   /* 按索引取 TCB（栈水位/诊断用） */
 
 /* ---- 内部：等待队列（供 osal_rtos.c / core/ipc_*.c 复用） ---- */
 void  rtos_waitq_add(void **head, task_t *t);
@@ -110,6 +111,14 @@ void  rtos_set_eff_prio(task_t *t, uint8_t new_prio);
 void rtos_stack_fill_sentinel(task_t *t);
 int  rtos_stack_check_sentinel(task_t *t);
 extern volatile int g_stack_overflow;
+
+/* ---- 栈水位（docs/rtos-test-plan.md §6.5）：创建任务时把“未使用区域”填 0xEE，
+ * 运行时任务压栈从高地址向低地址覆盖真实数据；rtos_stack_used/free 从栈顶向下
+ * 数连续 0xEE 计算已用/空闲字节（高水位，含初始异常帧）。仅在创建/测试路径调用，
+ * 运行时零开销（不扫栈）。配合 RTOS_TASK_STACK 可给出推荐栈大小。 ---- */
+void   rtos_stack_fill_watermark(task_t *t);
+size_t rtos_stack_used(task_t *t);   /* 历史峰值已用字节（高水位） */
+size_t rtos_stack_free(task_t *t);   /* 当前仍空闲字节 = stack_size - used */
 
 /* ---- 内部：阻塞当前任务 / 唤醒最高等待者（调用方须持调度锁/关中断） ---- */
 void  rtos_pend(void **waitq_head);

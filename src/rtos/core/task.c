@@ -97,7 +97,8 @@ void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
     t->stack_size = stack_size;
     t->state = TASK_READY;
     task_stack_init(t);
-    rtos_stack_fill_sentinel(t);   /* 填栈底魔数，供切换时检测溢出 */
+    rtos_stack_fill_watermark(t);  /* 未使用区填 0xEE（栈水位高水位测量） */
+    rtos_stack_fill_sentinel(t);   /* 栈底魔数覆盖 0xEE，供切换时检测溢出 */
     ready_add(t);
     if (name) rtos_kobj_register(name, KOBJ_TASK, t);   /* 任务注册进内核对象表（按名可取） */
 }
@@ -176,4 +177,7 @@ const char *rtos_task_name(int i) { return (i >= 0 && i < g_task_count) ? g_task
 uint8_t rtos_task_prio(int i)     { return (i >= 0 && i < g_task_count) ? g_task_pool[i].prio : 0; }
 task_state_t rtos_task_state(int i) {
     return (i >= 0 && i < g_task_count) ? g_task_pool[i].state : TASK_DEAD;
+}
+task_t *rtos_task_ptr(int i) {
+    return (i >= 0 && i < g_task_count) ? &g_task_pool[i] : (task_t *)0;
 }

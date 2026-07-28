@@ -141,6 +141,41 @@ int rtos_stack_check_sentinel(task_t *t) {
     return 0;
 }
 
+/* ---- 栈水位（docs/rtos-test-plan.md §6.5） ----
+ * 创建任务时把“断点(sp)以下、且跳过栈底哨兵区(前 SENTINEL_WORDS 字)的未使用区域”
+ * 全填 0xEEEEEEEE；任务运行时压栈会把这些 0xEE 覆盖成真实数据。测量时从“哨兵区之上”
+ * 向高地址数连续 0xEE，即为仍空闲字节（高水位）。栈向低地址增长，故空闲区在底部，
+ * 自上而下扫描会在初始异常帧(非 0xEE)处立即终止——必须自下而上扫描（FreeRTOS 同构）。 */
+#define STACK_WATERMARK 0xEEEEEEEEu
+
+void rtos_stack_fill_watermark(task_t *t) {
+    if (!t || !t->stack_base || !t->sp) return;
+    uint32_t *p    = (uint32_t *)t->stack_base + SENTINEL_WORDS; /* 跳过栈底哨兵区 */
+    uint32_t *spw  = (uint32_t *)t->sp;     /* 初始帧最低地址；其下为未使用区 */
+    while (p < spw) *p++ = STACK_WATERMARK;
+}
+
+/* 自下而上数连续 0xEE 的字节数（空闲高水位）。起点跳过栈底哨兵(0xCDCD，非 0xEE)，
+ * 否则会在哨兵处立即终止。栈底哨兵区占 16B，最坏情况少算 16B，属保守（不影响溢出判定）。 */
+static size_t rtos_stack_free_words(task_t *t) {
+    if (!t || !t->stack_base) return 0;
+    uint32_t *p    = (uint32_t *)t->stack_base + SENTINEL_WORDS;  /* 跳过哨兵 */
+    uint32_t *top  = (uint32_t *)((uint8_t *)t->stack_base + t->stack_size);
+    size_t free_words = 0;
+    while (p < top) {
+        if (*p == STACK_WATERMARK) { free_words++; p++; }
+        else break;
+    }
+    return free_words;
+}
+size_t rtos_stack_free(task_t *t) {
+    return rtos_stack_free_words(t) * sizeof(uint32_t);
+}
+size_t rtos_stack_used(task_t *t) {
+    if (!t || !t->stack_size) return 0;
+    return t->stack_size - rtos_stack_free(t);
+}
+
 /* ---- 自测专用：在非特权下故意写“仅特权”外设区，触发 MemFault ----
  * 用 naked 函数：无 prologue/epilogue，不改动 PSP；因此故障帧里的 LR 直接指向
  * selftest 调用点的下一条指令，且异常返回时 PSP 已正确落回 selftest 栈帧。

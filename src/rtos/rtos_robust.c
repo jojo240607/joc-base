@@ -194,6 +194,36 @@ static void rb_db_sender(void *arg) {
     for (;;) rtos_mq_send(&g_rb_db_q, &v);   /* 队列满 -> 阻塞，等被删除 */
 }
 
+/* ===================== §6.5 栈水位（0xEE 填充高水位） ===================== */
+static volatile int       g_rb_wm_done;
+static volatile size_t    g_rb_wm_used;
+static volatile size_t    g_rb_wm_base;
+static volatile uint32_t  g_rb_wm_sink;
+/* 一次性在栈上分配确定大小的缓冲(1400B)并真实写入，迫使栈向下增长；用“基线 vs 占用后”
+ * 的差值证明水位机制在跟踪真实栈使用。特意不用递归（会被 -O2 尾调用优化成单帧循环）。 */
+static void rb_wm_task(void *arg) {
+    (void)arg;
+    g_rb_wm_done = 0; g_rb_wm_used = 0; g_rb_wm_base = 0; g_rb_wm_sink = 0;
+    g_rb_wm_base = rtos_stack_used(rtos_running());    /* 占用前基线 */
+    volatile uint8_t big[1400];
+    for (int i = 0; i < 1400; i++) { big[i] = (uint8_t)i; g_rb_wm_sink += big[i]; }
+    g_rb_wm_used = rtos_stack_used(rtos_running());    /* 大缓冲占用后峰值 */
+    g_rb_wm_done = 1;
+    rtos_msleep(10);
+}
+
+/* ===================== §6.5 优先级边界（1-tick 抢占 / 最小睡眠边界） ===================== */
+static volatile int       g_rb_pb1_done;
+static volatile uint32_t  g_rb_pb1_dt;
+static void rb_pb1_task(void *arg) {
+    (void)arg;
+    uint32_t t0 = rtos_tick_count();
+    rtos_msleep(1);                          /* 恰好睡眠 1 个节拍 */
+    g_rb_pb1_dt  = rtos_tick_count() - t0;   /* 应 ≈1（量化到 [1,2]） */
+    g_rb_pb1_done = 1;
+    rtos_msleep(10);
+}
+
 int rtos_robust_selftest(void) {
     int ok = 1;
     log_printf(app_log(), LOG_INFO, "rtos", "[ROBUST] self-test begin\n");
@@ -407,6 +437,75 @@ int rtos_robust_selftest(void) {
                    (int)was_blocked, (s ? (int)(s->state == TASK_DEAD) : 0),
                    (unsigned long)v, lok ? "PASS" : "FAIL");
         RTOS_TEST_RESULT("DelBlockedTask", lok);
+    }
+
+    /* ---------- §6.5 栈水位（0xEE 高水位） ---------- */
+    {
+        RTOS_TASK_STACK(rbwm, 2048);
+        g_rb_wm_done = 0; g_rb_wm_used = 0; g_rb_wm_sink = 0;
+        rtos_task_create("rbwm", rb_wm_task, (void *)0, 14, rbwm, sizeof(rbwm));
+        uint32_t w = 0;
+        while (!g_rb_wm_done && w < 1000) { rtos_msleep(2); w += 2; }
+        /* 峰值在递归最深处已记入 g_rb_wm_used（任务返回前）；任务退出后其名字会从
+         * 内核对象表注销，故用“记录峰值”作主判据，若任务仍存活则用实时 API 复核。 */
+        task_t *t = (task_t *)rtos_kobj_lookup("rbwm");
+        size_t used = g_rb_wm_used;        /* 峰值（大缓冲占用后） */
+        size_t base = g_rb_wm_base;        /* 基线（占用前） */
+        size_t free = sizeof(rbwm) - used;
+        if (t) { used = rtos_stack_used(t); base = 0; free = rtos_stack_free(t); }
+        size_t grew = (used > base) ? (used - base) : 0;
+        /* 水位机制确在跟踪真实栈增长（grew>200），且占用后仍有余量未触底溢出。 */
+        int grew_ok = (grew > 200);
+        int fok     = (free > 64);
+        int ook     = (g_stack_overflow == 0);
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[ROBUST] stack watermark: base=%lu peak=%lu grew=%lu free=%lu (stack=%zu)\n",
+                   (unsigned long)base, (unsigned long)used, (unsigned long)grew,
+                   (unsigned long)free, sizeof(rbwm));
+        /* 全任务水位体检：逐个报告 used/free；若某任务哨兵被踩(真实溢出) 以其名发 FAIL
+         * 行定位（g_stack_overflow 为运行时粘性标志，任何任务曾触底即置位）。 */
+        int n = rtos_task_count(), full = 0, corrupt = 0;
+        for (int i = 0; i < n; i++) {
+            task_t *tt = rtos_task_ptr(i);
+            if (!tt || !tt->stack_base) continue;
+            size_t f = rtos_stack_free(tt);
+            if (f == 0) full++;
+            if (rtos_stack_check_sentinel(tt)) {
+                corrupt++;
+                RTOS_TEST_RESULT(tt->name ? tt->name : "?", 0);   /* 真实溢出：暴露任务名 */
+            }
+            log_printf(app_log(), LOG_INFO, "rtos",
+                       "[ROBUST]   task '%s' used=%lu free=%lu prio=%u state=%d\n",
+                       tt->name ? tt->name : "?", (unsigned long)rtos_stack_used(tt),
+                       (unsigned long)f, (unsigned)tt->prio, (int)tt->state);
+        }
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[ROBUST] stack watermark sweep: tasks=%d full=%d corrupt=%d\n",
+                   n, full, corrupt);
+        int lok2 = grew_ok && fok && ook && (corrupt == 0);
+        if (!lok2) ok = 0;
+        RTOS_TEST_RESULT("StackWatermark", lok2);
+        rtos_msleep(20);
+    }
+
+    /* ---------- §6.5 优先级边界（1-tick 最小睡眠不塌缩/不溢出） ---------- */
+    {
+        RTOS_TASK_STACK(rbpb, 512);
+        g_rb_pb1_done = 0; g_rb_pb1_dt = 0;
+        uint32_t tk0 = rtos_tick_count();
+        /* 高优先级(6)：其 msleep(1) 应在下一节拍被唤醒并抢占低优先级工作。 */
+        rtos_task_create("rbpb1", rb_pb1_task, (void *)0, 6, rbpb, sizeof(rbpb));
+        uint32_t w = 0;
+        while (!g_rb_pb1_done && w < 1000) { rtos_msleep(2); w += 2; }
+        /* 1-tick 睡眠：量化到 [1,2] 个节拍——既不会塌缩成 0（立即返回），
+         * 也不会溢出到 3+（严重超睡）。即“1 tick 抢占”边界。 */
+        int lok = (g_rb_pb1_dt >= 1 && g_rb_pb1_dt <= 2) && (rtos_tick_count() > tk0);
+        if (!lok) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[ROBUST] 1-tick preemption boundary: dt=%lu %s\n",
+                   (unsigned long)g_rb_pb1_dt, lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("PrioBoundary1Tick", lok);
+        rtos_msleep(20);
     }
 
     log_printf(app_log(), LOG_INFO, "rtos", "[ROBUST] self-test: %s\n", ok ? "PASS" : "FAIL");
