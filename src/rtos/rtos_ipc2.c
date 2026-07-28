@@ -189,6 +189,7 @@ int rtos_ipc2_selftest(void) {
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[IPC2] S01 sem count-bound: %s\n", lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("S01_SemCountBound", lok);
     }
     /* S03 边界 + 有序 */
     {
@@ -196,6 +197,7 @@ int rtos_ipc2_selftest(void) {
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[IPC2] S03 mq full/empty/ordered: %s\n", lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("S03_MqFullEmptyOrdered", lok);
     }
     /* S04 广播 */
     {
@@ -203,6 +205,7 @@ int rtos_ipc2_selftest(void) {
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[IPC2] S04 event broadcast(5 waiters): %s\n", lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("S04_EventBroadcast", lok);
     }
     /* S05 FromISR */
     {
@@ -210,6 +213,7 @@ int rtos_ipc2_selftest(void) {
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[IPC2] S05 sem-give from TIM3 ISR wakes task: %s\n", lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("S05_SemGiveFromISR", lok);
     }
 
     log_printf(app_log(), LOG_INFO, "rtos", "[IPC2] self-test: %s\n", ok ? "PASS" : "FAIL");

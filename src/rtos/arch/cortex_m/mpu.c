@@ -32,6 +32,7 @@ volatile uint32_t g_fault_mmfar    = 0;
 volatile uint32_t g_fault_lr       = 0;
 volatile uint32_t g_fault_frame    = 0;   /* 故障异常帧基址（事后用 OpenOCD 翻帧定位 PC） */
 volatile uint32_t g_fault_pc_raw   = 0;   /* frame[6] 原始值（不做 FP 帧跳过，便于交叉核对） */
+char            g_fault_task_name[24] = {0}; /* 最近一次故障的任务名（仅拷贝，绝不在此处 log） */
 
 /* 一个区域：base 必须对齐到 size；ap 见 Cortex-M RASR AP 位；xn=1 禁止执行 */
 static void mpu_set_region(uint32_t idx, uint32_t base,
@@ -165,6 +166,18 @@ int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     g_fault_frame  = (uint32_t)frame;
     g_fault_lr     = lr;
     g_fault_cfsr   = cfsr;
+
+    /* 捕获故障任务名：仅拷贝到全局，绝不在此处调用 log_printf——故障上下文中
+     * UART TXE 中断被自身屏蔽，log 会忙等死锁。供 OpenOCD/复位后读取，定位故障任务
+     * （见 docs/rtos-test-plan.md §5）。 */
+    {
+        task_t *fme = rtos_running();
+        const char *fn = (fme && fme->name) ? fme->name : "";
+        int i;
+        for (i = 0; i < (int)sizeof(g_fault_task_name) - 1 && fn[i]; i++)
+            g_fault_task_name[i] = fn[i];
+        g_fault_task_name[i] = '\0';
+    }
 
     /* 计算基本帧相对异常帧基址的偏移：
      *   EXC_RETURN bit4 = 1 -> 基本帧（无 FPU 懒栈），偏移 0；

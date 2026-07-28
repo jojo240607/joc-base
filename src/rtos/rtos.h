@@ -406,6 +406,14 @@ extern const rtos_selftest_entry_t __rtos_selftest_end[];
         .name = _name, .fn = _fn                                               \
     }
 
+/* 统一测试报告宏（见 docs/rtos-test-plan.md §5）：打印机器可解析的
+ *   [RESULT] <CaseName>: PASS|FAIL
+ * 行，供上位机 tools/rtos_test_all.py 收集汇成报告。需在使用处已包含
+ * "log/log.h" 与 "log/app_log.h"（各 *_selftest 模块均包含）。 */
+#define RTOS_TEST_RESULT(_name, _ok)                                          \
+    log_printf(app_log(), LOG_INFO, "rtos", "[RESULT] %s: %s\n",              \
+               (_name), (_ok) ? "PASS" : "FAIL")
+
 /* 遍历编译期收集的所有自测并依次运行，返回整体是否全部 PASS */
 int rtos_selftest_run_all(void);
 

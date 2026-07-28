@@ -196,6 +196,7 @@ int rtos_robust_selftest(void) {
                    "[ROBUST] div0 UsageFault recovered: survived=%d cfsr=0x%lx %s\n",
                    (int)g_rb_div0_survived, (unsigned long)g_robust_fault_cfsr,
                    lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("DIV0_Recover", lok);
     }
 
     /* ---------- §3.1 UDF ---------- */
@@ -215,6 +216,7 @@ int rtos_robust_selftest(void) {
                    "[ROBUST] udf UsageFault recovered: survived=%d cfsr=0x%lx %s\n",
                    (int)g_rb_udf_survived, (unsigned long)g_robust_fault_cfsr,
                    lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("UDF_Recover", lok);
     }
 
     /* ---------- §3.1 栈溢出检测 ---------- */
@@ -223,6 +225,7 @@ int rtos_robust_selftest(void) {
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[ROBUST] stack sentinel detect: %s\n", lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("StackSentinelDetect", lok);
     }
 
     /* ---------- §3.1 非法 return ---------- */
@@ -236,6 +239,7 @@ int rtos_robust_selftest(void) {
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[ROBUST] illegal return -> DEAD, system alive: %s\n", lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("IllegalReturn", lok);
     }
 
     /* ---------- §3.2 中断风暴 ---------- */
@@ -264,6 +268,7 @@ int rtos_robust_selftest(void) {
                    "[ROBUST] interrupt storm(10kHz,1s): isr=%lu wake=%lu alive=%d %s\n",
                    (unsigned long)g_rb_storm_cnt, (unsigned long)g_rb_storm_wake,
                    (int)(rtos_tick_count() > tk0), lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("IRQStorm", lok);
     }
 
     /* ---------- §3.3 嵌套锁无死锁（天花板协议） ---------- */
@@ -285,6 +290,7 @@ int rtos_robust_selftest(void) {
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[ROBUST] nested-lock no-deadlock: H_got_lock=%d %s\n",
                    (int)g_rb_nest_h_got, lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("NestedLockNoDeadlock", lok);
         rtos_msleep(20);
     }
 
@@ -302,6 +308,7 @@ int rtos_robust_selftest(void) {
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[ROBUST] blocked task resume on release: %s\n", lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("BlockedResume", lok);
         rtos_msleep(20);
     }
 
@@ -327,6 +334,7 @@ int rtos_robust_selftest(void) {
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[ROBUST] resource exhaustion(base=%d made=%d limit=%d) system alive: %s\n",
                    b, made, limit, lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("ResExhaustAlive", lok);
         g_rb_ex_stop = 1; rtos_msleep(100);   /* 释放 filler */
     }
 

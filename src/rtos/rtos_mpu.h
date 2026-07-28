@@ -40,6 +40,7 @@ extern volatile int     g_mpu_violation;   /* 自测中成功捕获 MPU 越权 *
 extern volatile int     g_mpu_test_active;  /* 自测进行中：故障处理器需恢复 */
 extern volatile int     g_stack_overflow;   /* 检测到任务栈溢出 */
 extern volatile uint32_t g_fault_cfsr;      /* 最近一次故障的 CFSR（调试） */
+extern char            g_fault_task_name[24]; /* 最近一次故障的任务名（调试/上位机定位） */
 
 /* 鲁棒性自测（RTOSROBUST）故障恢复钩子：与 g_mpu_test_active 同构，但用于捕获
  * “除零 / 未定义指令”等 UsageFault——置位期间，故障处理器跳过故障指令（PC=LR）并
