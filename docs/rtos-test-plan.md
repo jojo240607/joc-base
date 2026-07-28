@@ -48,7 +48,7 @@
 | §3.3 删阻塞任务 | —（无 `rtos_task_delete`） | ⏸ 缺口，见 §6 |
 | §4 马拉松 + 看门狗 | — | ⏸ 后续阶段，见 §6 |
 | §5 栈水位(0xEE 填充)/优先级边界 | — | ⏸ 后续阶段，见 §6 |
-| §6 代码覆盖 | — | ⏸ 后续阶段，见 §6 |
+| §6 代码覆盖 | ✅ | `-DCOVERAGE=ON` + `RTOSCOV` + `tools/coverage_collect.py`（见 §6.6） |
 
 ---
 
@@ -137,8 +137,9 @@ RTOSALL      → 串联以上全部（编译期段收集，自动遍历）
 > 已完成；§6.5（栈水位 / 优先级边界）已完成。`RTOSROBUST` 覆盖 DelBlockedTask / MutexTimedLock；
 > §6.3 由独立 `RTOSTIMER` 命令（并注册进 `RTOSALL` "timer" 条目）覆盖；§6.4 由
 > `RTOSMARATHON` 命令（长跑任务组 + 可选 ARM 看门狗）与 `RTOSALL` "watchdog" 条目
-> （复位原因解码 + 喂狗路径 + 周期喂狗定时器集成，均安全不 arming）覆盖。
-> 进度：§6.1–§6.5 已完成；仅剩 §6.6（代码覆盖）待后续。
+> （复位原因解码 + 喂狗路径 + 周期喂狗定时器集成，均安全不 arming）覆盖。§6.6 代码覆盖
+> 已由 `-DCOVERAGE=ON` 构建 + `RTOSCOV` 命令 + `tools/coverage_collect.py` 完成。
+> 进度：§6.1–§6.6 全部完成。
 
 1. **`rtos_task_delete`**：✅ 已完成（commit 见 git 历史）。`rtos_task_delete(t)` 从就绪/睡眠/
    等待队列摘除并置 `TASK_DEAD`，TCB 槽可被 `rtos_task_create` 复用；`t==NULL/自身` 删自身。
@@ -184,7 +185,25 @@ RTOSALL      → 串联以上全部（编译期段收集，自动遍历）
      标志 `g_stack_overflow` 也一并校验），等同于“栈溢出边界 +1 字”鲁棒性断言。
    - 优先级边界：`PrioBoundary1Tick` 用例：高优先级任务 `msleep(1)`，断言唤醒延迟量化到 `[1,2]` 节拍
      ——既不塌缩成 0（立即返回）也不溢出到 3+（严重超睡），即“1 tick 抢占”边界。
-6. **代码覆盖(`-fprofile-arcs`)**：准则 §6；需 host 仿真 + gdb 收集行覆盖。⏸ 待 P4。
+6. **代码覆盖(`-fprofile-arcs`)**：✅ 已完成（准则 §6，docs/rtos-test-plan.md §6.6）。
+   - 裸机 STM32F4 无文件系统，gcov 的 `.gcda` 经调试 UART 二进制透传：固件在 `RTOSCOV`
+     命令后把每个 TU 的 `<base>.gcda` 以 `[magic|name_len|name|data_len|data]` 帧发出
+     （见 `src/common/gcov_dump.c` + `src/syscalls.c` 的 `_open/_write/_close` 钩子，只在
+     `RTOS_COVERAGE` 构建生效），最后发一个 `name_len==0` 的结束帧；`uart_console_raw`
+     保证二进制帧不做 `\n->\r` 转换。`__libc_init_array`(startup) 已跑 gcov 构造器，故 BIST
+     起的计数都生效。
+   - 构建开关：`-DCOVERAGE=ON`（`CMakeLists.txt` 的 `option(COVERAGE ...)`）→ 加 `--coverage`
+     并定义 `RTOS_COVERAGE`；**只插桩 `src/rtos/**`**（F407 仅 192KB SRAM，全量插桩的计数数组
+     会撑爆主 RAM，而 §6.6 覆盖目标本就是 RTOS 内核）。验证：覆盖率构建 RAM 76% / CCM 96.8%，
+     链接通过并产出 `.gcno`。
+   - host 收集：`tools/coverage_collect.py` 连 COM（`--port COM8`）或 QEMU TCP（`--tcp host:port`），
+     发 `RTOSCOV`、收帧、按 basename 把 `.gcda` 落到 `build_cov` 里对应 `.gcno` 同目录，再调 `gcov`
+     出 `coverage_report.txt`（含各文件行/分支覆盖率与 OVERALL）。已用真实 MinGW gcov 数据集做
+     端到端回环验证（收帧→落盘→gcov→100% 报告）。
+   - 典型流程：板子跑完 BIST → 敲 `RTOSALL` 跑一遍自测 → 敲 `RTOSCOV` 导出 → host 端
+     `python tools/coverage_collect.py --port COM8 --build build_cov`。QEMU 路径见
+     `tools/qemu_cov.sh`（实验性：mainstream QEMU 对 F4 外设支持有限，复杂 BIST 可能 fault，
+     优先用真实硬件 COM）。
 
 ---
 

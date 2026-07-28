@@ -160,6 +160,10 @@ typedef struct {
 void uart_set_console(uart *self);
 void uart_console_putc(char c);
 
+/* 二进制安全的控制台字节发送（不做 \n->\r 转换）：用于 gcov 覆盖率的 .gcda
+ * 帧透传（docs/rtos-test-plan.md §6.6），避免文本模式对 0x0A 插入 CR 破坏数据。 */
+void uart_console_raw(const uint8_t *p, size_t n);
+
 extern const struct uartFun uart_fun;
 
 #endif /* UART_H */

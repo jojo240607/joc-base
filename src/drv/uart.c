@@ -146,6 +146,21 @@ void uart_console_putc(char c)
         uart_hal_putc(g_console->hal, c);
 }
 
+void uart_console_raw(const uint8_t *p, size_t n)
+{
+    if (!g_console || !p) return;
+    for (size_t i = 0; i < n; i++) {
+        /* 与 uart_console_putc 相同的 TX 路径，但【绝不】插入 CR，保证二进制干净。 */
+        if (g_console->eng &&
+            (g_console->parent.mode == STREAM_MODE_IRQ ||
+             (g_console->parent.mode == STREAM_MODE_DMA &&
+              g_console->framing == UART_FRAME_IDLE)))
+            uart_tx_blocking(g_console, (const char *)&p[i], 1);
+        else
+            uart_hal_putc(g_console->hal, (char)p[i]);
+    }
+}
+
 static char uart_getc(uart *self)
 {
     /* drain the RX ring buffer (filled by the receive ISR) */

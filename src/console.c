@@ -30,6 +30,7 @@
 #include "task/task_button_wq.h" /* BTN2C 命令：读工作队列版按键中断计数 */
 #include "rtos.h"
 #include "rtos/rtos_mpu.h"
+#include "common/gcov_dump.h"   /* §6.6 RTOSCOV：导出 gcov .gcda 帧（覆盖率构建） */
 #include "console.h"
 
 /* IOXFER 异步演示完成回调：仅置标志，保持 ISR 安全。 */
@@ -188,6 +189,22 @@ static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_r
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
 static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSUSR", rtos_usr_selftest()); }
+
+/* §6.6 覆盖率：触发把当前累积的 gcov 计数以 .gcda 二进制帧经 UART 导出。
+ * host 端 tools/coverage_collect.py 连上串口、发 RTOSCOV、收帧、落盘并跑 gcov。
+ * 非覆盖率构建下 gcov_dump() 是空操作，这里给一句提示。 */
+static void cmd_rtoscov(app_ctx_t *c, const char *line)
+{
+    (void)line;
+#ifdef RTOS_COVERAGE
+    gcov_dump();
+    const char *m = "RTOSCOV: .gcda frames sent (see [GCOV DUMP END])\r\n";
+    c->console->vtable->write(c->console, m, strlen(m));
+#else
+    const char *m = "RTOSCOV: not a coverage build (rebuild with -DCOVERAGE=ON)\r\n";
+    c->console->vtable->write(c->console, m, strlen(m));
+#endif
+}
 
 /* 马拉松长跑（§6.4）：派生长跑心跳任务组常驻；参数含 "wdt" 时同时 ARM 看门狗
  * （IWDG 存活至复位，仅马拉松模式用）。返回即后台运行，72h 是让它一直跑。 */
@@ -432,6 +449,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSTIMER", cmd_rtostimer, 0 },
     { "RTOSMARATHON", cmd_rtosmarathon, 0 },
     { "RTOSUSR",  cmd_rtosusr,  0 },
+    { "RTOSCOV",  cmd_rtoscov,  0 },   /* §6.6 覆盖率：导出 gcov .gcda 帧 */
     { "RTOSKOBJ", cmd_rtoskobj, 0 },
     { "USBOPEN",  cmd_usbopen,  0 },
     { "USBCLOSE", cmd_usbclose, 0 },

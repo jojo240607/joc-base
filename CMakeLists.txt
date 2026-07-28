@@ -10,6 +10,12 @@ set(CPU_FLAGS -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16)
 set(MCU_DEFINE "STM32F407xx")
 set(HSE_VALUE 8000000)   # Discovery board external crystal = 8 MHz
 
+# ---- 覆盖率构建（docs/rtos-test-plan.md §6.6）----
+# 开启后加入 --coverage（= -fprofile-arcs -ftest-coverage），并在运行时经调试
+# UART 导出 .gcda 帧（见 src/common/gcov_dump.c + 命令 RTOSCOV）；host 端用
+# tools/coverage_collect.py 收帧落盘并跑 gcov 出报告。常态关闭，不影响正常构建。
+option(COVERAGE "Build with gcov coverage instrumentation (--coverage)" OFF)
+
 add_executable(${PROJECT_NAME}.elf
     # startup MUST come early so its sections are at the base of .text.
     # When placed last, any growth in .o files before it shifts startup
@@ -34,6 +40,7 @@ add_executable(${PROJECT_NAME}.elf
     src/iface/io_xfer.c          # io_xfer_t descriptor + io_xfer_complete (driver/ISR helper)
     # common utility classes (platform-independent, reusable by any business layer)
     src/common/ringbuffer.c      # OOC ring buffer (FIFO) used by stream devices + others
+    src/common/gcov_dump.c       # §6.6 gcov .gcda 帧导出（覆盖率构建；常态为空操作）
     src/common/hash.c            # OOC hash table (used by device_manager storage)
     src/common/list.c            # OOC intrusive list (used by device_manager storage)
     src/common/pool.c            # OOC fixed block pool (used by device_manager storage)
@@ -189,6 +196,45 @@ target_link_options(${PROJECT_NAME}.elf PRIVATE
     -Wl,--no-warn-rwx-segments
     -Wl,--print-memory-usage
 )
+
+# ---- 覆盖率 ----
+# RTOS_COVERAGE 全目标定义（仅影响预处理，几乎不占 RAM）；--coverage 只加在
+# RTOS 源文件上：F407 仅 192KB SRAM，全量插桩的计数数组会撑爆主 RAM，而 §6.6
+# 的覆盖目标本身就是 RTOS 内核（调度/IPC/定时器/自测），故只插桩 src/rtos/**。
+# 链接期 --coverage 负责拉入 libgcov（被插桩对象引用）。
+if(COVERAGE)
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RTOS_COVERAGE=1)
+  target_link_options(${PROJECT_NAME}.elf PRIVATE --coverage)
+  message(STATUS "Coverage build ENABLED (RTOS-only --coverage + RTOS_COVERAGE)")
+endif()
+
+if(COVERAGE AND RTOS)
+  set_source_files_properties(
+    src/osal/osal_rtos.c
+    src/rtos/core/sched.c
+    src/rtos/core/task.c
+    src/rtos/core/timer.c
+    src/rtos/core/kobj.c
+    src/rtos/core/syscalls.c
+    src/rtos/core/bh.c
+    src/rtos/core/ipc_sem.c
+    src/rtos/core/ipc_mutex.c
+    src/rtos/core/ipc_mq.c
+    src/rtos/core/ipc_event.c
+    src/rtos/core/ipc_bus.c
+    src/rtos/rtos_selftest.c
+    src/rtos/rtos_stress.c
+    src/rtos/rtos_p4.c
+    src/rtos/rtos_usr.c
+    src/rtos/rtos_basic.c
+    src/rtos/rtos_ipc2.c
+    src/rtos/rtos_robust.c
+    src/rtos/rtos_timer.c
+    src/rtos/rtos_watchdog.c
+    src/rtos/arch/cortex_m/port.c
+    src/rtos/arch/cortex_m/mpu.c
+    PROPERTIES COMPILE_FLAGS --coverage)
+endif()
 
 # ---- Post-build: generate .bin / .hex and print size ----
 add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
