@@ -113,7 +113,7 @@ text
 
 调试辅助：在HardFault_Handler中，将栈中保存的PC、LR、R0-R3，以及当前任务名通过串口紧急输出（使用轮询模式，不上锁），再执行软件复位。
 
-代码覆盖：如果使用arm-none-eabi-gcc，可开启-fprofile-arcs -ftest-coverage并配合gdb仿真获取行覆盖率，确保异常分支都被走到。
+代码覆盖：如果使用 arm-none-eabi-gcc，可开启 `-fprofile-arcs -ftest-coverage`（即 `-DCOVERAGE=ON`）插桩，计数器在**真实硬件**上运行时累积——**不需要 gdb/QEMU 仿真**（旧版"配合 gdb 仿真取数"是误解：裸机真正缺的是文件系统，不是仿真器）。取数用调试 UART 透传 `.gcda`：固件在 `RTOSCOV` 命令后把每个 TU 的 `<base>.gcda` 以二进制帧发出（`src/common/gcov_dump.c`），PC 端 `tools/coverage_collect.py` 收帧落盘并调 `gcov` 出报告。这样可在真实平台上量化"哪些分支被 RTOSALL/BIST 走到的、哪些异常分支仍是盲区"，给测试加一层充分度审计，而非替代真实平台测试。详见 `docs/rtos-test-plan.md §6.6`。
 
 7. 测试用例优先级排序
 建议按以下顺序执行，快速暴露严重问题：
