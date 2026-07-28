@@ -190,15 +190,21 @@ static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_re
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
 static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSUSR", rtos_usr_selftest()); }
 
-/* §6.6 覆盖率：触发把当前累积的 gcov 计数以 .gcda 二进制帧经 UART 导出。
+/* §6.6 覆盖率：触发把当前累积的 gcov 计数以 .gcda 二进制帧经控制台导出。
  * host 端 tools/coverage_collect.py 连上串口、发 RTOSCOV、收帧、落盘并跑 gcov。
  * 非覆盖率构建下 gcov_dump() 是空操作，这里给一句提示。 */
+/* §6.6 覆盖率：触发把累积的 gcov 计数以 .gcda 二进制帧【经调试 UART（COM8）】导出。
+ * 设计上明确「.gcda 经调试 UART 透传」——USB CDC 批量 IN 在大块突发下会触发短包/stall
+ * wedge（bulk_tx_pending 卡死 → 板子冻结，见 usb.c 的 usb_tx_pump），故这里【始终】走
+ * gcov_dump 的默认 g_out = uart_console_raw（UART 硬件 COM8，IRQ 驱动的阻塞发送，
+ * 不依赖 DMA TX 流，绝不会卡死、可重复运行）。UART 是纯字节流、无「短包=传输结束」概念；
+ * uart_console_raw 保证二进制帧不做 \n->\r 转换。 */
 static void cmd_rtoscov(app_ctx_t *c, const char *line)
 {
     (void)line;
 #ifdef RTOS_COVERAGE
-    gcov_dump();
-    const char *m = "RTOSCOV: .gcda frames sent (see [GCOV DUMP END])\r\n";
+    gcov_dump();   /* 默认经 uart_console_raw 导出到 COM8（见 gcov_dump.c） */
+    const char *m = "RTOSCOV: .gcda frames sent on UART (see [GCOV DUMP END])\r\n";
     c->console->vtable->write(c->console, m, strlen(m));
 #else
     const char *m = "RTOSCOV: not a coverage build (rebuild with -DCOVERAGE=ON)\r\n";

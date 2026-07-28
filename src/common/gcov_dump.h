@@ -23,6 +23,14 @@ int  gcov_on_open(const char *name);
 int  gcov_on_write(int fd, const uint8_t *buf, int len);
 int  gcov_on_close(int fd);
 
+/* 覆盖率数据输出回调：gcov_dump() 用它把 [GCOV DUMP START] 标记、二进制 .gcda
+ * 帧、[GCOV DUMP END] 标记逐字节发出。默认指向 uart_console_raw（全局 g_console，
+ * 即 d_uart / COM8）。命令处理器在收到 RTOSCOV 时可改指向当前控制台自己的
+ * vtable->write（USB CDC 到达时即 d_usb / COM9），从而保证帧从同一通道回传且
+ * 二进制安全、非阻塞（uart_console_raw 在 USB 控制台会因 uart_tx_blocking 阻塞）。 */
+typedef void (*gcov_write_fn)(const uint8_t *p, size_t n);
+void gcov_set_write(gcov_write_fn fn);   /* fn==NULL 还原默认 uart_console_raw */
+
 /* 触发一次全量 flush 并发送 END 帧（RTOSCOV 命令）。 */
 void gcov_dump(void);
 #else
