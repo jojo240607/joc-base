@@ -74,7 +74,10 @@ void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
         rtos_syscall(RTOS_SYS_TASK_CREATE, (uint32_t)&a, 0, 0);
         return;
     }
-    if (prio >= PRIO_LEVELS) prio = (uint8_t)(PRIO_LEVELS - 1);
+    /* 参数校验（TC-TASK-002/003/004）：非法优先级 / 空入口 / 空栈 / 零栈大小
+     * 一律拒绝创建，系统不崩溃。 */
+    if (!entry || !stack || stack_size == 0) return;
+    if (prio >= PRIO_LEVELS) return;
     task_t *t = (task_t *)0;
     /* 回收已终止(TASK_DEAD)的槽位，使 RTOS* 自测可重复运行：
      * 任务正常返回(entry 落到 rtos_task_exit 置 DEAD)后，其池槽可被新任务复用，
@@ -126,6 +129,55 @@ void rtos_task_delete(task_t *t) {
         rtos_yield();
         for (;;) { }
     }
+    rtos_schedule_request();
+}
+
+/* ---- 动态优先级（TC-TASK-008） ---- */
+void rtos_task_set_prio(task_t *t, uint8_t prio) {
+    if (!g_rtos_started || !t) return;
+    if (rtos_need_svc()) {
+        rtos_syscall(RTOS_SYS_TASK_SET_PRIO, (uint32_t)t, prio, 0);
+        return;
+    }
+    if (prio >= PRIO_LEVELS) prio = (uint8_t)(PRIO_LEVELS - 1);
+    unsigned st = rtos_crit_enter();
+    t->base_prio = prio;
+    rtos_set_eff_prio(t, prio);   /* 若 t 在就绪队列则原子重排，否则直接改 prio */
+    rtos_crit_exit(st);
+}
+
+/* ---- 挂起 / 恢复（TC-TASK-007 / TC-KERNEL-004） ---- */
+void rtos_task_suspend(task_t *t) {
+    if (!g_rtos_started || !t) return;
+    if (rtos_need_svc()) {
+        rtos_syscall(RTOS_SYS_TASK_SUSPEND, (uint32_t)t, 0, 0);
+        return;
+    }
+    unsigned st = rtos_crit_enter();
+    /* 从当前所在队列（就绪/睡眠/等待，含计时阻塞双链）摘除，再置挂起态。
+     * RUNNING（g_running）任务不在任何链表，unlink 走 default 分支无操作。 */
+    rtos_task_unlink(t);
+    t->state = TASK_SUSPENDED;
+    rtos_crit_exit(st);
+    if (t == g_running) {
+        /* 挂起自身：请求切换，下一个 PendSV 选其它 READY 任务接管；本任务
+         * 因不在任何队列中，永不被再次调度，直到 rtos_task_resume。 */
+        rtos_schedule_request();
+    }
+}
+
+void rtos_task_resume(task_t *t) {
+    if (!g_rtos_started || !t) return;
+    if (rtos_need_svc()) {
+        rtos_syscall(RTOS_SYS_TASK_RESUME, (uint32_t)t, 0, 0);
+        return;
+    }
+    unsigned st = rtos_crit_enter();
+    if (t->state == TASK_SUSPENDED) {
+        t->state = TASK_READY;
+        ready_add(t);
+    }
+    rtos_crit_exit(st);
     rtos_schedule_request();
 }
 

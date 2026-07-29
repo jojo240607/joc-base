@@ -158,7 +158,8 @@ if(RTOS)
       src/rtos/rtos_basic.c       # T01-T05 + §2.2 调度锁/临界区/SysTick 唤醒（RTOSBASIC）
       src/rtos/rtos_ipc2.c        # S01/S03/S04/S05 边界与 FromISR（RTOSIPC2）
       src/rtos/rtos_robust.c      # §3.1 异常注入 + §3.2 中断风暴 + §3.3 安全正例（RTOSROBUST）
-      src/rtos/rtos_timer.c)      # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER；生产定时器在 core/timer.c）
+      src/rtos/rtos_timer.c       # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER；生产定时器在 core/timer.c）
+      src/rtos/rtos_ostest.c)     # 对照 docs/ostest.md 补齐的缺口用例（自动进入 RTOSALL）
   endif()
 
   target_include_directories(${PROJECT_NAME}.elf PRIVATE
@@ -258,6 +259,7 @@ if(COVERAGE AND RTOS)
       src/rtos/rtos_ipc2.c
       src/rtos/rtos_robust.c
       src/rtos/rtos_timer.c
+      src/rtos/rtos_ostest.c
       src/rtos/rtos_watchdog.c)
   endif()
   set_source_files_properties(${_cov_srcs} PROPERTIES COMPILE_FLAGS --coverage)

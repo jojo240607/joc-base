@@ -157,7 +157,8 @@ int rtos_basic_selftest(void) {
     /* ---------- T02 回收（DEAD 槽复用，无静默丢任务） ---------- */
     {
         g_t02_ran = 0;
-        static uint8_t st[512] __attribute__((aligned(8), section(".ccm_bss")));
+        /* T02 回收测试栈：放主 SRAM(.bss)，不占 CCM（纯 CPU、无 DMA）。 */
+        static uint8_t st[512] __attribute__((aligned(512)));
         rtos_task_create("t02b", t02_mark, (void *)0, 20, st, sizeof(st));
         uint32_t to = 0;
         while (!g_t02_ran && to < 1000) { rtos_msleep(2); to += 2; }

@@ -10,6 +10,18 @@ void rtos_mutex_init(rtos_mutex_t *m, uint8_t ceil_prio) {
     if (!m) return;
     m->owner = (task_t *)0;
     m->ceil_prio = ceil_prio;
+    m->recursive = 0;
+    m->rec_count = 0;
+    m->waitq = (void *)0;
+    rtos_kobj_register((const char *)0, KOBJ_MUTEX, m);
+}
+
+void rtos_mutex_init_rec(rtos_mutex_t *m, uint8_t ceil_prio) {
+    if (!m) return;
+    m->owner = (task_t *)0;
+    m->ceil_prio = ceil_prio;
+    m->recursive = 1;
+    m->rec_count = 0;
     m->waitq = (void *)0;
     rtos_kobj_register((const char *)0, KOBJ_MUTEX, m);
 }
@@ -36,7 +48,10 @@ int rtos_mutex_timedlock(rtos_mutex_t *m, uint32_t timeout_ms) {
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MUTEX_TIMEDLOCK, (uint32_t)m, timeout_ms, 0);
     if (timeout_ms == 0) return rtos_mutex_trylock(m);      /* 等价非阻塞 */
     unsigned st = rtos_crit_enter();
-    if (m->owner == rtos_running()) { rtos_crit_exit(st); return -1; }   /* 不支持递归 */
+    if (m->owner == rtos_running()) {                       /* 递归锁：自锁计数 +1 */
+        if (m->recursive) { m->rec_count++; rtos_crit_exit(st); return 0; }
+        rtos_crit_exit(st); return -1;                      /* 非递归不支持自锁 */
+    }
     if (m->owner == (task_t *)0) {
         m->owner = rtos_running();
         rtos_set_eff_prio(rtos_running(), (rtos_running()->prio < m->ceil_prio)
@@ -76,7 +91,10 @@ int rtos_mutex_lock(rtos_mutex_t *m) {
     if (rtos_ipc_in_isr()) { g_ipc_misuse++; return -1; }   /* ISR 中不可阻塞：误用计数 */
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MUTEX_LOCK, (uint32_t)m, 0, 0);
     unsigned st = rtos_crit_enter();
-    if (m->owner == rtos_running()) { rtos_crit_exit(st); return -1; }   /* 不支持递归 */
+    if (m->owner == rtos_running()) {                       /* 递归锁：自锁计数 +1 */
+        if (m->recursive) { m->rec_count++; rtos_crit_exit(st); return 0; }
+        rtos_crit_exit(st); return -1;                      /* 非递归不支持自锁 */
+    }
     if (m->owner == (task_t *)0) {
         m->owner = rtos_running();
         rtos_set_eff_prio(rtos_running(), (rtos_running()->prio < m->ceil_prio)
@@ -96,6 +114,11 @@ int rtos_mutex_unlock(rtos_mutex_t *m) {
     if (rtos_need_svc()) return (int)rtos_syscall(RTOS_SYS_MUTEX_UNLOCK, (uint32_t)m, 0, 0);
     unsigned st = rtos_crit_enter();
     if (m->owner != rtos_running()) { rtos_crit_exit(st); return -1; }
+    /* 递归锁：仅当递归计数减到 0 才真正释放（TC-MTX-003） */
+    if (m->recursive && m->rec_count > 0) {
+        m->rec_count--;
+        if (m->rec_count > 0) { rtos_crit_exit(st); return 0; }
+    }
     /* 恢复自身优先级到原始值 */
     rtos_set_eff_prio(rtos_running(), rtos_running()->base_prio);
     /* handoff：唤醒最高优先级等待者并立为 owner（提升到天花板） */

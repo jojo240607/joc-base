@@ -99,6 +99,15 @@ void rtos_svc_dispatch(uint32_t *frame, uint32_t nr) {
     case RTOS_SYS_TASK_DELETE:
         rtos_task_delete((task_t *)u0);
         break;
+    case RTOS_SYS_TASK_SET_PRIO:
+        rtos_task_set_prio((task_t *)u0, (uint8_t)u1);
+        break;
+    case RTOS_SYS_TASK_SUSPEND:
+        rtos_task_suspend((task_t *)u0);
+        break;
+    case RTOS_SYS_TASK_RESUME:
+        rtos_task_resume((task_t *)u0);
+        break;
     default: ret = (uint32_t)-1; break;
     }
     frame[0] = ret;   /* 返回值经 r0 带回用户态任务 */

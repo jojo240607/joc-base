@@ -441,7 +441,9 @@ int rtos_robust_selftest(void) {
 
     /* ---------- §6.5 栈水位（0xEE 高水位） ---------- */
     {
-        RTOS_TASK_STACK(rbwm, 2048);
+        /* 栈水位测试栈放主 SRAM(.bss)，不占 CCM（纯 CPU、无 DMA；与 rtos_basic.c
+         * filler 栈约定一致）。对齐到 2^n 以满足 MPU 每任务栈 region(R4)。 */
+        static uint8_t rbwm[2048] __attribute__((aligned(2048)));
         g_rb_wm_done = 0; g_rb_wm_used = 0; g_rb_wm_sink = 0;
         rtos_task_create("rbwm", rb_wm_task, (void *)0, 14, rbwm, sizeof(rbwm));
         uint32_t w = 0;

@@ -21,7 +21,8 @@ typedef enum {
     TASK_RUNNING  = 1,
     TASK_BLOCKED  = 2,   /* 阻塞在某个 IPC 对象上 */
     TASK_SLEEPING = 3,   /* 阻塞在延时上 */
-    TASK_DEAD     = 4
+    TASK_DEAD     = 4,
+    TASK_SUSPENDED = 5   /* 被 rtos_task_suspend 挂起，不在任何就绪/等待队列中 */
 } task_state_t;
 
 typedef struct task task_t;
@@ -69,6 +70,21 @@ void rtos_start(void);  /* 选取首个任务并切换到任务模式（不再�
  * 可安全删除的对象：就绪/睡眠中、或阻塞在某 IPC 等待队列上的任务（含“队列满时
  * 被阻塞的发送者”这类 §3.3 场景）。 */
 void rtos_task_delete(task_t *t);
+
+/* 动态修改任务优先级（TC-TASK-008）：同时更新原始优先级(base_prio) 与有效优先级。
+ * 任务在就绪队列中则原子重排；被阻塞/运行时直接改 prio 并在下次调度生效。
+ * 提升优先级应触发抢占（调用方随后可 rtos_schedule_request / 由内核抢占）。
+ * unpriv 任务经 SVC 门执行。 */
+void rtos_task_set_prio(task_t *t, uint8_t prio);
+
+/* 挂起/恢复任务（TC-TASK-007 / TC-KERNEL-004）：
+ *  - suspend：把任务从当前所在队列摘除并置 TASK_SUSPENDED（不在任何就绪/等待链表，
+ *    故永不被调度；挂起自身则请求切换，由 PendSV 选其它就绪任务接管）。
+ *  - resume：仅当处于 SUSPENDED 时恢复为 READY 并入就绪队列、请求调度。
+ * 挂起/恢复是原子的（关中断），故高频中断里反复 suspend/resume 同一任务不会出现
+ * “既不在就绪也不在挂起”的僵尸态（TC-KERNEL-004）。unpriv 任务经 SVC 门执行。 */
+void rtos_task_suspend(task_t *t);
+void rtos_task_resume(task_t *t);
 
 /* 声明一块“2 的幂大小 + 基址对齐到该大小”的任务栈，供 MPU 每任务栈 region(R4)
  * 作为【栈底 subregion 溢出哨兵】使用（见 docs/rtos-design.md §6 R3）。
@@ -212,9 +228,13 @@ void rtos_sem_give(rtos_sem_t *s);     /* 释放许可（ISR 安全） */
 typedef struct {
     task_t  *owner;
     uint8_t  ceil_prio;   /* 天花板优先级：本互斥量会授予的最高优先级(数值最小) */
+    uint8_t  recursive;   /* 1=递归锁（同一任务可多次 lock，TC-MTX-003） */
+    uint8_t  rec_count;   /* 递归加锁计数（unlock 减到 0 才真正释放） */
     void    *waitq;
 } rtos_mutex_t;
 void rtos_mutex_init(rtos_mutex_t *m, uint8_t ceil_prio);
+/* 初始化为递归互斥量（同一任务可重复 lock 而不死锁，TC-MTX-003） */
+void rtos_mutex_init_rec(rtos_mutex_t *m, uint8_t ceil_prio);
 int  rtos_mutex_lock(rtos_mutex_t *m);    /* 阻塞直到获得；自锁返回 -1 */
 int  rtos_mutex_trylock(rtos_mutex_t *m); /* 非阻塞 */
 int  rtos_mutex_unlock(rtos_mutex_t *m);  /* 释放；非持有者返回 -1 */
@@ -238,6 +258,9 @@ int  rtos_mq_send(rtos_mq_t *q, const void *item);   /* 满则阻塞 */
 int  rtos_mq_trysend(rtos_mq_t *q, const void *item);/* 满返回 -1 */
 int  rtos_mq_recv(rtos_mq_t *q, void *item);         /* 空则阻塞 */
 int  rtos_mq_tryrecv(rtos_mq_t *q, void *item);      /* 空返回 -1 */
+/* 中断上下文安全发送（TC-Q-004 / TC-INT-001）：ISR 内调用，不阻塞；若队列满返回 -1，
+ * 若有接收者阻塞则唤醒并请求 PendSV 延迟切换。等价于 FreeRTOS 的 xQueueSendFromISR。 */
+int  rtos_mq_send_fromisr(rtos_mq_t *q, const void *item);
 
 /* ---- 事件标志（32 位，ANY/ALL 等待） ---- */
 typedef struct {
@@ -339,7 +362,10 @@ typedef enum {
     RTOS_SYS_BUS_PUBLISH,    /* a0: rtos_bus_publish_args_t* */
     RTOS_SYS_TASK_CREATE,    /* a0: rtos_task_create_args_t* */
     RTOS_SYS_MUTEX_TIMEDLOCK,/* a0: rtos_mutex_t*, a1: timeout_ms -> 0/-1 */
-    RTOS_SYS_TASK_DELETE     /* a0: task_t* (NULL=删除自身) */
+    RTOS_SYS_TASK_DELETE,    /* a0: task_t* (NULL=删除自身) */
+    RTOS_SYS_TASK_SET_PRIO,  /* a0: task_t*, a1: prio */
+    RTOS_SYS_TASK_SUSPEND,   /* a0: task_t* */
+    RTOS_SYS_TASK_RESUME     /* a0: task_t* */
 } rtos_syscall_nr_t;
 
 /* 非特权任务调用：从用户态触发 SVC，回到特权 Handler 模式执行系统调用。

@@ -122,3 +122,25 @@ int rtos_mq_recv(rtos_mq_t *q, void *item) {
         rtos_crit_exit(st);
     }
 }
+
+/* ---- 中断上下文安全发送（TC-Q-004 / TC-INT-001，等价 xQueueSendFromISR） ----
+ * 不阻塞：ISR 里直接拷贝入环形缓冲；若有接收者空等则唤醒并请求 PendSV（切换
+ * 推迟到中断退出后）。关中断保护就绪/等待链表，ISR 内调用安全。 */
+int rtos_mq_send_fromisr(rtos_mq_t *q, const void *item) {
+    if (!q) return -1;
+    unsigned st = rtos_crit_enter();
+    if (q->count < q->cap) {
+        mq_push(q, item);
+        if (q->recv_waitq) {                  /* 有接收者空等：唤醒一个去取 */
+            task_t *t = rtos_waitq_pop_highest(&q->recv_waitq);
+            t->wait_obj = (void *)0; t->state = TASK_READY; ready_add(t);
+            rtos_crit_exit(st);
+            rtos_schedule_request();
+            return 0;
+        }
+        rtos_crit_exit(st);
+        return 0;
+    }
+    rtos_crit_exit(st);
+    return -1;                                /* 满：ISR 内无法阻塞，返回 -1 */
+}
