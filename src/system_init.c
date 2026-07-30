@@ -27,8 +27,11 @@ const char *reset_reason_name(reset_reason_t r)
 
 reset_reason_t board_decode_reset_reason(uint32_t csr)
 {
-    /* 优先级：看门狗 > 软件 > 上电 > 引脚 > 低功耗。STM32F4 上 IWDG/WWDG 同位。 */
-    if (csr & RCC_CSR_IWDGRSTF) return RESET_REASON_IWDG;
+    /* 优先级：看门狗 > 软件 > 上电 > 引脚 > 低功耗。
+     * 注意：STM32F4（RM0090）上 IWDGRSTF(bit29) 与 WWDGRSTF(bit30) 是【独立位】，
+     * 并非同一位（system_init.h 旧注释有误）；两者均属“看门狗复位”家族，统一解码
+     * 为 RESET_REASON_IWDG（与 rtos_watchdog.c 自测用例 (1u<<30)->IWDG 对齐）。 */
+    if (csr & (RCC_CSR_IWDGRSTF | RCC_CSR_WWDGRSTF)) return RESET_REASON_IWDG;
     if (csr & RCC_CSR_SFTRSTF)  return RESET_REASON_SOFTWARE;
     if (csr & RCC_CSR_PORRSTF)  return RESET_REASON_POWER;
     if (csr & RCC_CSR_PINRSTF)  return RESET_REASON_PIN;

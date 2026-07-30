@@ -1,16 +1,16 @@
 @echo off
 rem ===========================================================================
-rem PC 主机单元测试运行器（docs/ostest.md §8）：用本机 gcc 编译并运行 os_test/common
-rem 下的全部单测（atomic / lock / barrier / name_table / pool），汇总 PASS/FAIL
-rem 与退出码。固件无关部分在主机验证；硬件相关语义由板载 BIST / HIL 覆盖。
+rem PC host unit-test runner (docs/ostest.md section 8). Build and run all
+rem tests under os_test/common with the native gcc: atomic / lock / barrier /
+rem name_table / pool. Pure host logic; HW semantics covered by BIST / HIL.
 rem
-rem 用法：  os_test\run_tests.bat
-rem 依赖：  gcc（MinGW-w64 / 任意 x86 gcc）
+rem Usage:  os_test\run_tests.bat
+rem Deps:   gcc (MinGW-w64 / any x86 gcc)
 rem ===========================================================================
 setlocal enabledelayedexpansion
 set "CC=gcc"
 set "CFLAGS=-O2 -Wall -Wextra -std=gnu11 -I../src"
-rem pool_test 需要链接的内存池实现（host 端直接编译）
+rem pool_test links the OOC memory pool implementation (host build).
 set "LIBS=..\src\common\pool.c"
 set FAILS=0
 set PASSED=0

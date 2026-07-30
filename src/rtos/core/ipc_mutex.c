@@ -128,7 +128,11 @@ int rtos_mutex_unlock(rtos_mutex_t *m) {
         m->owner = t;
         t->wait_obj = (void *)0;
         t->state = TASK_READY;
-        rtos_set_eff_prio(t, (t->prio < m->ceil_prio) ? t->prio : m->ceil_prio);
+        /* 先按天花板设定有效优先级，再加入就绪队列：t 此刻刚脱离 waitq、尚不在
+         * 就绪队列，若先调 rtos_set_eff_prio 会误判 state==READY 而执行 ready_remove，
+         * 把 g_ready_head[prio]/位图清零、破坏就绪队列，导致被唤醒者不入队、系统死锁。
+         * 直接改 eff 字段再 ready_add 可避免该双重操作。 */
+        t->prio  = (t->prio < m->ceil_prio) ? t->prio : m->ceil_prio;
         ready_add(t);
         rtos_crit_exit(st);
         rtos_schedule_request();

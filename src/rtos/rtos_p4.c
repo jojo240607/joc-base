@@ -228,7 +228,13 @@ int rtos_p4_selftest(void) {
         /* 多次测量取最大，避免偶发抖动误判 */
         uint32_t max_cyc = 0;
         for (int i = 0; i < 16; i++) {
+            /* 关中断隔离测量窗口：DWT CYCCNT 自由运行，窗口里若落进 SysTick/其它 ISR
+             * 会把该 ISR 的执行时间也算进差值，造成“含中断的墙钟”误判 -> 有界性断言
+             * 偶发失败。上半部代码本身的指令成本应不含无关 ISR，故用 irq_lock 排除噪声
+             * （边界 <10us 不变；若真实上半部成本超界仍会 FAIL）。 */
+            unsigned st = irq_lock();
             uint32_t c = p4_top_half();
+            irq_unlock(st);
             if (c > max_cyc) max_cyc = c;
             rtos_yield();                 /* 让下半部执行，避免计数信号量堆积 */
         }

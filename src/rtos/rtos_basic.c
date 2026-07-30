@@ -19,7 +19,9 @@
  * ------------------------------------------------------------------------- */
 
 /* ===================== T01 任务数上限 ===================== */
-#define T01_MAX 32
+/* 循环上限必须 >= RTOS_MAX_TASKS - 常驻基线，才能把池填到 RTOS_MAX_TASKS 上限并
+ * 验证“再创建即被拒”。直接随 RTOS_MAX_TASKS 缩放，避免改池大小后测试填不满。 */
+#define T01_MAX RTOS_MAX_TASKS
 /* 测试 filler 任务栈：放主 SRAM(.bss)，不占 CCM（无 DMA，纯 CPU）。 */
 static uint8_t t01_stack[T01_MAX][256] __attribute__((aligned(256)));
 static volatile int g_t01_stop;

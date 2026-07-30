@@ -184,11 +184,57 @@ static void ok_bulk_waiter(void *arg) {
     g_ok_woken[id] = 1;
     rtos_msleep(10);
 }
-static volatile int g_k4_run;
-static volatile uint32_t g_k4_cnt;
+static volatile int       g_k4_run;
+static volatile uint32_t  g_k4_cnt;
+static volatile uint32_t  g_k4_isr_cnt;
+static task_t            *g_k4_tk;
 static void k4_task(void *arg) {
     (void)arg;
-    while (g_k4_run) g_k4_cnt++;
+    /* 自挂起循环：每轮先 suspend 自身 -> 等 ISR 在中断上下文 resume -> 恢复后计数。
+     * 真实 TIM4 溢出 ISR（~1kHz）调 rtos_task_resume，与这里的 self-suspend 形成【真
+     * 并发】竞争（不是顺序调用）。任务优先级 22 低于 main(16)，不饿死自测任务。
+     * 关键点：ISR 可在“刚 unlink、尚未完成 PendSV 切换”的窗口抢入 resume，正好压到
+     * suspend/resume 的原子性边界——若内核在该窗口有竞态（g_running 仍留就绪表 /
+     * 状态机不一致），本任务会丢失（僵尸态，永不再被调度）或系统崩，从而被测出。 */
+    while (g_k4_run) {
+        rtos_task_suspend(rtos_running());
+        g_k4_cnt++;
+    }
+}
+
+/* TC-TASK-005 资源上限：填充任务（自挂起占槽、零 CPU）。池耗尽时 rtos_task_create
+ * 静默拒绝（不注册），用 rtos_kobj_lookup 判空探测拒绝点。 */
+#define OT_FILL_MAX  RTOS_MAX_TASKS
+static uint8_t ot_fill_stk[OT_FILL_MAX][192] __attribute__((aligned(8)));
+static void ot_fill_park(void *arg) {
+    (void)arg;
+    rtos_task_suspend(rtos_running());   /* 立即自挂起，占住 TCB 槽、不占 CPU */
+    for (;;) { }                          /* 若被恢复也不会崩（正常不会到这） */
+}
+
+/* TC-KERNEL-004 真实 TIM4 溢出 ISR（~1kHz）：中断上下文对 ok_k4 调 rtos_task_resume
+ * （ISR 安全）。TIM2 留给 ROBUST 中断风暴、TIM3 留给 IPC2 的 S05，故此处用 TIM4。 */
+static void k4_tim4_isr(void *ctx) {
+    (void)ctx;
+    if (TIM4->SR & TIM_SR_UIF) {
+        TIM4->SR &= ~TIM_SR_UIF;          /* 清溢出标志，否则中断重入 */
+        g_k4_isr_cnt++;
+        if (g_k4_tk) rtos_task_resume(g_k4_tk);   /* ISR 安全：唤醒被挂起的 k4 */
+    }
+}
+static void k4_tim4_start(uint32_t hz) {
+    RCC->APB1ENR |= RCC_APB1ENR_TIM4EN;
+    TIM4->CR1   = 0;
+    TIM4->PSC   = 83;                            /* 84MHz / 84 = 1MHz 计数 */
+    TIM4->ARR   = (84000000u / 84u / hz) - 1u;   /* 达到 hz 溢出 */
+    TIM4->DIER |= TIM_DIER_UIE;
+    TIM4->CNT   = 0;
+    TIM4->SR    = 0;
+    TIM4->CR1  |= TIM_CR1_CEN;
+}
+static void k4_tim4_stop(void) {
+    TIM4->CR1 &= ~TIM_CR1_CEN;
+    RCC->APB1ENR &= ~RCC_APB1ENR_TIM4EN;
 }
 
 /* ===================== TC-TASK-001/002/003/004/005/006/007/008 ===================== */
@@ -196,15 +242,19 @@ int rtos_ostest_task_selftest(void) {
     int ok = 1;
     log_printf(app_log(), LOG_INFO, "rtos", "[OSTEST] task gap-cases begin\n");
 
-    /* TC-TASK-001: 正常参数创建，任务可运行 */
+    /* TC-TASK-001: 正常参数创建，任务可运行
+     * 注：rtos_task_count() 为“历史分配槽高水位”语义（任务退出变 DEAD 后槽位被复用、
+     * 计数不降，rtos_basic T01 正是依赖此语义），故不以“计数增长”为判据；改为验证
+     * 任务确实运行过(g_ot_created_ok)且按名注册成功（注册发生在 create 时，与是否运行无关）。 */
     {
         g_ot_created_ok = 0;
         RTOS_TASK_STACK(st1, 512);
-        int before = rtos_task_count();
         rtos_task_create("ot_cr", ot_created_task, (void *)0, 14, st1, sizeof(st1));
         uint32_t w = 0;
         while (!g_ot_created_ok && w < 1000) { rtos_msleep(2); w += 2; }
-        int lok = (g_ot_created_ok == 1) && (rtos_task_count() > before);
+        task_t *tc = (task_t *)rtos_kobj_lookup("ot_cr");
+        int lok = (g_ot_created_ok == 1) && (tc != (task_t *)0)
+                  && (rtos_task_count() <= RTOS_MAX_TASKS);
         if (!lok) ok = 0;
         RTOS_TEST_RESULT("TC-TASK-001", lok);
         rtos_msleep(20);
@@ -226,21 +276,40 @@ int rtos_ostest_task_selftest(void) {
         RTOS_TEST_RESULT("TC-TASK-004", lok);   /* 零栈被拒 */
     }
 
-    /* TC-TASK-005: 创建到最大数量，系统稳定不崩 */
+    /* TC-TASK-005: 真正驱动到池上限，验证“达到 RTOS_MAX_TASKS 后创建被拒（不注册、
+     * 不越界、不崩）”这一资源限制边界（docs/ostest.md 规格：最后一个成功、再创建返回
+     * errNO_MEMORY —— 本 RTOS 的 create 返回 void，等价可观测行为是“不再注册”）。
+     * 用自挂起填充任务占满所有非 DEAD 槽，直到 rtos_kobj_lookup 返回 NULL（拒绝点）。
+     * 这样能抓“池不封顶 / 越界写 / 拒绝不干净 / 耗尽后系统崩”类回归。 */
     {
-        int base = rtos_task_count();
-        static uint8_t fill[8][256] __attribute__((aligned(256)));
-        int made = 0;
-        for (int i = 0; i < 8; i++) {
-            int b = rtos_task_count();
-            rtos_task_create("ot_fill", ot_created_task, 0, 22, fill[i], sizeof(fill[i]));
-            if (rtos_task_count() > b) made++;
+        int made = 0, rejected = 0;
+        /* static 持久化：任务名指针会被 TCB 长期持有（rtos_task_name 等后续读取），
+         * 若用栈上局部数组，测试块结束后栈被复用 -> 名字指针悬空 -> 后续模块读到乱码。 */
+        static char nm[OT_FILL_MAX][12];
+        for (int i = 0; i < (int)OT_FILL_MAX; i++) {
+            /* 手工构造 "ot_fillN"（N<32，避免引入 snprintf 依赖） */
+            int j = 0;
+            for (const char *p = "ot_fill"; *p; p++) nm[i][j++] = *p;
+            if (i >= 10) nm[i][j++] = (char)('0' + i / 10);
+            nm[i][j++] = (char)('0' + i % 10);
+            nm[i][j] = '\0';
+            rtos_task_create(nm[i], ot_fill_park, 0, 30,
+                             ot_fill_stk[i], sizeof(ot_fill_stk[i]));
+            if (!rtos_kobj_lookup(nm[i])) { rejected = 1; break; }  /* 池耗尽：静默拒绝 */
+            made++;
         }
-        int lok = (rtos_task_count() <= RTOS_MAX_TASKS) && (made > 0);
+        /* 判据：至少建出 1 个（池确有容量）+ 确实触发拒绝（达到上限）+ 计数未越界 +
+         * 系统仍存活。 */
+        int lok = (made >= 1) && rejected &&
+                  (rtos_task_count() <= RTOS_MAX_TASKS) && rtos_is_started();
         if (!lok) ok = 0;
         RTOS_TEST_RESULT("TC-TASK-005", lok);
+        /* 清理：删除所有填充任务，槽位置 DEAD 供后续 create 复用，避免饿死后续用例/模块。 */
+        for (int i = 0; i < made; i++) {
+            task_t *t = (task_t *)rtos_kobj_lookup(nm[i]);
+            if (t) rtos_task_delete(t);
+        }
         rtos_msleep(20);
-        (void)base;
     }
 
     /* TC-TASK-006: 删除任务，变为 DEAD、资源回收 */
@@ -616,26 +685,38 @@ int rtos_ostest_kernel_selftest(void) {
         if (!lok) ok = 0;
         RTOS_TEST_RESULT("TC-KERNEL-003", lok);
     }
-    /* TC-KERNEL-004: 挂起/恢复竞争原子性（反复 suspend/resume，终态确定，无僵尸态） */
+    /* TC-KERNEL-004: 挂起/恢复原子性（真实 TIM4 ISR 并发 resume vs 任务 self-suspend） */
     {
-        g_k4_run = 1; g_k4_cnt = 0;
+        g_k4_run = 1; g_k4_cnt = 0; g_k4_isr_cnt = 0; g_k4_tk = (task_t *)0;
         RTOS_TASK_STACK(k4s, 512);
-        rtos_task_create("ok_k4", k4_task, 0, 14, k4s, sizeof(k4s));
-        task_t *tk = (task_t *)rtos_kobj_lookup("ok_k4");
-        /* 反复 suspend/resume，期间 tick ISR 也在跑；终态必须是 READY 或 SUSPENDED，
-         * 绝不会“既不在就绪也不在挂起”（僵尸态会令后续调度链表损坏 -> 系统崩）。 */
-        for (int i = 0; i < 200; i++) {
-            rtos_task_suspend(tk);
-            rtos_task_resume(tk);
+        rtos_task_create("ok_k4", k4_task, 0, 22, k4s, sizeof(k4s));  /* 低于 main(16) */
+        g_k4_tk = (task_t *)rtos_kobj_lookup("ok_k4");
+        /* 真实 TIM4 溢出 ISR（~1kHz）在中断上下文对 ok_k4 调 resume，与任务自身的
+         * self-suspend 真并发。验证：任务持续被唤醒（cnt 增长）、终态合法、无僵尸态、
+         * 系统不崩——若 suspend/resume 有原子性竞态（g_running 留就绪表 / 状态机错乱），
+         * 任务会丢失调度或系统崩，从而被测出。 */
+        if (g_k4_tk) {
+            irq_manager_attach((irq_id_t)TIM4_IRQn, k4_tim4_isr, NULL);
+            irq_manager_set_priority((irq_id_t)TIM4_IRQn, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
+            irq_manager_enable((irq_id_t)TIM4_IRQn, k4_tim4_isr, NULL);
+            k4_tim4_start(1000);
+            rtos_msleep(400);                 /* 让 ISR 与 self-suspend 高频交错 */
+            k4_tim4_stop();
+            irq_manager_disable((irq_id_t)TIM4_IRQn, k4_tim4_isr, NULL);
+            irq_manager_detach((irq_id_t)TIM4_IRQn, k4_tim4_isr, NULL);
         }
-        int state_ok = (tk->state == TASK_READY) || (tk->state == TASK_SUSPENDED);
-        rtos_task_suspend(tk);          /* 收尾：挂起，停止其计数 */
-        int lok = state_ok && rtos_is_started();
+        int state_ok = (g_k4_tk == 0) ||
+                       (g_k4_tk->state == TASK_READY) ||
+                       (g_k4_tk->state == TASK_SUSPENDED);
+        int lok = (g_k4_tk != 0) && (g_k4_isr_cnt > 100) && (g_k4_cnt > 100) &&
+                  state_ok && rtos_is_started();
         if (!lok) ok = 0;
         RTOS_TEST_RESULT("TC-KERNEL-004", lok);
+        /* 收尾：停止竞争后让 k4 自行退出（置 run=0 并恢复，使其退出循环 ->
+         * rtos_task_exit 置 DEAD，槽位释放） */
         g_k4_run = 0;
-        rtos_task_resume(tk);
-        rtos_msleep(20);
+        if (g_k4_tk) rtos_task_resume(g_k4_tk);
+        rtos_msleep(30);
     }
 
     log_printf(app_log(), LOG_INFO, "rtos", "[OSTEST] kernel edge-cases: %s\n", ok ? "PASS" : "FAIL");
@@ -737,3 +818,296 @@ int rtos_ostest_sec_selftest(void) {
     return ok;
 }
 RTOS_SELFTEST_ADD("ostest_sec", rtos_ostest_sec_selftest);
+
+/* ===========================================================================
+ * 严格边界场景补充（"补回牙齿"增强集）
+ * 目标：用确定性、强断言的用例暴露 RTOS 在边界/错误路径下的真实缺陷，覆盖既有
+ * TC 用例未命中的路径：
+ *   - 互斥量：天花板防反转（低优先级持有者被提升）/ timedlock 超时 / 非 owner 解锁
+ *     防护 / 多等待者 handoff 顺序（最高优先级优先）
+ *   - 信号量：count 在 limit 处不溢出（重复 give 不接受）
+ *   - 事件：32 位掩码边界（bit31 / 全 1）/ 同一 bit 多 ANY 等待者广播
+ *   - 任务：删阻塞在 mutex waitq 上的任务不破坏锁 / set_prio 越界钳制
+ *   - 内核：kobj 注册表满拒绝 / 阻塞任务动态改优先级后以新优先级被唤醒
+ * 每个用例严格 self-heal：创建的任务末尾删除、锁最终释放、ISR 不残留。
+ * ========================================================================= */
+/* ---- 文件作用域静态对象与状态 ---- */
+static rtos_mutex_t g_st_m5, g_st_m6, g_st_m7, g_st_m8, g_st_m9;
+static rtos_event_t g_st_ev4, g_st_ev5;
+static rtos_sem_t   g_st_s5, g_st_k6_sem;
+static volatile int g_st_m5_m, g_st_m5_h, g_st_m5_hold;
+static volatile int g_st_m6_r;
+static volatile int g_st_m7_r;
+static volatile int g_st_m8_w2;
+static volatile int g_st_e5_w1, g_st_e5_w2;
+static volatile int g_st_k6_done;
+
+/* MTX-005 优先级天花板防反转（确定性）：L(20) 持锁应被提升到 ceil(5)，使其 yield
+ * 时中优先级 M(17) 无法抢占；若天花板失效（L 仍 20），L yield 时 M 会抢 -> m 增长。
+ * 用 g_st_m5_hold 窗口标志隔离：M 仅在 hold 窗口内计数，窗口结束后立即退出，不污染。 */
+static void st_m5_L(void *a) {
+    (void)a;
+    rtos_mutex_lock(&g_st_m5);
+    g_st_m5_hold = 1;                              /* 进入持锁窗口 */
+    for (int i = 0; i < 4000; i++) rtos_yield();   /* 窗口：天花板失效则 L yield 时 M 抢 -> m 增 */
+    g_st_m5_hold = 0;
+    rtos_mutex_unlock(&g_st_m5);
+}
+static void st_m5_M(void *a) {
+    (void)a;
+    while (g_st_m5_hold) { g_st_m5_m++; rtos_yield(); }   /* 仅 L 持锁窗口内计数；窗口结束即退出 */
+}
+static void st_m5_H(void *a) {
+    (void)a;
+    rtos_mutex_lock(&g_st_m5);                     /* 等 L 释放后拿到锁 */
+    g_st_m5_h = 1;
+    rtos_mutex_unlock(&g_st_m5);
+}
+/* MTX-006 timedlock 超时：持有者长期持锁，等待者超时返回 -1 */
+static void st_m6_owner(void *a) {
+    (void)a;
+    rtos_mutex_lock(&g_st_m6);
+    rtos_msleep(600);
+    rtos_mutex_unlock(&g_st_m6);
+}
+static void st_m6_waiter(void *a) {
+    (void)a;
+    g_st_m6_r = rtos_mutex_timedlock(&g_st_m6, 100);   /* 应超时返回 -1 */
+}
+/* MTX-007 非 owner 解锁防护 */
+static void st_m7_B(void *a) {
+    (void)a;
+    g_st_m7_r = rtos_mutex_unlock(&g_st_m7);    /* 非 owner -> 应返回 -1 */
+}
+/* MTX-008 多等待者 handoff：unlock 唤醒最高优先级等待者 */
+static void st_m8_w1(void *a) { (void)a; rtos_mutex_lock(&g_st_m8); rtos_msleep(5); rtos_mutex_unlock(&g_st_m8); }
+static void st_m8_w2(void *a) { (void)a; rtos_mutex_lock(&g_st_m8); g_st_m8_w2 = 1; rtos_msleep(5); rtos_mutex_unlock(&g_st_m8); }
+static void st_m8_w3(void *a) { (void)a; rtos_mutex_lock(&g_st_m8); rtos_msleep(5); rtos_mutex_unlock(&g_st_m8); }
+/* MTX-009 删阻塞在 mutex waitq 上的等待者 */
+static void st_m9_w(void *a) {
+    (void)a;
+    rtos_mutex_lock(&g_st_m9);                  /* 阻塞在 main 持有的锁上 */
+    rtos_mutex_unlock(&g_st_m9);
+}
+/* EVT-005 同一 bit 多 ANY 等待者广播唤醒 */
+static void st_e5_w1(void *a) { (void)a; rtos_event_wait(&g_st_ev5, 0x1u, 0, 1); g_st_e5_w1 = 1; }
+static void st_e5_w2(void *a) { (void)a; rtos_event_wait(&g_st_ev5, 0x1u, 0, 1); g_st_e5_w2 = 1; }
+/* KERNEL-006 阻塞任务动态改优先级，被唤醒后以新优先级运行 */
+static void st_k6_w(void *a) { (void)a; rtos_sem_wait(&g_st_k6_sem); g_st_k6_done = 1; }
+
+int rtos_ostest_strict_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[OSTEST] strict edge-cases begin\n");
+
+    /* TC-MTX-005: 优先级天花板防反转（确定性，不依赖长阻塞窗口） */
+    {
+        rtos_mutex_init(&g_st_m5, 5);
+        g_st_m5_m = 0; g_st_m5_h = 0; g_st_m5_hold = 0;
+        RTOS_TASK_STACK(sL, 512); rtos_task_create("st_m5L", st_m5_L, 0, 20, sL, sizeof(sL));
+        RTOS_TASK_STACK(sM, 512); rtos_task_create("st_m5M", st_m5_M, 0, 17, sM, sizeof(sM));
+        RTOS_TASK_STACK(sH, 512); rtos_task_create("st_m5H", st_m5_H, 0, 6,  sH, sizeof(sH));
+        /* 轮询等待：L 释放（hold 归 0）且 H 已拿到锁（h==1）。天花板生效则 m 保持 0 */
+        int wt = 0; while ((g_st_m5_hold || !g_st_m5_h) && wt < 300) { rtos_msleep(1); wt++; }
+        int lok = (g_st_m5_m == 0) && (g_st_m5_h == 1) && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-MTX-005", lok);
+        task_t *tL = (task_t *)rtos_kobj_lookup("st_m5L");
+        task_t *tM = (task_t *)rtos_kobj_lookup("st_m5M");
+        task_t *tH = (task_t *)rtos_kobj_lookup("st_m5H");
+        if (tL) rtos_task_delete(tL);
+        if (tM) rtos_task_delete(tM);
+        if (tH) rtos_task_delete(tH);
+        rtos_msleep(20);
+    }
+
+    /* TC-MTX-006: timedlock 超时返回 -1（持锁者不释放） */
+    {
+        rtos_mutex_init(&g_st_m6, 5);
+        g_st_m6_r = 0;
+        RTOS_TASK_STACK(sO, 512); rtos_task_create("st_m6O", st_m6_owner, 0, 20, sO, sizeof(sO));
+        rtos_msleep(20);                   /* 让 owner 拿到锁 */
+        RTOS_TASK_STACK(sW, 512); rtos_task_create("st_m6W", st_m6_waiter, 0, 10, sW, sizeof(sW));
+        rtos_msleep(150);                  /* 等 waiter 超时（owner 持锁到 ~150ms > 100ms 超时） */
+        int r = g_st_m6_r;
+        int owner_holding = (g_st_m6.owner != (task_t *)0);
+        int lok = (r == -1) && owner_holding && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-MTX-006", lok);
+        rtos_msleep(50);                   /* 等 owner 释放 */
+        task_t *tO = (task_t *)rtos_kobj_lookup("st_m6O");
+        task_t *tW = (task_t *)rtos_kobj_lookup("st_m6W");
+        if (tO) rtos_task_delete(tO);
+        if (tW) rtos_task_delete(tW);
+        rtos_msleep(20);
+    }
+
+    /* TC-MTX-007: 非 owner 解锁返回 -1，且锁不被破坏 */
+    {
+        rtos_mutex_init(&g_st_m7, 5);
+        rtos_mutex_lock(&g_st_m7);         /* main 持有 */
+        g_st_m7_r = 0;
+        RTOS_TASK_STACK(sB, 512); rtos_task_create("st_m7B", st_m7_B, 0, 10, sB, sizeof(sB));
+        rtos_msleep(50);
+        int r = g_st_m7_r;
+        int owner_ok = (g_st_m7.owner == rtos_running());   /* 锁仍归 main */
+        rtos_mutex_unlock(&g_st_m7);        /* main 正常释放 */
+        int lok = (r == -1) && owner_ok && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-MTX-007", lok);
+        rtos_msleep(20);
+        task_t *tB = (task_t *)rtos_kobj_lookup("st_m7B");
+        if (tB) rtos_task_delete(tB);
+        rtos_msleep(20);
+    }
+
+    /* TC-MTX-008: 多等待者 handoff 顺序（unlock 唤醒最高优先级等待者） */
+    {
+        rtos_mutex_init(&g_st_m8, 5);
+        rtos_mutex_lock(&g_st_m8);         /* main 持有 */
+        g_st_m8_w2 = 0;
+        RTOS_TASK_STACK(w1, 512); rtos_task_create("st_m8w1", st_m8_w1, 0, 8,  w1, sizeof(w1));
+        RTOS_TASK_STACK(w2, 512); rtos_task_create("st_m8w2", st_m8_w2, 0, 6,  w2, sizeof(w2));
+        RTOS_TASK_STACK(w3, 512); rtos_task_create("st_m8w3", st_m8_w3, 0, 10, w3, sizeof(w3));
+        rtos_msleep(30);                   /* 三等待者阻塞进 waitq（顺序 w1,w2,w3） */
+        rtos_mutex_unlock(&g_st_m8);       /* handoff 给最高优先级 = w2(prio 6) */
+        int wt = 0; while (!g_st_m8_w2 && wt < 300) { rtos_msleep(1); wt++; }  /* 等 w2 完成 */
+        int lok = (g_st_m8_w2 == 1) && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-MTX-008", lok);
+        rtos_msleep(50);                   /* 让 w1/w3 依次拿到锁退出 */
+        task_t *tw1 = (task_t *)rtos_kobj_lookup("st_m8w1");
+        task_t *tw2 = (task_t *)rtos_kobj_lookup("st_m8w2");
+        task_t *tw3 = (task_t *)rtos_kobj_lookup("st_m8w3");
+        if (tw1) rtos_task_delete(tw1);
+        if (tw2) rtos_task_delete(tw2);
+        if (tw3) rtos_task_delete(tw3);
+        rtos_msleep(20);
+    }
+
+    /* TC-SEM-005: count 在 limit 处不溢出（重复 give 不接受） */
+    {
+        rtos_sem_init(&g_st_s5, 0, 1);     /* 二值，limit=1 */
+        rtos_sem_give(&g_st_s5);
+        rtos_sem_give(&g_st_s5);
+        rtos_sem_give(&g_st_s5);           /* 重复 give 超过 limit */
+        int c = (int)g_st_s5.count;        /* 应仍为 1，不回绕 */
+        int r1 = rtos_sem_trywait(&g_st_s5);   /* 成功 -> 0 */
+        int r2 = rtos_sem_trywait(&g_st_s5);   /* 空 -> 失败 */
+        int lok = (c == 1) && (r1 == 0) && (r2 != 0) && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-SEM-005", lok);
+    }
+
+    /* TC-EVT-004: 32 位掩码边界（bit31 / 全 1） */
+    {
+        rtos_event_init(&g_st_ev4);
+        rtos_event_set(&g_st_ev4, 0x80000000u);
+        uint32_t f1 = rtos_event_wait(&g_st_ev4, 0x80000000u, 1, 0);  /* ALL 非阻塞 */
+        int lok1 = ((f1 & 0x80000000u) != 0);
+        rtos_event_set(&g_st_ev4, 0xFFFFFFFFu);
+        uint32_t f2 = rtos_event_wait(&g_st_ev4, 0xFFFFFFFFu, 1, 0);  /* 全位 ALL */
+        int lok2 = (f2 == 0xFFFFFFFFu);
+        rtos_event_init(&g_st_ev4);
+        rtos_event_set(&g_st_ev4, 0x80000000u);
+        uint32_t f3 = rtos_event_wait(&g_st_ev4, 0x80000000u, 0, 0);  /* bit31 ANY 非阻塞 */
+        int lok3 = ((f3 & 0x80000000u) != 0);
+        int lok = lok1 && lok2 && lok3 && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-EVT-004", lok);
+    }
+
+    /* TC-EVT-005: 同一 bit 多 ANY 等待者广播唤醒（两者都应被唤醒） */
+    {
+        rtos_event_init(&g_st_ev5);
+        g_st_e5_w1 = 0; g_st_e5_w2 = 0;
+        RTOS_TASK_STACK(e1, 512); rtos_task_create("st_e5w1", st_e5_w1, 0, 10, e1, sizeof(e1));
+        RTOS_TASK_STACK(e2, 512); rtos_task_create("st_e5w2", st_e5_w2, 0, 10, e2, sizeof(e2));
+        rtos_msleep(30);                   /* 两等待者阻塞 */
+        rtos_event_set(&g_st_ev5, 0x1u);   /* 置位 -> 应广播唤醒两者 */
+        rtos_msleep(50);
+        int lok = (g_st_e5_w1 == 1) && (g_st_e5_w2 == 1) && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-EVT-005", lok);
+        task_t *te1 = (task_t *)rtos_kobj_lookup("st_e5w1");
+        task_t *te2 = (task_t *)rtos_kobj_lookup("st_e5w2");
+        if (te1) rtos_task_delete(te1);
+        if (te2) rtos_task_delete(te2);
+        rtos_msleep(20);
+    }
+
+    /* TC-TASK-009: 删阻塞在 mutex waitq 上的任务，锁不被破坏且可继续用 */
+    {
+        rtos_mutex_init(&g_st_m9, 5);
+        rtos_mutex_lock(&g_st_m9);         /* main 持有 */
+        RTOS_TASK_STACK(w, 512); rtos_task_create("st_m9w", st_m9_w, 0, 10, w, sizeof(w));
+        rtos_msleep(30);                   /* w 阻塞在锁上 */
+        task_t *tw = (task_t *)rtos_kobj_lookup("st_m9w");
+        if (tw) rtos_task_delete(tw);      /* 删阻塞等待者 */
+        rtos_msleep(20);
+        int owner_ok = (g_st_m9.owner == rtos_running());
+        rtos_mutex_unlock(&g_st_m9);       /* main 正常释放 */
+        rtos_mutex_lock(&g_st_m9);         /* 锁可继续正常使用 */
+        int relock = (g_st_m9.owner == rtos_running());
+        rtos_mutex_unlock(&g_st_m9);
+        int lok = owner_ok && relock && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-TASK-009", lok);
+        rtos_msleep(20);
+    }
+
+    /* TC-TASK-010: set_prio 越界钳制（255 -> 31，0 -> 0），系统稳定 */
+    {
+        RTOS_TASK_STACK(t, 512);
+        rtos_task_create("st_t10", ot_noop, 0, 14, t, sizeof(t));
+        task_t *tt = (task_t *)rtos_kobj_lookup("st_t10");
+        rtos_msleep(20);
+        rtos_task_set_prio(tt, 255);
+        int p255 = (int)tt->prio;          /* 应钳到 <= 31 */
+        rtos_task_set_prio(tt, 0);
+        int p0 = (int)tt->prio;            /* 应 == 0 */
+        rtos_task_set_prio(tt, 14);        /* 还原 */
+        int lok = (p255 <= 31) && (p0 == 0) && ((int)tt->prio == 14) && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-TASK-010", lok);
+        if (tt) rtos_task_delete(tt);
+        rtos_msleep(20);
+    }
+
+    /* TC-KERNEL-005: kobj 注册表满拒绝（超过 KOBJ_MAX 后 register 返回 0） */
+    {
+        void *fk[200];
+        int nreg = 0, full = 0;
+        for (int i = 0; i < 200; i++) {
+            fk[i] = (void *)&fk[i];
+            int r = rtos_kobj_register("fk", KOBJ_SEM, fk[i]);
+            if (!r) { full = 1; break; }   /* 满：拒绝 */
+            nreg++;
+        }
+        for (int i = 0; i < nreg; i++) rtos_kobj_deregister(KOBJ_SEM, fk[i]);  /* 清理还原 */
+        int lok = full && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-KERNEL-005", lok);
+    }
+
+    /* TC-KERNEL-006: 阻塞任务动态改优先级，被唤醒后以新优先级运行 */
+    {
+        rtos_sem_init(&g_st_k6_sem, 0, 1);
+        g_st_k6_done = 0;
+        RTOS_TASK_STACK(w, 512); rtos_task_create("st_k6w", st_k6_w, 0, 20, w, sizeof(w));
+        rtos_msleep(30);                   /* w 阻塞在 sem */
+        task_t *tw = (task_t *)rtos_kobj_lookup("st_k6w");
+        rtos_task_set_prio(tw, 5);         /* 提升等待者到 5 */
+        int p_before = (int)tw->prio;      /* BLOCKED 直接改 prio，应 == 5 */
+        rtos_sem_give(&g_st_k6_sem);       /* 唤醒 w，以 prio 5 进就绪 */
+        rtos_msleep(50);
+        int lok = (p_before == 5) && (g_st_k6_done == 1) && rtos_is_started();
+        if (!lok) ok = 0;
+        RTOS_TEST_RESULT("TC-KERNEL-006", lok);
+        if (tw) rtos_task_delete(tw);
+        rtos_msleep(20);
+    }
+
+    log_printf(app_log(), LOG_INFO, "rtos", "[OSTEST] strict edge-cases: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+RTOS_SELFTEST_ADD("ostest_strict", rtos_ostest_strict_selftest);
