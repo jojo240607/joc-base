@@ -102,47 +102,74 @@ uint32_t rtos_watchdog_feeds(void) { return g_wdt_feeds; }
 
 /* ---- 马拉松长跑任务组（准则 §4：同时跑多个任务至少 72h） ----
  * 这里提供“长跑任务组”机制；72h 是让它一直跑（交互命令 RTOSMARATHON 触发）。
- * 心跳任务只累加各自计数器并 msleep——开销极小；若系统挂死，WDT（可选）会复位。 */
+ * 心跳任务只累加各自计数器并 msleep——开销极小；若系统挂死，WDT（可选）会复位。
+ *
+ * 重启安全（修复双 RTOSMARATHON 死机 INVSTATE + 死锁）：
+ *   旧实现用单个共享标志 g_marathon_stop + 同一组静态栈。重启时先 stop(置 1, 阻塞等
+ *   信号量) 再 start(把标志【复位为 0】并在【同一块栈】上建新任务)。若上一轮某个
+ *   worker 还没从 rtos_msleep(50) 醒来，它读到已被复位的 0 误以为“没让停”，便一直跑，
+ *   与新一轮同栈 worker 成为【两个同时存活、共用 512B 栈】的任务，互相踩踏保存帧
+ *   (EXC_RETURN/xPSR) -> bx EXC_RETURN 读到 0 -> INVSTATE；另外若恰好有 worker 漏给
+ *   信号量，stop 的 rtos_sem_wait 会永久阻塞控制台 -> 整机无响应。
+ *   新设计（非阻塞、零共享）：
+ *   1) 代际令牌 g_marathon_gen：worker 只在“本代令牌不变”时跑。start 每次【自增令牌】
+ *      （绝不复位成“继续跑”的值），任何迟到唤醒的旧 worker 因令牌变了必然退出，不会
+ *      赖在栈上。start 不再调用阻塞式 stop——旧 worker 在 ~50ms 内自行退出，不阻塞控制台。
+ *   2) 双缓冲栈 g_marathon_stack_arr[2][N]（ping-pong）：start 每次把缓冲索引翻转，新代
+ *      永远用【另一块】内存。即便交接窗口内有旧 worker 尚存活，它也只在旧缓冲上运行，
+ *      与新代物理隔离——绝不会两个活任务共用同一块栈。旧代退出后其缓冲才在下一轮被复用。 */
 #define MARATHON_N 3
+#define MARATHON_STACK_SZ 512
+#define MARATHON_GENS 2
 static uint8_t  g_marathon_on;
-static volatile uint8_t  g_marathon_stop;
+static volatile uint8_t  g_marathon_gen;     /* 代际令牌：worker 仅在令牌匹配时运行 */
+static int                g_marathon_buf;    /* ping-pong 缓冲索引(0/1)，每次 start 翻转 */
 static volatile uint32_t g_marathon_beat[MARATHON_N];
 static rtos_sem_t        g_marathon_done;
-RTOS_TASK_STACK(g_marathon_stack_arr[MARATHON_N], 512);
-#define g_marathon_stack g_marathon_stack_arr
+/* 马拉松工作栈放在【主 SRAM】(而非 CCM(.ccm_bss))：CCM 仅 63K，已承载 MSP(顶 1K)
+ * + TCB 池(g_task_pool[48]) + 常驻任务栈(main/blink/idle/bist/wq/bh/各 selftest)，
+ * 空间紧张。开发者已把 rtos_ostest/robust/basic 的自测栈挪到主 SRAM，明确注释
+ * "避免 CCM 与 MSP/TCB 池争用导致溢出相互踩踏"。双缓冲仍保持 2 的幂大小 + 基址对齐，
+ * 满足 MPU 每任务栈 region(R4)。 */
+static uint8_t g_marathon_stack_arr[MARATHON_GENS][MARATHON_N][MARATHON_STACK_SZ]
+    __attribute__((aligned(MARATHON_STACK_SZ)));
 
 static void marathon_worker(void *arg)
 {
     int id = (int)(intptr_t)arg;
-    while (!g_marathon_stop) {
+    uint8_t my_gen = g_marathon_gen;        /* 捕获本代令牌；gen 自增后必退出 */
+    while (g_marathon_gen == my_gen) {
         g_marathon_beat[id]++;
         rtos_msleep(50);
     }
-    rtos_sem_give(&g_marathon_done);
+    rtos_sem_give(&g_marathon_done);        /* 无害：无人等待时计数封顶，仅作退出标记 */
 }
 
 /* 启动长跑：派生 N 个心跳任务（不同优先级）常驻；arm_wdt!=0 时同时 ARM 看门狗。
- * 返回 0 成功。重复调用会先停止上一轮。 */
+ * 返回 0 成功。重复调用 = 重启：自增令牌让旧 worker 自行退出，新代用另一块缓冲，
+ * 全程非阻塞、不共享栈，绝不会死机或死锁。 */
 int rtos_marathon_start(uint8_t arm_wdt)
 {
-    if (g_marathon_on) rtos_marathon_stop();
-    g_marathon_stop = 0;
+    g_marathon_gen++;                                   /* 令牌自增：旧 worker 见此必退出 */
     rtos_sem_init(&g_marathon_done, 0, MARATHON_N + 1);
-    int prio[MARATHON_N] = { 20, 22, 24 };   /* 均低于主任务(16)，后台心跳 */
+    g_marathon_buf ^= 1;                                /* ping-pong 翻转：本代用另一块缓冲 */
+    int prio[MARATHON_N] = { 20, 22, 24 };              /* 均低于主任务(16)，后台心跳 */
     for (int i = 0; i < MARATHON_N; i++) {
         rtos_task_create("marathon", marathon_worker, (void *)(intptr_t)i,
-                         (uint8_t)prio[i], g_marathon_stack[i], sizeof(g_marathon_stack[i]));
+                         (uint8_t)prio[i],
+                         g_marathon_stack_arr[g_marathon_buf][i],
+                         sizeof(g_marathon_stack_arr[g_marathon_buf][i]));
     }
     g_marathon_on = 1;
     if (arm_wdt) rtos_watchdog_enable(2000); /* 2s 超时 / 1s 喂：马拉松模式才 arming */
     return 0;
 }
 
+/* 停止长跑（非阻塞）：自增令牌，所有当前 worker 在 ~50ms 内自行退出并释放其缓冲；
+ * 不阻塞等待，故任何上下文调用都安全，不会死锁控制台。 */
 void rtos_marathon_stop(void)
 {
-    if (!g_marathon_on) return;
-    g_marathon_stop = 1;
-    for (int i = 0; i < MARATHON_N; i++) rtos_sem_wait(&g_marathon_done);
+    g_marathon_gen++;                                   /* 信号所有当前 worker 停止(含迟到唤醒者) */
     g_marathon_on = 0;
 }
 
