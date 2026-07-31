@@ -195,6 +195,7 @@ static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_r
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
 static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSUSR", rtos_usr_selftest()); }
+static void cmd_rtosirq(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSIRQ", rtos_irq_selftest()); }
 #endif /* RTOS_SELFTEST */
 
 /* §6.6 覆盖率：触发把当前累积的 gcov 计数以 .gcda 二进制帧经控制台导出。
@@ -467,6 +468,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSMARATHON", cmd_rtosmarathon, 0 },
 #if RTOS_SELFTEST
     { "RTOSUSR",  cmd_rtosusr,  0 },
+    { "RTOSIRQ",  cmd_rtosirq,  0 },
 #endif
     { "RTOSCOV",  cmd_rtoscov,  0 },   /* §6.6 覆盖率：导出 gcov .gcda 帧 */
     { "RTOSKOBJ", cmd_rtoskobj, 0 },

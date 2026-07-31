@@ -434,6 +434,12 @@ int rtos_bh_selftest(void);
  * 绝对延时 rtos_delay_until 的翻转安全。 */
 int rtos_timer_selftest(void);
 
+/* ---- 中断实时性 / 抗压自测（从 RTOSIRQ 命令调用，并注册进 RTOSALL "irq" 条目） ----
+ * 覆盖两类关键用户态场景：(1) 实时中断响应——ISR->高优先级任务/BH 唤醒延迟有界、
+ * 每个中断恰一次响应(无丢失/无重复)、绝不卡死；(2) 高频中断抗压——单路 50kHz 持续
+ * 5s 与双路(TIM5/TIM2)嵌套并发 3s 下系统不崩溃、计数不丢。 */
+int rtos_irq_selftest(void);
+
 /* ---- 看门狗喂狗 + 马拉松长跑自测（从 RTOSMARATHON 命令触发，并注册进 RTOSALL
  *      "watchdog" 条目）：仅验证安全、确定性部分（复位原因解码 / 喂狗路径 /
  *      周期喂狗定时器集成）；不 arming IWDG，避免把板子锁进复位循环。 */
