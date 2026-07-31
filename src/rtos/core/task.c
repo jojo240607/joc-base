@@ -63,17 +63,11 @@ void rtos_task_create(const char *name, void (*entry)(void *), void *arg,
     rtos_task_create_ex(name, entry, arg, prio, stack, stack_size, 1);
 }
 
-void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
-                         uint8_t prio, void *stack, size_t stack_size, uint8_t priv) {
-    /* 非特权任务调用本接口时，必须经由 SVC 门（在特权 Handler 模式里真正建任务）。
-     * 用 g_in_svc 标记避免：SVC 处理内部再次调用本函数时又触发 SVC 而死循环。 */
-    if (rtos_need_svc()) {
-        rtos_task_create_args_t a;
-        a.name = name; a.entry = entry; a.arg = arg;
-        a.prio = prio; a.stack = stack; a.stack_size = stack_size; a.priv = priv;
-        rtos_syscall(RTOS_SYS_TASK_CREATE, (uint32_t)&a, 0, 0);
-        return;
-    }
+/* 真正创建（内部）：完成参数校验、槽位回收、TCB 初始化与就绪入队。
+ * attr 可空（NULL = 非实时任务，阶段1 新字段全 0，零回归）。 */
+static void rtos_task_create_full(const char *name, void (*entry)(void *), void *arg,
+                                  uint8_t prio, void *stack, size_t stack_size,
+                                  uint8_t priv, const rtos_task_attr_t *attr) {
     /* 参数校验（TC-TASK-002/003/004）：非法优先级 / 空入口 / 空栈 / 零栈大小
      * 一律拒绝创建，系统不崩溃。 */
     if (!entry || !stack || stack_size == 0) return;
@@ -99,11 +93,49 @@ void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
     t->stack_base = (uint8_t *)stack;
     t->stack_size = stack_size;
     t->state = TASK_READY;
+    /* 硬实时属性（阶段1）：attr 非空才写，否则全 0 = 非实时。 */
+    if (attr) {
+        t->rt_class      = attr->rt_class;
+        t->deadline_ticks = attr->deadline_ticks;
+        t->wcet_ticks    = attr->wcet_ticks;
+        /* release_tick / budget_used 在首次被释放/唤醒时由调度器写入（见 sched.c）。
+         * 这里给个初始 release = 0，避免未运行前误报违约。 */
+        t->release_tick  = 0;
+        t->budget_used   = 0;
+    }
     task_stack_init(t);
     rtos_stack_fill_watermark(t);  /* 未使用区填 0xEE（栈水位高水位测量） */
     rtos_stack_fill_sentinel(t);   /* 栈底魔数覆盖 0xEE，供切换时检测溢出 */
     ready_add(t);
     if (name) rtos_kobj_register(name, KOBJ_TASK, t);   /* 任务注册进内核对象表（按名可取） */
+}
+
+void rtos_task_create_ex(const char *name, void (*entry)(void *), void *arg,
+                         uint8_t prio, void *stack, size_t stack_size, uint8_t priv) {
+    /* 非特权任务调用本接口时，必须经由 SVC 门（在特权 Handler 模式里真正建任务）。
+     * 用 g_in_svc 标记避免：SVC 处理内部再次调用本函数时又触发 SVC 而死循环。 */
+    if (rtos_need_svc()) {
+        rtos_task_create_args_t a;
+        a.name = name; a.entry = entry; a.arg = arg;
+        a.prio = prio; a.stack = stack; a.stack_size = stack_size; a.priv = priv;
+        rtos_syscall(RTOS_SYS_TASK_CREATE, (uint32_t)&a, 0, 0);
+        return;
+    }
+    rtos_task_create_full(name, entry, arg, prio, stack, stack_size, priv, (const rtos_task_attr_t *)0);
+}
+
+void rtos_task_create_rt(const char *name, void (*entry)(void *), void *arg,
+                         uint8_t prio, void *stack, size_t stack_size,
+                         uint8_t priv, const rtos_task_attr_t *attr) {
+    /* 硬实时任务创建：仅特权上下文创建（非特权任务不应自己声明硬实时属性，
+     * 须经 SVC 由特权创建者指定）。此处直接走 full，attr 落地。 */
+    if (rtos_need_svc()) {
+        /* 非特权路径：硬实时任务应由特权代码创建，这里退回普通 ex 语义（attr 忽略），
+         * 保持不崩溃；真正的硬实时创建应在特权上下文调用本函数。 */
+        rtos_task_create_ex(name, entry, arg, prio, stack, stack_size, priv);
+        return;
+    }
+    rtos_task_create_full(name, entry, arg, prio, stack, stack_size, priv, attr);
 }
 
 /* 删除任务（docs/rtos-test-plan.md §6.1）：从当前所在队列摘除并置 TASK_DEAD。
@@ -234,3 +266,12 @@ task_state_t rtos_task_state(int i) {
 task_t *rtos_task_ptr(int i) {
     return (i >= 0 && i < g_task_count) ? &g_task_pool[i] : (task_t *)0;
 }
+
+/* ---- 硬实时属性访问器（阶段1；见 docs/rtos-hard-realtime-plan.md） ----
+ * 供控制台 RTOSDEADLINE 命令与自测读取 TCB 的硬实时字段（私有结构不外泄）。 */
+uint8_t  rtos_task_rt_class(int i)    { return (i>=0 && i<g_task_count) ? g_task_pool[i].rt_class : 0; }
+uint32_t rtos_task_deadline(int i)    { return (i>=0 && i<g_task_count) ? g_task_pool[i].deadline_ticks : 0; }
+uint32_t rtos_task_wcet(int i)        { return (i>=0 && i<g_task_count) ? g_task_pool[i].wcet_ticks : 0; }
+uint32_t rtos_task_budget(int i)      { return (i>=0 && i<g_task_count) ? g_task_pool[i].budget_used : 0; }
+uint32_t rtos_task_deadline_miss(int i){return (i>=0 && i<g_task_count) ? g_task_pool[i].deadline_miss : 0; }
+uint32_t rtos_task_wcet_miss(int i)   { return (i>=0 && i<g_task_count) ? g_task_pool[i].wcet_miss : 0; }

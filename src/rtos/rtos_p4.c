@@ -205,11 +205,13 @@ int rtos_p4_selftest(void) {
                        i, nm ? nm : "?", (unsigned)rtos_task_prio(i),
                        (int)rtos_task_state(i));
         }
-        log_printf(app_log(), LOG_INFO, "rtos", "[P4] diag count=%d overflow=%d\n",
-                   rtos_task_count(), (int)g_stack_overflow);
+        log_printf(app_log(), LOG_INFO, "rtos", "[P4] diag count=%d overflow=%d sched_fail=%lu\n",
+                   rtos_task_count(), (int)g_stack_overflow,
+                   (unsigned long)g_sched_invariant_fail);
         /* 判定：天花板生效(L 有效优先级=5) 且 H 经 handoff 成功拿到锁(无死锁) 且 M 运行过 */
         int lok = (g_p4_l_eff == 5) && g_p4_h_ran && g_p4_h_finish && g_p4_m_ran
-                  && (g_stack_overflow == 0);
+                  && (g_stack_overflow == 0)
+                  && (g_sched_invariant_fail == 0);   /* 链表不变量未被破坏 */
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[P4] prio-inversion: L_eff=%lu(ceil=5) H_ran=%d H_elapsed=%lums M_ran=%d ovf=%d %s\n",

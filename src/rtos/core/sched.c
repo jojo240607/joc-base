@@ -35,6 +35,37 @@ static task_t *g_sleep_head;
 /* ---- 任务计数（TCB 池定义在 core/task.c） ---- */
 int g_task_count = 0;
 
+/* ---- 调度器链表完整性断言记录器（见 rtos_internal.h） ---- */
+volatile uint32_t g_sched_invariant_fail = 0;
+volatile task_t  *g_sched_bad_tcb        = (task_t *)0;
+volatile uint32_t g_sched_bad_line       = 0;
+void rtos_sched_assert_fail(const char *file, int line) {
+    (void)file;
+    g_sched_bad_tcb  = g_running;   /* 当前运行任务即最可能双挂的一方 */
+    g_sched_bad_line = (uint32_t)line;
+    g_sched_invariant_fail++;
+}
+
+/* ---- 硬实时违约标志（见 docs/rtos-hard-realtime-plan.md 阶段1，零挂起风险） ----
+ * 任一硬实时任务截止期/wcet 被突破，对应粘性计数递增，并把“曾发生过违约”汇总到
+ * g_rtos_deadline_violation / g_rtos_wcet_violation，供诊断/看门狗读取，不触发异常。 */
+volatile uint32_t g_rtos_deadline_violation = 0;
+volatile uint32_t g_rtos_wcet_violation     = 0;
+
+/* 硬实时违约汇总（供 RTOSALL 自检 / 看门狗读取）。 */
+uint32_t rtos_rt_violation(void) {
+    return g_rtos_deadline_violation | g_rtos_wcet_violation;
+}
+
+/* 硬实时辅助：任务被释放/唤醒时记录释放时刻并清零本窗口预算。
+ * 调用方持调度锁。deadline/wcet 为 0 的非实时任务不受影响（计数保持 0）。 */
+static inline void rtos_rt_on_release(task_t *t) {
+    if (t->rt_class != 0) {   /* 1=硬实时 2=软实时 都参与：软实时只统计不致命 */
+        t->release_tick = g_tick;
+        t->budget_used  = 0;
+    }
+}
+
 /* ---- IPC 误用计数（见 docs/rtos-design.md §4.2） ---- */
 volatile uint32_t g_ipc_misuse = 0;
 
@@ -45,6 +76,10 @@ static uint32_t g_slice_ticks = RTOS_TIME_SLICE_TICKS;
 
 /* ---- 就绪链表操作（调用方持锁） ---- */
 void ready_add(task_t *t) {
+    /* 双挂防御：进入就绪队列前，TCB 的 sched_next/sched_prev 必须是空（不在任一条
+     * 链表上）。若非空，说明该 TCB 已挂在就绪/睡眠链表而未摘除，即“双挂”破坏者。 */
+    RTOS_SCHED_ASSERT(t->sched_next == (task_t *)0
+                      && t->sched_prev == (task_t *)0);
     int p = t->prio;
     t->sched_prev = g_ready_tail[p];
     t->sched_next = (task_t *)0;
@@ -52,6 +87,10 @@ void ready_add(task_t *t) {
     else                 g_ready_head[p] = t;
     g_ready_tail[p] = t;
     g_ready_bmp |= (1u << p);
+    /* 硬实时：任务从睡眠/阻塞被释放→就绪，刷新释放基准并清零本窗口预算。
+     * RUNNING→READY(yield) 与新创建(READY) 不刷新，避免误清运行预算。 */
+    if (t->state == TASK_SLEEPING || t->state == TASK_BLOCKED)
+        rtos_rt_on_release(t);
 }
 void ready_remove(task_t *t) {
     int p = t->prio;
@@ -104,6 +143,9 @@ void rtos_cancel_timed_wait(task_t *t) {
 
 /* ---- 睡眠链表操作（调用方持锁） ---- */
 void sleep_add(task_t *t) {
+    /* 双挂防御：进入睡眠队列前同样要求 TCB 不在任何链表上（见 ready_add 注释）。 */
+    RTOS_SCHED_ASSERT(t->sched_next == (task_t *)0
+                      && t->sched_prev == (task_t *)0);
     t->sched_prev = (task_t *)0;
     t->sched_next = g_sleep_head;
     if (g_sleep_head) g_sleep_head->sched_prev = t;
@@ -188,6 +230,8 @@ void rtos_msleep(uint32_t ms) {
      * 加入就绪队列(state==READY)而切换未发生；睡眠前必须先将其从就绪队列摘除，否则会
      * 同时挂在“就绪”与“睡眠”两条链表上，破坏链表（节拍 ISR 遍历时死循环/越界）。
      * 正常运行态下本任务为 RUNNING，不会命中此分支，零回归。 */
+    RTOS_SCHED_ASSERT(g_running->state == TASK_RUNNING
+                      || g_running->state == TASK_READY);
     if (g_running->state == TASK_READY) ready_remove(g_running);
     g_running->state = TASK_SLEEPING;
     g_running->delay_ticks = ticks;
@@ -259,6 +303,10 @@ void *rtos_pendsv_switch(void *old_sp) {
         ready_remove(nxt);
         nxt->state = TASK_RUNNING;
         g_running = nxt;
+        /* 硬实时：新建首次运行的任务 release_tick 仍为 0，以当前 tick 为释放基准，
+         * 避免首 tick 用 g_tick-0 误判违约（预算已在唤醒/创建时清零）。 */
+        if (nxt->rt_class != 0 && nxt->release_tick == 0)
+            nxt->release_tick = g_tick;
     }
     rtos_crit_exit(st);
     return nxt ? nxt->sp : old_sp;
@@ -271,8 +319,15 @@ void rtos_tick_isr(void *ctx) {
     unsigned st = rtos_crit_enter();
     g_tick++;
     int awoke = 0;
+    /* 睡眠链表遍历：加边界计数，防御双挂/野指针导致的越界或死循环（只遍历至多
+     * RTOS_MAX_TASKS+1 个节点；超出说明 sched_next 已损坏，记录并跳出而非死机）。 */
     task_t *t = g_sleep_head;
+    int iter = 0;
     while (t) {
+        if (++iter > RTOS_MAX_TASKS + 1) {   /* 链表长度不可能超过任务池容量 */
+            RTOS_SCHED_ASSERT(0);            /* 睡眠链表损坏：越界/成环 */
+            break;
+        }
         task_t *nx = t->sched_next;
         if (t->delay_ticks > 0) {
             if (--t->delay_ticks == 0) {
@@ -294,19 +349,49 @@ void rtos_tick_isr(void *ctx) {
         }
         t = nx;
     }
+
+    /* ---- 硬实时违约检测（阶段1，零挂起风险） ----
+     * 对当前正运行的硬实时任务，本 tick 累加其运行预算；若超 WCET 预算或超截止期，
+     * 递增对应粘性计数并汇总到 g_rtos_*_violation（不触发异常、不停机）。
+     * 非实时任务(rt_class==0)或 wcet/deadline 为 0 的不参与，零回归。 */
+    if (g_running && (g_running->rt_class == 1 || g_running->rt_class == 2)) {
+        task_t *rt = g_running;
+        rt->budget_used++;
+        if (rt->wcet_ticks != 0 && rt->budget_used > rt->wcet_ticks) {
+            rt->wcet_miss++;
+            g_rtos_wcet_violation++;
+        }
+        if (rt->deadline_ticks != 0
+            && (uint32_t)(g_tick - rt->release_tick) > rt->deadline_ticks) {
+            rt->deadline_miss++;
+            g_rtos_deadline_violation++;
+        }
+    }
+
 #if RTOS_TIME_SLICE
-    /* 时间片轮转：同优先级有竞争者时倒计时，用尽则让出到 FIFO 尾部 */
+    /* 时间片轮转（硬实时关键改进，见 §3 / rtos-design.md）：
+     *  - 同优先级有竞争者：按原语义倒计时，用尽则让出到 FIFO 尾部（防同优先级饿死）。
+     *  - 【新增】跨优先级抢占：即使没有同优先级竞争者，只要存在【更高优先级】就绪
+     *    任务，当前运行任务连续霸占 CPU 超过 RTOS_TIME_SLICE_TICKS 个节拍后也必须
+     *    让出。这把内核从“纯协作式”升级为“准硬实时”——一个低优先级、但忘记 yield
+     *    的长循环最多只能阻塞高优先级任务 RTOS_TIME_SLICE_TICKS(默认 5ms)，之后被
+     *    强制抢占。这是 zephyr/FreeRTOS“可选时间片”的语义，仅修改 tick 判定，零回归。
+     *  注：更高优先级任务被唤醒时会立刻经 rtos_schedule_request 抢占（见 ipc_*.c），
+     *  此处时间片只兜底“唤醒发生在更早、但运行任务一直没到调度点”的极端情形。 */
     if (g_running && g_running->state == TASK_RUNNING) {
         uint8_t p = g_running->prio;
-        if (g_ready_head[p] != (task_t *)0) {
+        int has_peer = (g_ready_head[p] != (task_t *)0);          /* 同优先级竞争者 */
+        int has_higher = (g_ready_bmp
+                          & ~((1u << (p + 1)) - 1u)) != 0;        /* 更高优先级就绪 */
+        if (has_peer || has_higher) {
             if (g_slice_ticks == 0) g_slice_ticks = RTOS_TIME_SLICE_TICKS;
             if (--g_slice_ticks == 0) {
                 g_running->state = TASK_READY;
-                ready_add(g_running);   /* 加到同优先级 FIFO 尾部 */
+                ready_add(g_running);   /* 加到就绪队列（同优先级 FIFO 尾部 / 更高优先级在 pick 时自然胜出） */
                 awoke = 1;
             }
         } else {
-            g_slice_ticks = RTOS_TIME_SLICE_TICKS;   /* 无竞争者：续跑并重置片 */
+            g_slice_ticks = RTOS_TIME_SLICE_TICKS;   /* 无更高/同优先级就绪：续跑并重置片 */
         }
     }
 #endif
@@ -323,6 +408,8 @@ void rtos_pend(void **q) {
     if (!g_running) return;
     /* 同 rtos_msleep 的防护：sched_lock 区间内 yield 后本任务可能残留于就绪队列，
      * 阻塞前摘除，避免同时挂在“就绪”与“等待”链表。 */
+    RTOS_SCHED_ASSERT(g_running->state == TASK_RUNNING
+                      || g_running->state == TASK_READY);
     if (g_running->state == TASK_READY) ready_remove(g_running);
     g_running->state = TASK_BLOCKED;
     g_running->wait_obj = q;

@@ -68,6 +68,42 @@ void rtos_cancel_timed_wait(task_t *t);
 /* IPC 内部：判断“真 ISR（排除 SVC 重入）”（ipc_sem.c 定义；各 ipc_*.c 共用） */
 int rtos_ipc_in_isr(void);
 
+/* ---------------------------------------------------------------------------
+ * 调度器链表完整性断言（硬实时内核调试辅助，零挂起风险）
+ *
+ * 协作式调度 + sched_lock/yield 交互历史上导致 RUNNING 任务的 TCB 同时挂在
+ * “就绪”与“睡眠/等待”两条链表上（双挂），节拍 ISR 遍历损坏的 sched_next
+ * 时越界/死循环 → 随机 HardFault。为定位第一个破坏者，在关键摘除点加断言，
+ * 命中时【不】触发异常（避免在临界区内重入 fault handler），而是置一个粘性
+ * 标志并把“被双挂的任务”指针记录下来，供调试器 / RTOSALL 自检读取。
+ *
+ * 设计取舍：
+ *   - 不停机、不关中断，绝不引入新的挂起路径（硬实时内核红线）。
+ *   - RTOS_SCHED_ASSERT 默认开启；发布构建可 #define RTOS_SCHED_ASSERT_OFF 关闭
+ *     （仅在 rtos_internal.h 顶部，对 production 镜像零开销）。
+ *   - 断言失败计数器 g_sched_invariant_fail 单调递增，故即便破坏者已被后续
+ *     调度覆盖，也保留“曾发生过”的证据；g_sched_bad_tcb 指向最近一次命中时的 TCB。
+ * ------------------------------------------------------------------------- */
+#ifndef RTOS_SCHED_ASSERT_OFF
+  #define RTOS_SCHED_ASSERT(cond)                                          \
+      do {                                                                 \
+          if (!(cond)) { rtos_sched_assert_fail((const char *)__FILE__,    \
+                                                (int)__LINE__); }          \
+      } while (0)
+#else
+  #define RTOS_SCHED_ASSERT(cond) do { (void)0; } while (0)
+#endif
+
+/* 断言失败记录器（sched.c 定义；rtos_internal.h 声明以便跨 core 文件调用） */
+void rtos_sched_assert_fail(const char *file, int line);
+
+/* 粘性标志：链表不变量被破坏的次数（永不清零，单调递增） */
+extern volatile uint32_t g_sched_invariant_fail;
+/* 最近一次破坏发生时涉及的 TCB（指向其 prio/state/链表指针，供调试器解析） */
+extern volatile task_t  *g_sched_bad_tcb;
+/* 最近一次断言失败的源文件行号（便于无符号也能定位） */
+extern volatile uint32_t g_sched_bad_line;
+
 /* 调度器全局（sched.c 定义；task.c / syscalls.c 引用） */
 extern task_t          *g_running;
 extern volatile uint32_t g_tick;

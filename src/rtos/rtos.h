@@ -55,6 +55,16 @@ struct task {
      * 节拍超时已触发、任务已从等待队列摘除并置 READY。 */
     uint8_t        wait_armed;
     uint8_t        timed_out;
+    /* ---- 硬实时扩展（见 docs/rtos-hard-realtime-plan.md 阶段1）----
+     * 全部默认 0 = 非实时任务，语义不变、零回归。仅 rt_class!=0 的任务参与违约检测。 */
+    uint8_t        rt_class;     /* 0=非实时(默认) 1=硬实时 2=软实时 */
+    uint8_t        npls_hold;    /* 持有非抢占临界区(锁调度)标记（阶段2用） */
+    uint32_t       deadline_ticks; /* 相对释放时间的截止期(0=无截止期) */
+    uint32_t       release_tick;   /* 最近一次被释放/唤醒的 tick（WCRT/违约计算基准） */
+    uint32_t       wcet_ticks;     /* 单次运行最坏预算(0=不限)，超出即 WCET 违约 */
+    uint32_t       budget_used;    /* 当前运行窗口已用 tick（tick 累加，释放清零） */
+    volatile uint32_t deadline_miss; /* 截止期违约计数（粘性，永不清零） */
+    volatile uint32_t wcet_miss;      /* WCET 预算超出计数（粘性） */
 };
 
 /* ---- 内核生命周期 ---- */
@@ -175,6 +185,16 @@ uint8_t     rtos_task_prio(int i);
 task_state_t rtos_task_state(int i);
 task_t     *rtos_task_ptr(int i);   /* 按索引取 TCB（栈水位/诊断用） */
 
+/* ---- 硬实时属性访问器（阶段1；见 docs/rtos-hard-realtime-plan.md） ---- */
+uint8_t  rtos_task_rt_class(int i);
+uint32_t rtos_task_deadline(int i);
+uint32_t rtos_task_wcet(int i);
+uint32_t rtos_task_budget(int i);
+uint32_t rtos_task_deadline_miss(int i);
+uint32_t rtos_task_wcet_miss(int i);
+/* 硬实时违约汇总查询（供 RTOSALL 自检与看门狗读取） */
+uint32_t rtos_rt_violation(void);   /* 返回 g_rtos_deadline_violation | wcet */
+
 /* ---- 内部：等待队列（供 osal_rtos.c / core/ipc_*.c 复用） ---- */
 void  rtos_waitq_add(void **head, task_t *t);
 task_t *rtos_waitq_pop_highest(void **head);
@@ -187,6 +207,35 @@ void  rtos_set_eff_prio(task_t *t, uint8_t new_prio);
 void rtos_stack_fill_sentinel(task_t *t);
 int  rtos_stack_check_sentinel(task_t *t);
 extern volatile int g_stack_overflow;
+
+/* ---- 调度器链表完整性断言标志（sched.c 定义；见 core/rtos_internal.h） ----
+ * 协作式调度 + sched_lock/yield 交互若导致 TCB 双挂（同时挂在两条链表），
+ * RTOS_SCHED_ASSERT 命中时置位并递增计数（不触发异常、不停机，零挂起风险）。
+ * 自检（RTOSALL/stress/p4/robust）应校验其保持为 0，否则说明链表被破坏。 */
+extern volatile uint32_t g_sched_invariant_fail;
+extern volatile task_t  *g_sched_bad_tcb;
+extern volatile uint32_t g_sched_bad_line;
+
+/* ---- 硬实时违约标志（sched.c 定义；见 docs/rtos-hard-realtime-plan.md 阶段1） ----
+ * 任一硬实时任务的截止期/wcet 被突破，对应粘性计数递增，并把“曾发生过违约”汇总到
+ * g_rtos_deadline_violation。零挂起风险：不触发异常、不停机，仅置位供诊断/看门狗读取。
+ * 自检（RTOSALL）应校验其保持为 0；控制台 RTOSDEADLINE 命令打印分解计数。 */
+extern volatile uint32_t g_rtos_deadline_violation;  /* OR 所有硬实时任务违约 */
+extern volatile uint32_t g_rtos_wcet_violation;      /* 单独的 WCET 违约 OR */
+
+/* ---- 硬实时任务属性与创建（阶段1） ----
+ * rt_class: 0=非实时(默认) 1=硬实时 2=软实时。
+ * deadline_ticks: 相对释放时间的最坏完成期限(0=无截止期)。
+ * wcet_ticks: 单次运行最坏预算(0=不限)，超出即 WCET 违约。
+ * 非实时任务用 rtos_task_create / rtos_task_create_ex（attr=NULL），新字段全 0，零回归。 */
+typedef struct {
+    uint8_t  rt_class;
+    uint32_t deadline_ticks;
+    uint32_t wcet_ticks;
+} rtos_task_attr_t;
+void rtos_task_create_rt(const char *name, void (*entry)(void *), void *arg,
+                         uint8_t prio, void *stack, size_t stack_size,
+                         uint8_t priv, const rtos_task_attr_t *attr);
 
 /* ---- 栈水位（docs/rtos-test-plan.md §6.5）：创建任务时把“未使用区域”填 0xEE，
  * 运行时任务压栈从高地址向低地址覆盖真实数据；rtos_stack_used/free 从栈顶向下

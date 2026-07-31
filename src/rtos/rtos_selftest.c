@@ -317,5 +317,14 @@ int rtos_selftest_run_all(void) {
         log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] %s: %s\n", nm, r ? "PASS" : "FAIL");
     }
     log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] ALL: %s\n", ok ? "PASS" : "FAIL");
+    /* 硬实时违约兜底（阶段1）：若 RTOSALL 运行期间任一硬实时任务突破截止期/WCET，
+     * 即便各子模块自身 PASS，整体也必须 FAIL（严格硬实时契约）。当前无硬实时任务，
+     * rtos_rt_violation() 恒为 0，零回归。 */
+    if (rtos_rt_violation() != 0) {
+        ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SELFTEST] HARD-RT VIOLATION: deadline/wcet missed (violation=%lu)\n",
+                   (unsigned long)rtos_rt_violation());
+    }
     return ok;
 }

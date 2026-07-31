@@ -191,6 +191,30 @@ static void cmd_rtosmpu(app_ctx_t *c, const char *line) { (void)line; selftest_r
 static void cmd_rtosstress(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSSTRESS", rtos_stress_selftest()); }
 static void cmd_rtosp4(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSP4", rtos_p4_selftest()); }
 static void cmd_rtosall(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSALL", rtos_selftest_run_all()); }
+static void cmd_rtosdeadline(app_ctx_t *c, const char *line) {
+    (void)line;
+    /* 硬实时违约报告（阶段1）：打印每个硬实时/软实时任务的 deadline/wcet/预算/违约计数，
+     * 并汇总 g_rtos_deadline_violation。非实时任务(rt_class==0)不列出。 */
+    int n = rtos_task_count();
+    int listed = 0;
+    for (int i = 0; i < n; i++) {
+        uint8_t rc = rtos_task_rt_class(i);
+        if (rc == 0) continue;
+        const char *nm = rtos_task_name(i);
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[DEADLINE] %s class=%u prio=%u deadline=%lu wcet=%lu budget=%lu dmiss=%lu wmiss=%lu\n",
+                   nm ? nm : "?", (unsigned)rc, (unsigned)rtos_task_prio(i),
+                   (unsigned long)rtos_task_deadline(i), (unsigned long)rtos_task_wcet(i),
+                   (unsigned long)rtos_task_budget(i),
+                   (unsigned long)rtos_task_deadline_miss(i),
+                   (unsigned long)rtos_task_wcet_miss(i));
+        listed++;
+    }
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[DEADLINE] listed=%d violation=%lu (deadline|wcet)\n",
+               listed, (unsigned long)rtos_rt_violation());
+    selftest_reply(c, "RTOSDEADLINE", rtos_rt_violation() == 0);
+}
 static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFPU", rtos_fpu_selftest()); }
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
@@ -463,6 +487,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSSTRESS", cmd_rtosstress, 0 },
     { "RTOSP4",   cmd_rtosp4,   0 },
     { "RTOSALL",  cmd_rtosall,  0 },
+    { "RTOSDEADLINE", cmd_rtosdeadline, 0 },
     { "RTOSFPU",  cmd_rtosfpu,  0 },
     { "RTOSBH",   cmd_rtosbh,   0 },
     { "RTOSTIMER", cmd_rtostimer, 0 },
