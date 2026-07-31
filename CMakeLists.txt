@@ -140,6 +140,7 @@ if(RTOS)
     src/rtos/core/ipc_mq.c
     src/rtos/core/ipc_event.c
     src/rtos/core/ipc_bus.c
+    src/rtos/core/rtos_sched_analysis.c  # 阶段3 可调度性静态自检(WCRT/RTA)
     src/rtos/rtos_watchdog.c    # §6.4 看门狗喂狗(定时任务驱动) + 马拉松长跑任务组 + 复位原因
                                 #     （含生产函数 rtos_watchdog_*/rtos_marathon_*，常编；仅末尾
                                 #      自测函数 rtos_watchdog_selftest 受 #if RTOS_SELFTEST 门控）
@@ -250,6 +251,7 @@ if(COVERAGE AND RTOS)
     src/rtos/core/ipc_mq.c
     src/rtos/core/ipc_event.c
     src/rtos/core/ipc_bus.c
+    src/rtos/core/rtos_sched_analysis.c
     src/rtos/arch/cortex_m/port.c
     src/rtos/arch/cortex_m/mpu.c)
   if(RTOS_SELFTEST)

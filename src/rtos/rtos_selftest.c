@@ -336,6 +336,15 @@ int rtos_selftest_run_all(void) {
                    "[SELFTEST] CRIT OVERFLOW: long critical section held >%d ticks (overflow=%lu)\n",
                    (int)RTOS_CRIT_MAX_TICKS, (unsigned long)rtos_rt_crit_overflow());
     }
+    /* 阶段3 可调度性兜底：若启动期 RTA 发现硬实时任务集在截止期内不可调度，
+     * 整体必须 FAIL（严格硬实时契约）。当前无硬实时任务，g_rtos_sched_invalid
+     * 恒为 0，零回归。 */
+    if (rtos_rt_sched_invalid() != 0) {
+        ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SELFTEST] SCHED INFEASIBLE: %lu hard-rt task(s) miss deadline (WCRT>deadline)\n",
+                   (unsigned long)rtos_rt_sched_invalid());
+    }
     return ok;
 }
 
@@ -393,3 +402,74 @@ int rtos_crit_selftest(void) {
     return ok;
 }
 RTOS_SELFTEST_ADD("crit", rtos_crit_selftest);
+
+/* ---------------------------------------------------------------------------
+ * 阶段3 自测：可调度性静态自检（见 docs/rtos-hard-realtime-plan.md §4）
+ *   正例：已知可调度的硬实时集 → rtos_wcrt_compute 返回 0（全 WCRT<=deadline）。
+ *   反例：故意构造过载/违约集 → rtos_wcrt_compute 返回 >0 且能指出违约任务。
+ *   rtos_sched_validate 对当前（无硬实时任务的）系统应返回 0，对注入的违约
+ *   任务集应抓出。全部纯函数/只读扫描，不创建任务、不阻塞调度，零回归。
+ * ------------------------------------------------------------------------- */
+int rtos_sched_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[SCHED] self-test begin\n");
+
+    /* 正例 A：两个硬实时任务，高优 C=2/T=10，低优 C=3/T=20。
+     *   task0(prio0): WCRT = 2 <= 10  OK
+     *   task1(prio1): WCRT = 3 + ⌈W/10⌉*2，迭代: W=3→3+⌈3/10⌉*2=5→5+⌈5/10⌉*2=7
+     *                →7+⌈7/10⌉*2=9→9+⌈9/10⌉*2=11>20? 否，11<=20 OK（实际收敛到 11）
+     *   故应全可调度。 */
+    {
+        uint32_t C[2] = {2, 3};
+        uint32_t T[2] = {10, 20};
+        uint8_t  P[2] = {0, 1};
+        uint32_t wcrt[2];
+        int inf = rtos_wcrt_compute(C, T, P, 2, wcrt);
+        if (inf != 0) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SCHED] A feasible set infeasible=%d (expect 0): %s\n",
+                   inf, ok ? "PASS" : "FAIL");
+    }
+
+    /* 反例 B：低优任务截止期过小导致违约。
+     *   task0(prio0): C=5/T=10  WCRT=5<=10 OK
+     *   task1(prio1): C=8/T=10  WCRT=8+⌈W/10⌉*5; W=8→8+⌈8/10⌉*5=13>10 → INFEASIBLE
+     *   rtos_wcrt_compute 应返回 1（task1 违约）。 */
+    {
+        uint32_t C[2] = {5, 8};
+        uint32_t T[2] = {10, 10};
+        uint8_t  P[2] = {0, 1};
+        uint32_t wcrt[2];
+        int inf = rtos_wcrt_compute(C, T, P, 2, wcrt);
+        if (inf != 1) ok = 0;   /* 恰好 1 个违约 */
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SCHED] B infeasible set infeasible=%d (expect 1): %s\n",
+                   inf, ok ? "PASS" : "FAIL");
+    }
+
+    /* 反例 C：单任务自身 C>T 直接违约。C=12/T=10 → WCRT=12>10 → infeasible。 */
+    {
+        uint32_t C[1] = {12};
+        uint32_t T[1] = {10};
+        uint8_t  P[1] = {0};
+        uint32_t wcrt[1];
+        int inf = rtos_wcrt_compute(C, T, P, 1, wcrt);
+        if (inf != 1) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SCHED] C self-overrun infeasible=%d (expect 1): %s\n",
+                   inf, ok ? "PASS" : "FAIL");
+    }
+
+    /* rtos_sched_validate 对「无硬实时任务」系统应返回 0（当前 RTOSALL 环境）。 */
+    {
+        int inf = rtos_sched_validate();
+        if (inf != 0) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SCHED] D live validate (no hard-rt) infeasible=%d (expect 0): %s\n",
+                   inf, ok ? "PASS" : "FAIL");
+    }
+
+    log_printf(app_log(), LOG_INFO, "rtos", "[SCHED] self-test: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+RTOS_SELFTEST_ADD("sched", rtos_sched_selftest);

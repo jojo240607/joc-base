@@ -237,6 +237,21 @@ void rtos_unlock_scheduler(void);
 extern volatile uint32_t g_rtos_crit_overflow;
 uint32_t rtos_rt_crit_overflow(void);   /* 返回 g_rtos_crit_overflow（看门狗聚合用） */
 
+/* ---- 可调度性静态自检（阶段3，core/rtos_sched_analysis.c） ----
+ * 固定优先级「响应时间分析（RTA/WCRT）」在启动/测试期证明硬实时任务集在截止期内
+ * 可调度的。若 WCRT > deadline 即判定不可调度，粘性计数 g_rtos_sched_invalid 递增
+ * （存违约任务数）。零挂起风险：不触发异常、不停机，仅置位供诊断/看门狗/RTOSALL 读取。 */
+extern volatile uint32_t g_rtos_sched_invalid;   /* >0 = 存在截止期内不可调度的硬实时任务 */
+uint32_t rtos_rt_sched_invalid(void);   /* 返回 g_rtos_sched_invalid（看门狗聚合用） */
+/* 纯函数 RTA：对传入 (C=WCET, T=截止期/周期, P=优先级) 数组算 WCRT；返回不可调度任务数
+ *（0=全可调度，负数=参数非法）；wcrt_out 输出每个任务的最坏响应时间。 */
+int  rtos_wcrt_compute(const uint32_t *C, const uint32_t *T, const uint8_t *P,
+                       int n, uint32_t *wcrt_out);
+/* 扫描当前任务池硬实时任务跑 RTA，置位 g_rtos_sched_invalid，打印明细；返回违约任务数。 */
+int  rtos_sched_validate(void);
+/* 控制台 RTOSSCHED 用的详细打印（每任务 C/T/P/WCRT）。 */
+void rtos_sched_analysis_print(void);
+
 /* 优先级天花板辅助（RTOS_LOCK_CEILING 宏用，仅任务上下文）：把当前任务有效优先级
  * 顶到 ceil_prio 并返回原优先级；restore 恢复原优先级。 */
 uint8_t rtos_task_raise_prio(uint8_t ceil_prio);

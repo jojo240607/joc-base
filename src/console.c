@@ -225,6 +225,13 @@ static void cmd_rtoscrit(app_ctx_t *c, const char *line) {
                (unsigned long)ov, (int)RTOS_CRIT_MAX_TICKS);
     selftest_reply(c, "RTOSCRIT", ov == 0);
 }
+static void cmd_rtossched(app_ctx_t *c, const char *line) {
+    (void)line;
+    /* 阶段3 可调度性静态自检报告：打印每个硬实时任务的 C/T/P/WCRT 与总体
+     * 利用率、违约数（g_rtos_sched_invalid）。详细 RTA 见 rtos_sched_analysis.c。 */
+    rtos_sched_analysis_print();
+    selftest_reply(c, "RTOSSCHED", rtos_rt_sched_invalid() == 0);
+}
 static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFPU", rtos_fpu_selftest()); }
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
@@ -499,6 +506,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSALL",  cmd_rtosall,  0 },
     { "RTOSDEADLINE", cmd_rtosdeadline, 0 },
     { "RTOSCRIT",     cmd_rtoscrit,     0 },
+    { "RTOSSCHED",    cmd_rtossched,    0 },
     { "RTOSFPU",  cmd_rtosfpu,  0 },
     { "RTOSBH",   cmd_rtosbh,   0 },
     { "RTOSTIMER", cmd_rtostimer, 0 },

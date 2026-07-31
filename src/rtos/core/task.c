@@ -250,6 +250,10 @@ void rtos_start(void) {
 #if RTOS_USE_MPU
     rtos_mpu_init();     /* 配置固定区域并使能 MPU + MemManage（对特权任务透明） */
 #endif
+    /* 阶段3：启动期可调度性静态自检（固定优先级 RTA）。即便发现不可调度任务也不
+     * 阻塞 boot（只置位粘性标志 g_rtos_sched_invalid 供 RTOSALL/看门狗读取）；
+     * 当前系统无硬实时任务，平凡通过、零回归。 */
+    rtos_sched_validate();
     rtos_arch_start();   /* 触发 SVC；切换后不再返回原线程 */
 }
 
