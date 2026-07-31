@@ -163,9 +163,11 @@ HardFault_Handler:
     mrseq  r0, MSP
     mrsne  r0, PSP
     mov    r1, lr           /* arg2 = EXC_RETURN */
-    mov    r4, lr           /* 用 callee-saved 保存 EXC_RETURN */
-    bl     rtos_fault_handler
-    bx     r4              /* 用保存的 EXC_RETURN 做真正的异常返回 */
+    b      rtos_fault_handler   /* 尾调用：lr 始终为 EXC_RETURN，C 侧以 bx lr 完成
+                                   真正的异常返回；不占用 r4 这类 callee-saved，
+                                   避免破坏任务的 r4-r11（异常返回不恢复它们，若被
+                                   EXC_RETURN 覆盖会导致任务寄存器被破坏，如 ok 变
+                                   0xFFFFFFFD）。与 MemManage_Handler 同构。 */
 
     /* UsageFault：INVSTATE/UNDEFINSTR 等在此首次被捕获（未升级为 HardFault），
      * 栈帧干净，便于定位故障 PC。与 HardFault 共用 C 侧处理。 */
@@ -177,10 +179,8 @@ UsageFault_Handler:
     ite    eq
     mrseq  r0, MSP
     mrsne  r0, PSP
-    mov    r1, lr
-    mov    r4, lr
-    bl     rtos_fault_handler
-    bx     r4
+    mov    r1, lr           /* arg2 = EXC_RETURN */
+    b      rtos_fault_handler   /* 尾调用（见 HardFault_Handler 注释） */
 
     /* BusFault：总线错误（如 MPU 区域外对齐访问）同样交 C 侧处理。 */
     .global BusFault_Handler
@@ -191,7 +191,5 @@ BusFault_Handler:
     ite    eq
     mrseq  r0, MSP
     mrsne  r0, PSP
-    mov    r1, lr
-    mov    r4, lr
-    bl     rtos_fault_handler
-    bx     r4
+    mov    r1, lr           /* arg2 = EXC_RETURN */
+    b      rtos_fault_handler   /* 尾调用（见 HardFault_Handler 注释） */

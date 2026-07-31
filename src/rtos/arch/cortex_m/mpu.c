@@ -256,7 +256,13 @@ int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     if (g_robust_fault_active) {
         g_robust_fault_cfsr = cfsr;
         uint32_t *lr_slot = frame + fo + 5u;
-        *pc_slot = *lr_slot;                 /* 跳过故障指令，回到调用者 */
+        /* 跳过故障指令：把异常返回 PC 改为触发函数的返回地址（栈帧 LR 槽），
+         * 使异常返回等价于“从 rb_*_trigger 正常返回”，越过 udf #0 / sdiv 故障指令。
+         * 注意：此恢复只能在“UsageFault 未被 PRIMASK 升级为 HardFault”时成立——
+         * 即触发点不能关中断(cpsid i)，否则 UsageFault 被屏蔽升级为 HardFault，
+         * 此时栈帧 LR 槽装的是 EXC_RETURN(0xFFFFFFFD) 而非真实返回地址，恢复会错位
+         * 成 -3。因此 rb_div0/rb_udf 触发任务均不得用 cpsid i 包裹触发指令。 */
+        *pc_slot = *lr_slot;
         SCB->CFSR = cfsr;                    /* 写 1 清除故障状态位 */
         __ISB();
         return 1;

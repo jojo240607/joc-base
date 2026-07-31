@@ -46,7 +46,18 @@ static void rb_div0_trigger(void) {
 static void rb_div0_task(void *arg) {
     (void)arg;
     g_rb_div0_survived = 0; g_rb_div0_done = 0;
-    rb_div0_trigger();        /* 触发 DIVBYZERO；故障钩子跳过 sdiv 后回到此处继续 */
+    /* 收窄 DIV_0_TRP 作用域：仅在“触发除法”这一瞬间的本任务上下文内开启，
+     * 且关中断——杜绝窗口内其它任务/ISR 除零被一并静默跳过（曾导致野写改写
+     * g_app_ctx.uart 并污染 CCM 栈返回地址，控制台假死后卡死）。
+     * 顺序：先关中断再置位恢复标志，确保“恢复模式”窗口内只有预期的那条 sdiv
+     * 能触发 fault，任何其它上下文的除零都不可能被错误跳过。 */
+    __asm volatile("cpsid i" ::: "memory");    /* 关中断：窗口内无其它上下文能除零 */
+    g_robust_fault_active = 1;                 /* 故障钩子进入“恢复”模式 */
+    SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;         /* 仅本任务、极短窗口内使能 */
+    rb_div0_trigger();                         /* 触发 DIVBYZERO；故障钩子跳过 sdiv 后回到此处继续 */
+    SCB->CCR &= ~SCB_CCR_DIV_0_TRP_Msk;        /* 还原（仍在关中断内） */
+    g_robust_fault_active = 0;
+    __asm volatile("cpsie i" ::: "memory");
     g_rb_div0_survived = 1;   /* 故障钩子跳过故障指令后，此处继续执行 */
     g_rb_div0_done = 1;
     rtos_msleep(10);
@@ -67,7 +78,14 @@ static void rb_udf_trigger(void) {
 static void rb_udf_task(void *arg) {
     (void)arg;
     g_rb_udf_survived = 0; g_rb_udf_done = 0;
+    /* UDF 没有“全局陷阱开关”（UNDEFINSTR 永远触发），不存在 DIV0 那种“全局窗口
+     * 吞掉其它上下文除零”的野写风险；故只需把 g_robust_fault_active 收窄到触发
+     * 指令本身即可，且【不能关中断】：PRIMASK=1 会屏蔽可配置优先级的 UsageFault，
+     * 使其升级为 HardFault，升级路径下恢复逻辑拿到的栈帧 LR 是 EXC_RETURN，恢复
+     * 错位会令 survived 变成 0xFFFFFFFD(-3)。保留原行为（不关中断）即恢复 PASS。 */
+    g_robust_fault_active = 1;
     rb_udf_trigger();         /* 触发 UNDEFINSTR；恢复后回到此处继续 */
+    g_robust_fault_active = 0;
     g_rb_udf_survived = 1;
     g_rb_udf_done = 1;
     rtos_msleep(10);
@@ -230,18 +248,14 @@ int rtos_robust_selftest(void) {
 
     /* ---------- §3.1 除零 ---------- */
     {
-        SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;     /* 使能除零 fault */
         g_robust_fault_cfsr = 0;
         g_rb_div0_survived = 0; g_rb_div0_done = 0;
-        g_robust_fault_active = 1;             /* 故障钩子进入“恢复”模式 */
         RTOS_TASK_STACK(std, 512);
         rtos_task_create("rbdiv0", rb_div0_task, (void *)0, 14, std, sizeof(std));
         uint32_t to = 0;
         while (!g_rb_div0_done && to < 1000) { rtos_msleep(2); to += 2; }
         /* DIVBYZERO = CFSR bit25 (SCB_CFSR_DIVBYZERO_Msk) */
         int lok = (g_rb_div0_survived == 1) && ((g_robust_fault_cfsr & (1u << 25u)) != 0);
-        g_robust_fault_active = 0;
-        SCB->CCR &= ~SCB_CCR_DIV_0_TRP_Msk;    /* 还原 */
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[ROBUST] div0 UsageFault recovered: survived=%d cfsr=0x%lx %s\n",
@@ -254,14 +268,12 @@ int rtos_robust_selftest(void) {
     {
         g_robust_fault_cfsr = 0;
         g_rb_udf_survived = 0; g_rb_udf_done = 0;
-        g_robust_fault_active = 1;
         RTOS_TASK_STACK(stu, 512);
         rtos_task_create("rbudf", rb_udf_task, (void *)0, 14, stu, sizeof(stu));
         uint32_t to = 0;
         while (!g_rb_udf_done && to < 1000) { rtos_msleep(2); to += 2; }
         /* UNDEFINSTR = CFSR bit16 (SCB_CFSR_UNDEFINSTR_Msk) */
         int lok = (g_rb_udf_survived == 1) && ((g_robust_fault_cfsr & (1u << 16u)) != 0);
-        g_robust_fault_active = 0;
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[ROBUST] udf UsageFault recovered: survived=%d cfsr=0x%lx %s\n",

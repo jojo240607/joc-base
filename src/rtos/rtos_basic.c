@@ -24,6 +24,10 @@
 #define T01_MAX RTOS_MAX_TASKS
 /* 测试 filler 任务栈：放主 SRAM(.bss)，不占 CCM（无 DMA，纯 CPU）。 */
 static uint8_t t01_stack[T01_MAX][256] __attribute__((aligned(256)));
+/* 池满后的“拒绝探测”专用栈：进入 T01 时若全部槽已为 DEAD（watermark 高但无活任务），
+ * 48 次填充创建会全部成功把池填满而未触发拒绝；此时再创建一次验证“池满静默拒绝”。
+ * 该次创建必被拒，不会真正使用此栈，但需一个合法栈指针入参（避免传悬空/越界指针）。 */
+static uint8_t t01_rej_stack[256] __attribute__((aligned(8)));
 static volatile int g_t01_stop;
 static void t01_filler(void *arg) {
     (void)arg;
@@ -117,24 +121,41 @@ int rtos_basic_selftest(void) {
     {
         int b = rtos_task_count();
         g_t01_stop = 0;
-        int made = 0;
+        int made = 0, rejected = 0;
+        /* 用 rtos_kobj_lookup 判空探测“创建是否被接受/拒绝”，而非比较 g_task_count 增量：
+         * 本 RTOS 的 g_task_count 是“历史分配槽高水位”（任务退出变 DEAD 后槽位被复用、
+         * 计数不降，见 rtos_ostest.c TC-TASK-001 注释），故“复用 DEAD 槽”不会让 count
+         * 增长。若用 count 增量判据，一旦进入 T01 前已有 DEAD 槽（如 RTOSROBUST 遗留），
+         * 首轮复用即 after==before 触发 break，误报 made=0 / limit 不足。
+         * kobj_lookup 在 create 成功(无论新槽还是复用 DEAD 槽)时都会注册名字，拒绝时为
+         * NULL，故能干净区分“成功”与“池满拒绝”（同 TC-TASK-005 手法）。 */
         for (int i = 0; i < T01_MAX; i++) {
-            int before = rtos_task_count();
             char nm[8];
             /* 用编号名避免 kobj 同名覆盖影响判定 */
             nm[0] = 'f'; nm[1] = '0' + (char)(i / 10); nm[2] = '0' + (char)(i % 10);
             nm[3] = 0;
             rtos_task_create(nm, t01_filler, (void *)0, 20,
                              t01_stack[i], sizeof(t01_stack[i]));
-            int after = rtos_task_count();
-            if (after > before) made++;
-            else break;   /* 池满：create 静默失败，count 不再增长 */
+            if (!rtos_kobj_lookup(nm)) { rejected = 1; break; }  /* 池耗尽：静默拒绝 */
+            made++;
+        }
+        if (!rejected) {
+            /* 进入 T01 时全部槽已为 DEAD（watermark 高但无活任务）：48 次填充创建全部
+             * 成功把池填满而未触发拒绝（kobj_lookup 始终非空），故上面循环未 break。
+             * 再显式创建一次验证“池满静默拒绝”，确保 rejected 判据成立。该次创建必被拒。 */
+            rtos_task_create("fREJ", t01_filler, (void *)0, 20,
+                             t01_rej_stack, sizeof(t01_rej_stack));
+            rejected = !rtos_kobj_lookup("fREJ");
         }
         int limit = rtos_task_count();
-        int lok = (limit == RTOS_MAX_TASKS) && (made == (RTOS_MAX_TASKS - b));
+        /* 判定：填满到容量上限(limit==RTOS_MAX_TASKS) + 确实触发拒绝(rejected) +
+         * 至少建出 1 个 + 计数未越界。created(made) 含复用 DEAD 槽，故不与 RTOS_MAX_TASKS-b
+         * 强绑定（那是 watermark 语义下的特例，DEAD 槽存在时不成立）。 */
+        int lok = (limit == RTOS_MAX_TASKS) && rejected && (made >= 1)
+                  && (limit <= RTOS_MAX_TASKS);
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
-                   "[BASIC] T01 max-tasks: base=%d made=%d limit=%d (expect %d) %s\n",
+                   "[BASIC] T01 max-tasks: base=%d made=%d limit=%d (cap %d) %s\n",
                    b, made, limit, RTOS_MAX_TASKS, lok ? "PASS" : "FAIL");
         RTOS_TEST_RESULT("T01_CreateMaxTasks", lok);
 
