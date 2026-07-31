@@ -73,6 +73,29 @@
   #define RTOS_TIME_SLICE_TICKS 5   /* 每个任务连续运行 5 个节拍(5ms @1kHz)后让出 */
 #endif
 
+/* 硬实时临界区持锁上限（见 docs/rtos-hard-realtime-plan.md 阶段2）：任何内核临界区
+ * （rtos_crit_enter/exit、sched_lock 区间）的持有时长超过此 tick 数，即判定为
+ * “长临界区阻塞高优任务”，递增粘性计数 g_rtos_crit_overflow（不触发异常、不停机）。
+ * 默认 2ms@1kHz：高于典型 PendSV 切换(<30us) 两个数量级，仅抓真正危险的过长持锁。
+ * 设 0 关闭审计（编译期）。
+ *
+ * 实现注意：锁调度/临界区用 BASEPRI 屏蔽了 SysTick（systick 优先级 15 落在被屏蔽带），
+ * 故“持锁期间经过的 tick 数”概念不成立；审计改用 DWT CYCCNT（rtos_cycle_now，零延迟
+ * ISR 仍计数、不受 BASEPRI 影响）测量真实持锁周期数，再换算成 tick 等价阈值。
+ * 阈值周期 = RTOS_CRIT_MAX_TICKS * (RTOS_CPU_HZ / RTOS_TICK_HZ)。 */
+#ifndef RTOS_CPU_HZ
+  #define RTOS_CPU_HZ 168000000UL   /* 本项目 STM32F407 HCLK = 168 MHz */
+#endif
+#ifndef RTOS_CRIT_MAX_TICKS
+  #define RTOS_CRIT_MAX_TICKS 2
+#endif
+#ifndef RTOS_CRIT_MAX_CYCLES
+  /* 阈值周期 = RTOS_CRIT_MAX_TICKS * (RTOS_CPU_HZ / RTOS_TICK_HZ)
+   * = 2 * (168000000 / 1000) = 336000 cycles（< uint32 上限，故直接整数常量）。
+   * 若调整 RTOS_CRIT_MAX_TICKS / RTOS_CPU_HZ，请同步重算此值。 */
+  #define RTOS_CRIT_MAX_CYCLES 336000U
+#endif
+
 /* 零延迟 IRQ / BASEPRI 阈值（见 docs/rtos-design.md §4.5）：高于该“优先级数”的极少
  * 数最高优先级 ISR 永不被内核临界区屏蔽（用 BASEPRI 而非 PRIMASK 关中断）。
  * 本项目默认 4 = 启用选择性屏蔽：配合语义带 IRQ_PRIO_KERNEL=5 / IRQ_PRIO_ZERO_LATENCY=2

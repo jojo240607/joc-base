@@ -17,6 +17,13 @@
  * 优先级 >= 阈值的中断（更高优先级的零延迟 ISR 仍可达），否则退化为 PRIMASK
  * 全局关中断（与此前行为完全一致）。两个分支返回类型相同（unsigned），调用方
  * 用 `unsigned st = rtos_crit_enter(); ... rtos_crit_exit(st);` 即可，无需感知分支。 */
+
+/* 临界区审计辅助（sched.c 定义）：mark 记录最外层进入 cycle（嵌套计数保护）；
+ * audit 在退出最外层临界区时比较当前 cycle，超 RTOS_CRIT_MAX_CYCLES 则递增
+ * g_rtos_crit_overflow（粘性，零挂起风险）。声明前置，供下方 inline 调用。 */
+void rtos_crit_enter_mark(void);
+void rtos_crit_exit_audit(void);
+
 #if RTOS_MAX_ZERO_LATENCY_IRQS > 0
 /* BASEPRI 临界区原语——设计对标 FreeRTOS 的 portSET/CLEAR_INTERRUPT_MASK_FROM_ISR：
  *   enter：先 `mrs` 读出【当前】BASEPRI 存进局部变量 saved（保存掩码），
@@ -26,7 +33,13 @@
  * 不会破坏外层屏蔽状态；否则临界区会在嵌套时失效，就绪/等待链表被并发改写、调度器损坏。
  *
  * BASEPRI 写入的是“已左移 (8-__NVIC_PRIO_BITS) 位的硬件优先级值”；NVIC_SetPriority
- * 内部会再移位一次，故这里不走 NVIC_SetPriority，直接算好移位值写入。 */
+ * 内部会再移位一次，故这里不走 NVIC_SetPriority，直接算好移位值写入。
+ *
+ * 阶段2 临界区审计：enter 记录进入 cycle（静态局部，嵌套时不覆盖外层起点）；exit 时
+ * 若历经 cycle 数超过 RTOS_CRIT_MAX_CYCLES，调 rtos_crit_audit() 递增粘性计数
+ * g_rtos_crit_overflow（不触发异常、不停机）。审计只在“最外层”临界区测总持有时长，
+ * 内层嵌套共用外层起点，符合“总阻塞窗口”语义。用 cycle 而非 tick：锁调度用 BASEPRI
+ * 屏蔽了 SysTick，tick 在持锁期间不前进，cycle(DWT CYCCNT) 不受 BASEPRI 影响仍计数。 */
 static inline unsigned rtos_crit_enter(void) {
     uint32_t saved;
     __asm__ volatile("mrs %0, BASEPRI" : "=r"(saved));
@@ -34,17 +47,22 @@ static inline unsigned rtos_crit_enter(void) {
                      : "r"((uint32_t)(RTOS_MAX_ZERO_LATENCY_IRQS
                                       << (8U - __NVIC_PRIO_BITS)))
                      : "memory");
+    rtos_crit_enter_mark();                  /* 记录最外层进入 cycle（嵌套安全） */
     return (unsigned)saved;            /* 保存原掩码，exit 时原样恢复 */
 }
 static inline void rtos_crit_exit(unsigned st) {
+    rtos_crit_exit_audit();                  /* 审计最外层临界区持锁时长 */
     __asm__ volatile("msr BASEPRI, %0" : : "r"((uint32_t)st) : "memory");
 }
 #else
 static inline unsigned rtos_crit_enter(void) {
-    return irq_lock();                                 /* PRIMASK 全局关中断（保存 PRIMASK） */
+    unsigned s = (unsigned)irq_lock();       /* PRIMASK 全局关中断（保存 PRIMASK） */
+    rtos_crit_enter_mark();
+    return s;
 }
 static inline void rtos_crit_exit(unsigned st) {
-    irq_unlock(st);                                    /* 从保存的 PRIMASK 值恢复，不直接开全局中断 */
+    rtos_crit_exit_audit();
+    irq_unlock((irq_state_t)st);             /* 从保存的 PRIMASK 值恢复，不直接开全局中断 */
 }
 #endif
 
@@ -109,6 +127,10 @@ extern task_t          *g_running;
 extern volatile uint32_t g_tick;
 extern int             g_rtos_started;
 /* g_in_svc 已在 rtos.h 声明（extern volatile int g_in_svc;） */
+
+/* 临界区持锁超长计数（阶段2，sched.c 定义）：任何内核临界区超过 RTOS_CRIT_MAX_TICKS
+ * 即递增（粘性、零挂起风险）。供 RTOSALL/RTOSCRIT 自检读取。 */
+extern volatile uint32_t g_rtos_crit_overflow;
 
 /* 软件定时器（core/timer.c，docs/rtos-test-plan.md §6.3）：
  *  - rtos_timer_tick 由 rtos_tick_isr 调用（ISR 上下文，已处于临界区），

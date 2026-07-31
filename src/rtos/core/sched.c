@@ -52,9 +52,71 @@ void rtos_sched_assert_fail(const char *file, int line) {
 volatile uint32_t g_rtos_deadline_violation = 0;
 volatile uint32_t g_rtos_wcet_violation     = 0;
 
+/* ---- 临界区持锁超长计数（阶段2，零挂起风险） ----
+ * 任何内核临界区（rtos_crit_enter/exit、sched_lock 区间）持续超过 RTOS_CRIT_MAX_TICKS
+ * 即递增（粘性）。把“低优长临界区阻塞高优”从不可见变为可测量。 */
+volatile uint32_t g_rtos_crit_overflow = 0;
+
+/* 临界区审计内部状态：嵌套深度 + 最外层进入 cycle。仅由 rtos_crit_enter_mark /
+ * rtos_crit_exit_audit（rtos_internal.h 内联调用）访问，都在关中断/调度锁内，单核安全。
+ * 用 cycle(DWT CYCCNT) 而非 tick：锁调度(BASEPRI)屏蔽了 SysTick，tick 在持锁期间不前进，
+ * 而 CYCCNT 不受 BASEPRI 影响、零延迟 ISR 仍计数，故能真实反映持锁时长。
+ * 注意：DWT 是调试部件，非特权态不可读（读之触发 BusFault）。非特权任务的临界区均经
+ * SVC 在 Handler 模式（特权）执行，故审计在特权态总可读；但若路径异常在非特权态进入
+ * 临界区（不应发生），直接跳过审计，避免 fault。arch_in_priv 见 common/lock.h。 */
+static int      g_crit_nest   = 0;
+static uint32_t g_crit_enter_cycle = 0;
+
+void rtos_crit_enter_mark(void) {
+    if (!arch_in_priv()) return;                  /* 非特权：跳过（规避 DWT fault） */
+    if (g_crit_nest == 0) g_crit_enter_cycle = rtos_cycle_now();  /* 仅最外层记起点 */
+    g_crit_nest++;
+}
+void rtos_crit_exit_audit(void) {
+    if (!arch_in_priv()) return;                  /* 非特权：跳过（与 mark 对称） */
+    if (g_crit_nest == 0) return;                       /* 防御：不匹配调用 */
+    g_crit_nest--;
+    if (g_crit_nest == 0) {                             /* 回到最外层：审计总持有时长 */
+#if RTOS_CRIT_MAX_CYCLES > 0
+        uint32_t held = (uint32_t)(rtos_cycle_now() - g_crit_enter_cycle);
+        if (held > (uint32_t)RTOS_CRIT_MAX_CYCLES)
+            g_rtos_crit_overflow++;
+#endif
+    }
+}
+
+/* ---- 非抢占临界区原语（阶段2，见 docs/rtos-hard-realtime-plan.md §3.1） ----
+ * rtos_lock_scheduler / rtos_unlock_scheduler：只屏蔽 PendSV（锁调度），不关中断、
+ * 不提 BASEPRI，故零延迟 ISR 仍可达；但时间片剥夺被暂停（tick 跳过 npls_hold 任务），
+ * 用于“不可被时间片打断的原子外设序列”。与现有 sched_lock(prio) 区别：本 API 以
+ * 任务为粒度维护 npls_hold 标记，且锁的是“调度”（任意 BASEPRI 阈值，统一用
+ * RTOS_MAX_ZERO_LATENCY_IRQS 阈值，与内核临界区一致），调用方无需关心优先级数。
+ * 嵌套安全：引用计数，最外层解锁才真正放开调度。 */
+static int g_npls_nest = 0;
+void rtos_lock_scheduler(void) {
+    unsigned st = rtos_crit_enter();          /* 关调度锁区间 */
+    if (g_npls_nest == 0 && g_running)
+        g_running->npls_hold = 1;             /* 仅最外层标记当前任务持非抢占锁 */
+    g_npls_nest++;
+    rtos_crit_exit(st);
+}
+void rtos_unlock_scheduler(void) {
+    unsigned st = rtos_crit_enter();
+    if (g_npls_nest == 0) { rtos_crit_exit(st); return; }   /* 防御 */
+    g_npls_nest--;
+    if (g_npls_nest == 0 && g_running)
+        g_running->npls_hold = 0;
+    rtos_crit_exit(st);
+}
+
 /* 硬实时违约汇总（供 RTOSALL 自检 / 看门狗读取）。 */
 uint32_t rtos_rt_violation(void) {
     return g_rtos_deadline_violation | g_rtos_wcet_violation;
+}
+
+/* 临界区超长计数查询（看门狗/RTOSALL 聚合用）。 */
+uint32_t rtos_rt_crit_overflow(void) {
+    return g_rtos_crit_overflow;
 }
 
 /* 硬实时辅助：任务被释放/唤醒时记录释放时刻并清零本窗口预算。
@@ -383,7 +445,11 @@ void rtos_tick_isr(void *ctx) {
         int has_peer = (g_ready_head[p] != (task_t *)0);          /* 同优先级竞争者 */
         int has_higher = (g_ready_bmp
                           & ~((1u << (p + 1)) - 1u)) != 0;        /* 更高优先级就绪 */
-        if (has_peer || has_higher) {
+        /* 阶段2：持有非抢占临界区(npls_hold)的任务，时间片剥夺被暂停——
+         * 它正在执行“不可被时间片打断的原子外设序列”，PendSV 即便被请求也不切换，
+         * 直到 rtos_unlock_scheduler 清除标记。零延迟 ISR 仍可达（BASEPRI 未提）。 */
+        int npls = (g_running->npls_hold != 0);
+        if (!npls && (has_peer || has_higher)) {
             if (g_slice_ticks == 0) g_slice_ticks = RTOS_TIME_SLICE_TICKS;
             if (--g_slice_ticks == 0) {
                 g_running->state = TASK_READY;

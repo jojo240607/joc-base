@@ -1,4 +1,5 @@
 #include "rtos.h"
+#include "rtos/core/rtos_internal.h"   /* rtos_crit_enter/exit：阶段2临界区审计自测用 */
 #include "log/log.h"
 #include "log/app_log.h"
 #include <stdint.h>
@@ -326,5 +327,69 @@ int rtos_selftest_run_all(void) {
                    "[SELFTEST] HARD-RT VIOLATION: deadline/wcet missed (violation=%lu)\n",
                    (unsigned long)rtos_rt_violation());
     }
+    /* 阶段2 临界区超长兜底：任何内核临界区持锁超过 RTOS_CRIT_MAX_TICKS 即说明存在
+     * “低优长临界区阻塞高优”风险，整体 FAIL（严格硬实时契约）。当前无长临界区，
+     * g_rtos_crit_overflow 恒为 0，零回归。 */
+    if (rtos_rt_crit_overflow() != 0) {
+        ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[SELFTEST] CRIT OVERFLOW: long critical section held >%d ticks (overflow=%lu)\n",
+                   (int)RTOS_CRIT_MAX_TICKS, (unsigned long)rtos_rt_crit_overflow());
+    }
     return ok;
 }
+
+/* ---------------------------------------------------------------------------
+ * 阶段2 自测：临界区有界性（见 docs/rtos-hard-realtime-plan.md §3）
+ *   A. rtos_lock_scheduler 标记 + 嵌套安全（npls_hold 在持锁任务 TCB 上置/清）。
+ *   B. 临界区审计：人为持锁超 RTOS_CRIT_MAX_CYCLES，g_rtos_crit_overflow 必递增。
+ *   C. RTOS_LOCK_CEILING 宏：持锁期间有效优先级顶到天花板，退出恢复。
+ * 全部同步执行于主任务上下文，不引入新任务、不阻塞调度，零回归。
+ * ------------------------------------------------------------------------- */
+int rtos_crit_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[CRIT] self-test begin\n");
+
+    /* A) 非抢占临界区标记 + 嵌套安全 */
+    rtos_lock_scheduler();
+    if (g_running->npls_hold != 1) ok = 0;
+    rtos_lock_scheduler();                 /* 嵌套：仍持锁 */
+    if (g_running->npls_hold != 1) ok = 0;
+    rtos_unlock_scheduler();               /* 内层解锁：仍持锁（引用计数） */
+    if (g_running->npls_hold != 1) ok = 0;
+    rtos_unlock_scheduler();               /* 最外层解锁：释放 */
+    if (g_running->npls_hold != 0) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos", "[CRIT] A lock_scheduler npls_hold/nest: %s\n",
+               ok ? "PASS" : "FAIL");
+
+    /* B) 临界区审计：持锁超 RTOS_CRIT_MAX_CYCLES 应递增 g_rtos_crit_overflow。
+     * 用 rtos_cycle_now 自旋（BASEPRI 屏蔽 systick 但 DWT CYCCNT 仍计数）制造长临界区。 */
+    {
+        uint32_t before = rtos_rt_crit_overflow();
+        unsigned st = rtos_crit_enter();
+        uint32_t t0 = rtos_cycle_now();
+        while ((uint32_t)(rtos_cycle_now() - t0) <= RTOS_CRIT_MAX_CYCLES) { }  /* 自旋超阈值 */
+        rtos_crit_exit(st);
+        uint32_t after = rtos_rt_crit_overflow();
+        if (after != before + 1) ok = 0;   /* 必须恰好 +1（一次最外层临界区） */
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[CRIT] B crit-audit overflow before=%lu after=%lu (expect +1): %s\n",
+                   (unsigned long)before, (unsigned long)after, ok ? "PASS" : "FAIL");
+    }
+
+    /* C) 优先级天花板宏：持锁期间有效优先级顶到 ceil，退出恢复 */
+    {
+        uint8_t save = g_running->prio;
+        RTOS_LOCK_CEILING(2) {             /* 顶到 prio 2（高于主任务 16） */
+            if (g_running->prio != 2) ok = 0;
+        }
+        if (g_running->prio != save) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[CRIT] C RTOS_LOCK_CEILING raise->%u restore->%u: %s\n",
+                   (unsigned)2, (unsigned)save, ok ? "PASS" : "FAIL");
+    }
+
+    log_printf(app_log(), LOG_INFO, "rtos", "[CRIT] self-test: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+RTOS_SELFTEST_ADD("crit", rtos_crit_selftest);

@@ -223,6 +223,36 @@ extern volatile uint32_t g_sched_bad_line;
 extern volatile uint32_t g_rtos_deadline_violation;  /* OR 所有硬实时任务违约 */
 extern volatile uint32_t g_rtos_wcet_violation;      /* 单独的 WCET 违约 OR */
 
+/* ---- 非抢占临界区原语（阶段2，见 docs/rtos-hard-realtime-plan.md §3.1） ----
+ * 只屏蔽 PendSV（锁调度），不关中断、不提 BASEPRI，故零延迟 ISR 仍可达；
+ * 但 tick 里的时间片剥夺被暂停（持有任务 npls_hold 标记），用于“不可被时间片
+ * 打断的原子外设序列”。嵌套安全（引用计数）；与内核临界区 rtos_crit_enter/exit
+ * 正交：本原语不禁止更高优先级任务被唤醒抢占，只禁止时间片轮转剥夺当前任务。 */
+void rtos_lock_scheduler(void);
+void rtos_unlock_scheduler(void);
+
+/* ---- 临界区持锁超长计数（阶段2，sched.c 定义） ----
+ * 任何内核临界区超过 RTOS_CRIT_MAX_TICKS 即递增（粘性、零挂起风险）。
+ * 供 RTOSALL / RTOSCRIT 自检读取。 */
+extern volatile uint32_t g_rtos_crit_overflow;
+uint32_t rtos_rt_crit_overflow(void);   /* 返回 g_rtos_crit_overflow（看门狗聚合用） */
+
+/* 优先级天花板辅助（RTOS_LOCK_CEILING 宏用，仅任务上下文）：把当前任务有效优先级
+ * 顶到 ceil_prio 并返回原优先级；restore 恢复原优先级。 */
+uint8_t rtos_task_raise_prio(uint8_t ceil_prio);
+void    rtos_task_restore_prio(uint8_t save_prio);
+
+/* ---- 优先级天花板宏（阶段2 opt-in，见 §3.3） ----
+ * 持锁期间把当前任务有效优先级顶到 ceil_prio，释放恢复。覆盖“非 mutex 共享资源”
+ * 的优先级反转（替代裸自旋锁的优先级反转问题）。默认不强制，仅提供给硬实时任务
+ * 在访问非内核对象临界资源时显式使用。需配合 rtos_set_eff_prio 行为，故仅在任务
+ * 上下文使用（不可在 ISR 内调用 rtos_set_eff_prio，因其会改就绪队列）。
+ * 用法：RTOS_LOCK_CEILING(PRIO) { ...临界区... }（离开作用域自动恢复原优先级）。 */
+#define RTOS_LOCK_CEILING(ceil_prio)                                          \
+    for (uint8_t _lc_save = rtos_task_raise_prio(ceil_prio),                  \
+                  _lc_active = 1; _lc_active;                                 \
+         rtos_task_restore_prio(_lc_save), _lc_active = 0)
+
 /* ---- 硬实时任务属性与创建（阶段1） ----
  * rt_class: 0=非实时(默认) 1=硬实时 2=软实时。
  * deadline_ticks: 相对释放时间的最坏完成期限(0=无截止期)。

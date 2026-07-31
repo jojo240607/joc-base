@@ -53,7 +53,8 @@ lines = txt.splitlines()
 
 # 打印关心的行
 want = ("[SELFTEST]", "[P4]", "RESULT", "ALL:", "sched_fail", "TC-KERNEL",
-        "TC-TASK", "TC-MTX", "TC-SEM", "TC-EVT", "StackWatermark")
+        "TC-TASK", "TC-MTX", "TC-SEM", "TC-EVT", "StackWatermark",
+        "[CRIT]", "CRIT")
 for line in lines:
     if any(w in line for w in want):
         print(line)

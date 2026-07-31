@@ -79,6 +79,15 @@ static inline int arch_in_isr(void) {
     return ((ipsr & 0x1FFu) != 0u);
 }
 
+/* 是否处于特权模式（CONTROL.nPRIV==0）。用于“某些寄存器（如 DWT 调试部件）非特权
+ * 不可访问”的路径：非特权态下读 DWT->CYCCNT 会触发 BusFault，故临界区审计只在特权
+ * 上下文读取周期计数器（非特权任务的临界区均经 SVC 在 Handler 模式执行，已是特权）。 */
+static inline int arch_in_priv(void) {
+    uint32_t ctrl;
+    __asm__ volatile("mrs %0, CONTROL" : "=r"(ctrl));
+    return ((ctrl & 0x1u) == 0u);   /* nPRIV=0 => 特权 */
+}
+
 #else  /* host / 非 arm：空操作桩，仅用于编译与逻辑自测 */
 
 static inline irq_state_t irq_lock(void)        { return 0U; }
@@ -89,6 +98,9 @@ static inline bool irq_is_disabled(void)        { return false; }
 
 /* host 桩：永不处于中断上下文 */
 static inline int arch_in_isr(void)              { return 0; }
+
+/* host 桩：host 始终视为特权 */
+static inline int arch_in_priv(void)             { return 1; }
 
 #endif
 

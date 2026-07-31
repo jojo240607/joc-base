@@ -275,3 +275,26 @@ uint32_t rtos_task_wcet(int i)        { return (i>=0 && i<g_task_count) ? g_task
 uint32_t rtos_task_budget(int i)      { return (i>=0 && i<g_task_count) ? g_task_pool[i].budget_used : 0; }
 uint32_t rtos_task_deadline_miss(int i){return (i>=0 && i<g_task_count) ? g_task_pool[i].deadline_miss : 0; }
 uint32_t rtos_task_wcet_miss(int i)   { return (i>=0 && i<g_task_count) ? g_task_pool[i].wcet_miss : 0; }
+
+/* ---- 优先级天花板辅助（阶段2，RTOS_LOCK_CEILING 宏用，见 rtos.h） ----
+ * rtos_task_raise_prio：把当前运行任务有效优先级顶到 ceil_prio（仅当更高时），
+ * 返回原优先级供恢复。rtos_task_restore_prio：若当前优先级与原优先级不同，
+ * 恢复回原优先级。两者都仅在任务上下文使用（内部走 rtos_set_eff_prio，会重排
+ * 就绪队列——ISR 内禁用）。用于“非 mutex 共享资源”的优先级反转防护。 */
+uint8_t rtos_task_raise_prio(uint8_t ceil_prio) {
+    uint8_t save = 0;
+    if (!g_running) return 0;
+    unsigned st = rtos_crit_enter();
+    save = g_running->base_prio != 0 ? g_running->base_prio : g_running->prio;
+    if (ceil_prio < g_running->prio)
+        rtos_set_eff_prio(g_running, ceil_prio);
+    rtos_crit_exit(st);
+    return save;
+}
+void rtos_task_restore_prio(uint8_t save_prio) {
+    if (!g_running) return;
+    unsigned st = rtos_crit_enter();
+    if (g_running->prio != save_prio)
+        rtos_set_eff_prio(g_running, save_prio);
+    rtos_crit_exit(st);
+}

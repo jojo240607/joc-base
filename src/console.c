@@ -215,6 +215,16 @@ static void cmd_rtosdeadline(app_ctx_t *c, const char *line) {
                listed, (unsigned long)rtos_rt_violation());
     selftest_reply(c, "RTOSDEADLINE", rtos_rt_violation() == 0);
 }
+static void cmd_rtoscrit(app_ctx_t *c, const char *line) {
+    (void)line;
+    /* 阶段2 临界区审计报告：打印临界区超长计数（任何内核临界区持锁超
+     * RTOS_CRIT_MAX_TICKS 即递增，粘性、零挂起风险）。 */
+    uint32_t ov = rtos_rt_crit_overflow();
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[CRIT] overflow=%lu (max_ticks=%d)\n",
+               (unsigned long)ov, (int)RTOS_CRIT_MAX_TICKS);
+    selftest_reply(c, "RTOSCRIT", ov == 0);
+}
 static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFPU", rtos_fpu_selftest()); }
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
@@ -488,6 +498,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSP4",   cmd_rtosp4,   0 },
     { "RTOSALL",  cmd_rtosall,  0 },
     { "RTOSDEADLINE", cmd_rtosdeadline, 0 },
+    { "RTOSCRIT",     cmd_rtoscrit,     0 },
     { "RTOSFPU",  cmd_rtosfpu,  0 },
     { "RTOSBH",   cmd_rtosbh,   0 },
     { "RTOSTIMER", cmd_rtostimer, 0 },
