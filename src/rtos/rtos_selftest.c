@@ -536,3 +536,118 @@ int rtos_sched_selftest(void) {
     return ok;
 }
 RTOS_SELFTEST_ADD("sched", rtos_sched_selftest);
+
+/* ---------------------------------------------------------------------------
+ * 阶段1 自测：截止期 + WCET 违约检测（见 docs/rtos-hard-realtime-plan.md §2）
+ *   正例：硬实时任务正常完成（wcet/deadline 充裕）→ 违约计数保持 0。
+ *   反例A：wcet_ticks=1 但任务自旋跨多 tick → budget_used 超预算 → wcet_miss++。
+ *   反例B：deadline_ticks=2 但任务自旋跨多 tick → 超截止期 → deadline_miss++。
+ *   验证 tick 里的硬实时违约检测路径（g_rtos_*_violation 粘性计数）真实有效。
+ *   子任务同步创建、自旋、自我删除；主任务用信号量等待其结束，零死锁。
+ * ------------------------------------------------------------------------- */
+static volatile uint8_t  g_dl_done;     /* 子任务完成标志 */
+static rtos_sem_t        g_dl_sem;      /* 完成信号量 */
+
+/* 在 RUNNING 上下文自旋 ms 毫秒（不睡眠，使 tick 持续累加 budget_used）。
+ * DWT CYCCNT 在 BASEPRI 屏蔽期间仍计数，168MHz → 168000 cycles/ms。 */
+static void dl_spin_ms(uint32_t ms) {
+    uint32_t cyc = (uint32_t)(ms * (168000U));   /* 近似：SYSCLK=168MHz */
+    uint32_t t0 = rtos_cycle_now();
+    while ((uint32_t)(rtos_cycle_now() - t0) < cyc) { }
+}
+
+/* 硬实时子任务：自旋 dur_ms 毫秒后通知主任务并自我删除。
+ * attr 由调用方在创建时指定（wcet/deadline 决定违约类型）。 */
+static void dl_rt_worker(void *arg) {
+    uint32_t dur = (uint32_t)(uintptr_t)arg;
+    dl_spin_ms(dur);
+    g_dl_done = 1;
+    rtos_sem_give(&g_dl_sem);
+    rtos_task_delete((task_t *)0);   /* 自我删除，释放池槽供复用 */
+}
+
+int rtos_deadline_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[DEADLINE] self-test begin\n");
+
+    /* 记录进入前的全局违约聚合计数：本自测的反例【故意】触发 wcet/deadline 违约，
+     * 这些违约计数是自测贡献，不应污染 run_all 末尾的 g_rtos_*_violation 全局硬性
+     * 实时契约校验（否则整体会被误判 FAIL，与 crit 自测 Part B 同款陷阱）。
+     * 审计机制已由下方各子项 +N 验证，此处把聚合层恢复为进入前的值。 */
+    uint32_t vb_dl = g_rtos_deadline_violation;
+    uint32_t vb_wc = g_rtos_wcet_violation;
+
+    /* 子任务栈用普通主 SRAM 静态数组（任务栈不涉 DMA，且自旋路径栈深度极浅，
+     * 不需 CCM；放 CCM 会挤占已近满的 63KB CCMRAM）。8 字节对齐满足 ABI。 */
+    static uint8_t dl_st_wcet[512] __attribute__((aligned(8)));
+    static uint8_t dl_st_dln[512]  __attribute__((aligned(8)));
+
+    /* 正例：硬实时任务（wcet=1000ms, deadline=1000ms），自旋 1ms 即删除。
+     * 预算与截止期都充裕，wcet_miss / deadline_miss 必须保持 0。 */
+    {
+        g_dl_done = 0;
+        rtos_sem_init(&g_dl_sem, 0, 1);
+        rtos_task_attr_t attr = { .rt_class = 1, .deadline_ticks = 1000, .wcet_ticks = 1000 };
+        uint32_t before_v = rtos_rt_violation();
+        rtos_task_create_rt("dl_ok", dl_rt_worker, (void *)(uintptr_t)1,
+                            20, dl_st_wcet, sizeof(dl_st_wcet), 1, &attr);
+        /* 等待子任务完成（最多 200ms 超时保护，防子任务异常不返回导致死等）。 */
+        uint32_t waited = 0;
+        while (!g_dl_done && waited < 200) { rtos_msleep(5); waited += 5; }
+        uint32_t after_v = rtos_rt_violation();
+        if (g_dl_done == 0) ok = 0;                 /* 子任务未完成 */
+        if (after_v != before_v) ok = 0;            /* 正例不应有违约 */
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[DEADLINE] A feasible rt-task miss violation=%lu (expect unchanged): %s\n",
+                   (unsigned long)after_v, ok ? "PASS" : "FAIL");
+    }
+
+    /* 反例A：wcet_ticks=1，自旋 5ms（远超市预算）→ wcet_miss 必递增。 */
+    {
+        g_dl_done = 0;
+        rtos_sem_init(&g_dl_sem, 0, 1);
+        rtos_task_attr_t attr = { .rt_class = 1, .deadline_ticks = 1000, .wcet_ticks = 1 };
+        uint32_t b_wcet = 0, a_wcet = 0;
+        /* 读任务 0..N 的 wcet_miss 之和（创建前快照） */
+        for (int i = 0; i < 48; i++) b_wcet += rtos_task_wcet_miss(i);
+        rtos_task_create_rt("dl_wcet", dl_rt_worker, (void *)(uintptr_t)5,
+                            20, dl_st_wcet, sizeof(dl_st_wcet), 1, &attr);
+        uint32_t waited = 0;
+        while (!g_dl_done && waited < 200) { rtos_msleep(5); waited += 5; }
+        for (int i = 0; i < 48; i++) a_wcet += rtos_task_wcet_miss(i);
+        if (g_dl_done == 0) ok = 0;
+        if (a_wcet <= b_wcet) ok = 0;               /* wcet_miss 必须新增 */
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[DEADLINE] B wcet-overrun wcet_miss +%lu (expect >0): %s\n",
+                   (unsigned long)(a_wcet - b_wcet), ok ? "PASS" : "FAIL");
+    }
+
+    /* 反例B：deadline_ticks=2，自旋 5ms（远超截止期）→ deadline_miss 必递增。 */
+    {
+        g_dl_done = 0;
+        rtos_sem_init(&g_dl_sem, 0, 1);
+        rtos_task_attr_t attr = { .rt_class = 1, .deadline_ticks = 2, .wcet_ticks = 1000 };
+        uint32_t b_dl = 0, a_dl = 0;
+        for (int i = 0; i < 48; i++) b_dl += rtos_task_deadline_miss(i);
+        rtos_task_create_rt("dl_dln", dl_rt_worker, (void *)(uintptr_t)5,
+                            20, dl_st_dln, sizeof(dl_st_dln), 1, &attr);
+        uint32_t waited = 0;
+        while (!g_dl_done && waited < 200) { rtos_msleep(5); waited += 5; }
+        for (int i = 0; i < 48; i++) a_dl += rtos_task_deadline_miss(i);
+        if (g_dl_done == 0) ok = 0;
+        if (a_dl <= b_dl) ok = 0;                   /* deadline_miss 必须新增 */
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[DEADLINE] C deadline-overrun deadline_miss +%lu (expect >0): %s\n",
+                   (unsigned long)(a_dl - b_dl), ok ? "PASS" : "FAIL");
+    }
+
+    log_printf(app_log(), LOG_INFO, "rtos", "[DEADLINE] self-test: %s\n", ok ? "PASS" : "FAIL");
+
+    /* 恢复全局违约聚合计数（见函数入口注释）：本自测反例的违约是自测贡献，
+     * 不得让 run_all 的硬性实时契约兜底校验误判整体 FAIL。 */
+    g_rtos_deadline_violation = vb_dl;
+    g_rtos_wcet_violation     = vb_wc;
+
+    return ok;
+}
+RTOS_SELFTEST_ADD("deadline", rtos_deadline_selftest);
