@@ -289,7 +289,7 @@ uint8_t rtos_task_raise_prio(uint8_t ceil_prio) {
     uint8_t save = 0;
     if (!g_running) return 0;
     unsigned st = rtos_crit_enter();
-    save = g_running->base_prio != 0 ? g_running->base_prio : g_running->prio;
+    save = g_running->prio;          /* 保存“有效优先级”，使天花板可嵌套还原 */
     if (ceil_prio < g_running->prio)
         rtos_set_eff_prio(g_running, ceil_prio);
     rtos_crit_exit(st);

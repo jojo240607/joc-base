@@ -29,6 +29,12 @@
 #include "log/app_log.h"
 #include <string.h>
 
+/* 诊断：用固定的全局哨兵变量（主 SRAM .bss）写阶段魔术字，供 OpenOCD 读取定位
+ * HardFault 位置（不依赖 UART，内存写不会 fault；用全局变量而非固定地址避免与
+ * 主栈/CCM 栈重叠导致读数被覆盖）。 */
+volatile uint32_t g_dbg_sentinel = 0;
+static void dbg_mark(uint32_t v) { g_dbg_sentinel = v; }
+
 /* 不可调度粘性标志：>0 表示存在截止期内不可调度的硬实时任务（存违约任务数）。
  * RTOSALL / 看门狗读取，零挂起风险：不触发异常、不停机。 */
 volatile uint32_t g_rtos_sched_invalid = 0;
@@ -75,6 +81,7 @@ int rtos_wcrt_compute(const uint32_t *C, const uint32_t *T, const uint8_t *P,
 /* 计算硬实时任务集的总利用率 U = Σ C_i/T_i（Liu & Layland 必要判据）。
  * 返回放大 1000 倍的整数百分比（避免浮点）。仅统计 rt_class==1 且 C,T 均非 0。 */
 static uint32_t rtos_sched_utilization_x1000(void) {
+    dbg_mark(0x1001u);
     uint32_t num = 0;   /* 分子 Σ C_i*1000/T_i 的整数累加 */
     int n = rtos_task_count();
     for (int i = 0; i < n; i++) {
@@ -90,12 +97,16 @@ static uint32_t rtos_sched_utilization_x1000(void) {
 /* 启动/测试期可调度性校验：扫描任务池硬实时任务，跑 RTA，置位粘性标志。
  * 不阻塞启动（即便不可调度也继续 boot），但 RTOSALL 会据此 FAIL。
  * 返回不可调度任务数。 */
+/* 调试实验：把分析数组从栈搬到 static，规避 CCM 主栈膨胀；并把日志改为一次性
+ * 计算 + 裸 UART 输出（避免 newlib vfprintf 深栈嵌套破坏异常帧）。 */
+static uint32_t g_dbg_infeasible = 0;
 int rtos_sched_validate(void) {
+    dbg_mark(0x2002u);
     int n = rtos_task_count();
-    /* 最坏情况：全部任务都是硬实时（RTOS_MAX_TASKS）。用栈上定长数组，无堆。 */
-    uint32_t C[RTOS_MAX_TASKS];
-    uint32_t T[RTOS_MAX_TASKS];
-    uint8_t  P[RTOS_MAX_TASKS];
+    /* 最坏情况：全部任务都是硬实时（RTOS_MAX_TASKS）。用 static 定长数组，不占栈。 */
+    static uint32_t C[RTOS_MAX_TASKS];
+    static uint32_t T[RTOS_MAX_TASKS];
+    static uint8_t  P[RTOS_MAX_TASKS];
     int m = 0;   /* 实际参与分析的硬实时任务数 */
     for (int i = 0; i < n && m < RTOS_MAX_TASKS; i++) {
         uint32_t c = rtos_task_wcet(i);
@@ -105,47 +116,27 @@ int rtos_sched_validate(void) {
             m++;
         }
     }
-    uint32_t wcrt[RTOS_MAX_TASKS];
+    static uint32_t wcrt[RTOS_MAX_TASKS];
     int infeasible;
     if (m == 0) {
         infeasible = 0;   /* 无硬实时任务：平凡可调度，零回归 */
     } else {
+        dbg_mark(0x3001u);
         infeasible = rtos_wcrt_compute(C, T, P, m, wcrt);
+        dbg_mark(0x4001u);
     }
     g_rtos_sched_invalid = (infeasible > 0) ? (uint32_t)infeasible : 0;
+    g_dbg_infeasible = (uint32_t)infeasible;
 
-    log_printf(app_log(), LOG_INFO, "rtos",
-               "[SCHED] validate: hard-rt tasks=%d infeasible=%d util=%lu.%03lu%%\n",
-               m, infeasible,
-               (unsigned long)(rtos_sched_utilization_x1000() / 1000U),
-               (unsigned long)(rtos_sched_utilization_x1000() % 1000U));
-    if (infeasible > 0) {
-        /* 打印违约任务明细（用倒推：被剔除的任务名不在数组里，故单独再扫一遍）。 */
-        for (int i = 0; i < n; i++) {
-            uint32_t c = rtos_task_wcet(i);
-            uint32_t t = rtos_task_deadline(i);
-            if (rtos_task_rt_class(i) == 1 && c != 0 && t != 0) {
-                /* 该任务在分析数组中的索引：顺序一致，但为稳妥重新定位。 */
-                int idx = -1;
-                int k = 0;
-                for (int jj = 0; jj < n && k < RTOS_MAX_TASKS; jj++) {
-                    uint32_t cc = rtos_task_wcet(jj);
-                    uint32_t tt = rtos_task_deadline(jj);
-                    if (rtos_task_rt_class(jj) == 1 && cc != 0 && tt != 0) {
-                        if (jj == i) { idx = k; break; }
-                        k++;
-                    }
-                }
-                uint32_t w = (idx >= 0 && idx < m) ? wcrt[idx] : 0;
-                if (w > t) {
-                    log_printf(app_log(), LOG_INFO, "rtos",
-                               "[SCHED]   INFEASIBLE task '%s' wcrt=%lu > deadline=%lu\n",
-                               rtos_task_name(i) ? rtos_task_name(i) : "?",
-                               (unsigned long)w, (unsigned long)t);
-                }
-            }
-        }
-    }
+    dbg_mark(0x5001u);
+    uint32_t util_x1000 = rtos_sched_utilization_x1000();
+    dbg_mark(0x5002u);
+    /* 注意：本函数在 rtos_start() 内、首任务切换前执行，此时 uart 设备尚未被
+     * device_manager_get 触发 create（lazy 模式），USART1 时钟/引脚未就绪。
+     * 故此处【绝不】调用 uart_console_putc——否则会卡死在 while(!TXE) 导致 boot 挂起。
+     * 校验结果已写入 g_rtos_sched_invalid / g_dbg_infeasible，由 RTOSALL/看门狗读取。 */
+    (void)util_x1000;
+    dbg_mark(0x5003u);
     return infeasible;
 }
 

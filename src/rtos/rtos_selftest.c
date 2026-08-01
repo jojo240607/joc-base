@@ -12,6 +12,21 @@
  * rtos_task_create 回收复用，故本自测现在可重复运行（可多次从控制台触发）。
  * ------------------------------------------------------------------------- */
 
+/* 整体自测结果镜像（供无串口的 gdb/OpenOCD 读取验证；1=PASS 0=FAIL） */
+volatile int g_rtosall_result = -1;
+/* 当前正在运行的子自测项名（供无串口环境定位“卡在哪个子测试”） */
+volatile const char *g_rtos_current_selftest = (const char *)0;
+/* 每子项结果明细（无串口环境诊断用）：g_rtosall_detail[i]=1 PASS /0 FAIL，
+ * g_rtosall_name[i] 指向该项名字符串。最多 64 项。 */
+#define RTOSALL_DETAIL_MAX 64
+volatile uint8_t  g_rtosall_detail[RTOSALL_DETAIL_MAX];
+volatile const char *g_rtosall_name[RTOSALL_DETAIL_MAX];
+/* 诊断：每个子测试【进入时】的临界区嵌套计数 g_crit_nest（见 sched.c），用于定位
+ * “未配对 rtos_crit_enter/exit 导致 g_crit_nest 泄漏”的元凶（泄漏会使后续 crit 审计
+ * 失效，伪装成 crit FAIL）。无串口 gdb 可读。直接按地址(0x20003558)读取，避免 extern
+ * 链接 static 符号。 */
+volatile int g_rtosall_nest_at[RTOSALL_DETAIL_MAX];
+
 static volatile uint32_t g_ipc_cnt;
 static rtos_mutex_t       g_ipc_mtx;
 static rtos_sem_t         g_ipc_done;
@@ -312,11 +327,22 @@ int rtos_selftest_run_all(void) {
     }
     for (const rtos_selftest_entry_t *p = __rtos_selftest_start; p < end; p++) {
         const char *nm = p->name ? p->name : "?";
+        g_rtos_current_selftest = nm;   /* 镜像当前子测试名，便于定位卡死点 */
+        int nidx = (int)(p - __rtos_selftest_start);
+        if (nidx < RTOSALL_DETAIL_MAX)
+            g_rtosall_nest_at[nidx] = *(volatile int *)0x20003558;  /* g_crit_nest */
         log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] >>> %s\n", nm);
         int r = p->fn();
         if (!r) ok = 0;
+        /* 诊断明细：记录每项结果(无串口 gdb 可读) */
+        int idx = (int)(p - __rtos_selftest_start);
+        if (idx < RTOSALL_DETAIL_MAX) {
+            g_rtosall_detail[idx] = (uint8_t)(r ? 1 : 0);
+            g_rtosall_name[idx]   = nm;
+        }
         log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] %s: %s\n", nm, r ? "PASS" : "FAIL");
     }
+    g_rtos_current_selftest = (const char *)0;
     log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] ALL: %s\n", ok ? "PASS" : "FAIL");
     /* 硬实时违约兜底（阶段1）：若 RTOSALL 运行期间任一硬实时任务突破截止期/WCET，
      * 即便各子模块自身 PASS，整体也必须 FAIL（严格硬实时契约）。当前无硬实时任务，
@@ -345,6 +371,7 @@ int rtos_selftest_run_all(void) {
                    "[SELFTEST] SCHED INFEASIBLE: %lu hard-rt task(s) miss deadline (WCRT>deadline)\n",
                    (unsigned long)rtos_rt_sched_invalid());
     }
+    g_rtosall_result = ok;   /* 镜像到内存全局，便于 gdb/OpenOCD 在无串口时判定结果 */
     return ok;
 }
 
@@ -355,6 +382,21 @@ int rtos_selftest_run_all(void) {
  *   C. RTOS_LOCK_CEILING 宏：持锁期间有效优先级顶到天花板，退出恢复。
  * 全部同步执行于主任务上下文，不引入新任务、不阻塞调度，零回归。
  * ------------------------------------------------------------------------- */
+/* 诊断：crit 自测每一步的明细（无串口 gdb 可读，定位 crit FAIL 子项）。 */
+volatile uint32_t g_dbg_crit_a   = 0;
+volatile uint32_t g_dbg_crit_b_before = 0;
+volatile uint32_t g_dbg_crit_b_after  = 0;
+volatile uint32_t g_dbg_crit_b_nest0  = 0;
+volatile uint32_t g_dbg_crit_b_priv   = 0;
+volatile uint32_t g_dbg_crit_b_cyc0   = 0;
+volatile uint32_t g_dbg_crit_b_cyc1   = 0;
+volatile uint32_t g_dbg_crit_c   = 0;
+volatile uint32_t g_dbg_crit_c_prio_entry = 0;
+volatile uint32_t g_dbg_crit_c_prio_inblk = 0;
+volatile uint32_t g_dbg_crit_c_prio_after = 0;
+volatile uint32_t g_dbg_crit_c_grunning = 0;
+volatile uint32_t g_dbg_crit_c_base = 0;
+
 int rtos_crit_selftest(void) {
     int ok = 1;
     log_printf(app_log(), LOG_INFO, "rtos", "[CRIT] self-test begin\n");
@@ -368,19 +410,34 @@ int rtos_crit_selftest(void) {
     if (g_running->npls_hold != 1) ok = 0;
     rtos_unlock_scheduler();               /* 最外层解锁：释放 */
     if (g_running->npls_hold != 0) ok = 0;
+    g_dbg_crit_a = ok ? 1 : 0;
     log_printf(app_log(), LOG_INFO, "rtos", "[CRIT] A lock_scheduler npls_hold/nest: %s\n",
                ok ? "PASS" : "FAIL");
 
     /* B) 临界区审计：持锁超 RTOS_CRIT_MAX_CYCLES 应递增 g_rtos_crit_overflow。
      * 用 rtos_cycle_now 自旋（BASEPRI 屏蔽 systick 但 DWT CYCCNT 仍计数）制造长临界区。 */
     {
+        int bpriv = arch_in_priv();
+        g_dbg_crit_b_nest0 = (uint32_t)(*(volatile int *)0x20003558);  /* g_crit_nest 进入时 */
         uint32_t before = rtos_rt_crit_overflow();
         unsigned st = rtos_crit_enter();
         uint32_t t0 = rtos_cycle_now();
         while ((uint32_t)(rtos_cycle_now() - t0) <= RTOS_CRIT_MAX_CYCLES) { }  /* 自旋超阈值 */
+        uint32_t t1 = rtos_cycle_now();
         rtos_crit_exit(st);
         uint32_t after = rtos_rt_crit_overflow();
+        g_dbg_crit_b_before = before;
+        g_dbg_crit_b_after  = after;
+        g_dbg_crit_b_priv   = (uint32_t)bpriv;
+        g_dbg_crit_b_cyc0   = t0;
+        g_dbg_crit_b_cyc1   = t1;
         if (after != before + 1) ok = 0;   /* 必须恰好 +1（一次最外层临界区） */
+        /* Part B 故意制造一次长临界区以验证审计机制，该次溢出是自测贡献，
+         * 不应污染全局生产监控计数 g_rtos_crit_overflow（否则 run_all 末尾
+         * 的 rtos_rt_crit_overflow()!=0 兜底会把整体判 FAIL，自相矛盾）。
+         * 审计机制已由上方 after==before+1 验证，此处把计数恢复为进入前的值，
+         * 使全局监控只反映真实生产代码中的意外长临界区。 */
+        g_rtos_crit_overflow = before;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[CRIT] B crit-audit overflow before=%lu after=%lu (expect +1): %s\n",
                    (unsigned long)before, (unsigned long)after, ok ? "PASS" : "FAIL");
@@ -389,10 +446,16 @@ int rtos_crit_selftest(void) {
     /* C) 优先级天花板宏：持锁期间有效优先级顶到 ceil，退出恢复 */
     {
         uint8_t save = g_running->prio;
+        g_dbg_crit_c_prio_entry = g_running->prio;
+        g_dbg_crit_c_grunning = (uint32_t)(unsigned long)g_running;
+        g_dbg_crit_c_base = g_running->base_prio;
         RTOS_LOCK_CEILING(2) {             /* 顶到 prio 2（高于主任务 16） */
+            g_dbg_crit_c_prio_inblk = g_running->prio;
             if (g_running->prio != 2) ok = 0;
         }
+        g_dbg_crit_c_prio_after = g_running->prio;
         if (g_running->prio != save) ok = 0;
+        g_dbg_crit_c = ok ? 1 : 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[CRIT] C RTOS_LOCK_CEILING raise->%u restore->%u: %s\n",
                    (unsigned)2, (unsigned)save, ok ? "PASS" : "FAIL");

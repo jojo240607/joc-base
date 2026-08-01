@@ -22,6 +22,12 @@
 task_t *g_running = (task_t *)0;
 volatile uint32_t g_tick = 0;
 int g_rtos_started = 0;
+/* PSP 是否已切到首个任务的栈：在 SVC_Handler 首次启动路径里置 1。
+ * 仅当其为 1 时，rtos_schedule_request 才允许置 PENDSVSET——否则（首切之前、
+ * 启动线程用 MSP、PSP 仍为 0）置位会用 PSP=0 保存帧、破坏内存并 HardFault。
+ * 注意：不能用“ISR 中 CONTROL.SPSEL 恒为 0”来区分，否则会误杀所有 ISR 驱动的
+ * 重调度（SysTick 唤醒、ISR 内 sem_give 等），导致内核卡死（见 port.c 注释）。 */
+volatile int g_rtos_psp_ready = 0;
 volatile int g_in_svc = 0;   /* SVC 分发进行中：防止非特权任务路径递归触发 SVC */
 
 /* ---- 就绪队列：每优先级 FIFO + 位图 ---- */

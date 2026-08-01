@@ -34,6 +34,16 @@
 #ifndef RTOS_PRIO_BIST
   #define RTOS_PRIO_BIST 24    /* 板级自测：低优先级后台任务(不阻塞控制台) */
 #endif
+#ifndef RTOS_PRIO_RTOSALL_RUNNER
+  /* RTOSALL 运行器优先级：bist 任务默认 prio 24，而各子测会创建优先级【高于】它的
+   * 任务(rtos_basic T03=18 / T04=6 / T05=5、rtos_irq irq_a=3 等)。若以 bist 原优先级
+   * 运行 rtos_selftest_run_all，这些更高优先级子任务会永久抢占 bist，使其被 msleep
+   * 唤醒后无法设置 stop 标志，造成饿死/死锁(实测卡在 basic/T03)。故运行前把 bist 的
+   * 有效优先级临时顶到本值(>所有子测任务的最高优先级 3)，跑完再恢复。
+   * 取 2：高于子测任务最高优先级(3)，且为普通任务优先级(非 ISR，不受零延迟阈值 4 约束)；
+   * 仅在 RTOSALL 一次性运行期间短暂提升，不影响常态调度。 */
+  #define RTOS_PRIO_RTOSALL_RUNNER 2
+#endif
 
 /* 下半部优先级带（见 docs/rtos-design.md 第 4 章）：高于应用任务、低于 ISR。
  * 数值越小优先级越高；BH_HIGH/BH_MED 均高于 RTOS_PRIO_MAIN(16)/BLINK(8)，

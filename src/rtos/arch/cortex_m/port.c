@@ -3,6 +3,13 @@
 #include "irq.h"            /* irq_id_t */
 #include <stdint.h>
 
+/* 调度器启动标志（core/sched.c 定义）：rtos_schedule_request 据此判定能否请求
+ * PendSV（避免 PSP 未就绪时切换导致 boot HardFault）。arch 层仅读，不写。 */
+extern int g_rtos_started;
+/* PSP 是否已切到首个任务栈：SVC_Handler 首切路径里置 1。仅当其为真时才能置
+ * PENDSVSET（首切前 PSP=0，置位会破坏内存/HardFault）。arch 层仅读，不写。 */
+extern volatile int g_rtos_psp_ready;
+
 /* ---------------------------------------------------------------------------
  * arch 层（Cortex-M4）：触发切换、配置 FPU/PendSV 优先级、提供节拍中断 id。
  *
@@ -17,8 +24,25 @@
 #include "cortex_m.h"
 #include "core_cm4.h"   /* CMSIS ISA 头：SCB / NVIC / FPU / SysTick_IRQn */
 
-/* 请求一次上下文切换：置 PENDSVSET，PendSV 在所有 ISR 退出后以最低优先级运行 */
+/* 请求一次上下文切换：置 PENDSVSET，PendSV 在所有 ISR 退出后以最低优先级运行。
+ *
+ * 关键约束（boot HardFault 根因修复）：PendSV 切换依赖【当前线程已切到 PSP】。
+ * 在 rtos_arch_start 的 svc 0 完成“首个任务 → PSP”切换之前，PSP 仍是复位默认值
+ * 0（main 启动线程用 MSP，CONTROL.SPSEL=0）。若此时任何 IRQ（如已启动的 1 kHz
+ * SysTick）在 svc 之前 firing 并请求调度，PendSV 会用 PSP=0 去做上下文保存，把帧
+ * 写到地址 0 附近、破坏内存，并因恢复出垃圾返回地址而 HardFault（CFSR=IBUSERR、
+ * fault PC=0)。因此这里要求【被中断的上下文已使用 PSP（CONTROL.SPSEL=1）】才允许
+ * 置 PENDSVSET；启动线程(main, MSP)被中断时一律退回，等 svc 切到任务(PSP 就绪)后
+ * 才真正请求切换。这与 FreeRTOS 的等价契约一致。 */
 void rtos_schedule_request(void) {
+    if (!g_rtos_started) return;                 /* 调度器未启动：不请求 */
+    /* 仅在【PSP 已就绪（首个任务已切到 PSP）】时才允许置 PENDSVSET。
+     * 关键：不能改用“CONTROL.SPSEL==0 就退回”来判定——ISR(Hanlder 模式)里
+     * SPSEL 恒为 0，会因此误杀所有 ISR 驱动的调度请求（SysTick 唤醒、ISR 内
+     * sem_give/BH 触发等），导致内核卡死。首切之前 PSP=0（启动线程用 MSP），
+     * 此时 g_rtos_psp_ready 仍为 0，退回；首切之后，无论线程模式(PSP,SPSEL=1)
+     * 还是 ISR 模式(MSP,SPSEL=0)，只要 PSP 指向有效任务栈，都应允许请求切换。 */
+    if (!g_rtos_psp_ready) return;               /* 首切前：PSP 未就绪，不能置 PendSV */
     SCB->ICSR |= SCB_ICSR_PENDSVSET_Msk;
     __DSB();
 }
@@ -88,6 +112,12 @@ void rtos_arch_apply_task_priv(void) {
     uint32_t c = __get_CONTROL();
     if (g_running && !g_running->priv) c |=  (uint32_t)0x1u;   /* 非特权 */
     else                                c &= ~(uint32_t)0x1u;   /* 特权 */
+    /* 关键：每次切换都【清零 FPCA(CONTROL[2])】。硬浮点 ABI(-mfloat-abi=hard)下编译器
+     * 几乎在每个函数里都发射 VFP 指令，任务频繁置位 FPCA；若切走时不清，FPCA 会泄漏
+     * 到下一个任务，使其被异常抢占时硬件据 FPCA=1 压扩展帧，但已保存帧是基本帧，
+     * 导致 SAVE/RESTORE 帧布局错位、PSP 偏 0x40、恢复出垃圾 PC -> IBUSERR。
+     * 清零后 FPCA 由硬件按新任务实际是否用 FPU 重新派生，帧类型始终与每任务帧一致。 */
+    c &= ~(uint32_t)0x4u;   /* FPCA = 0 */
     __set_CONTROL(c);
     __ISB();
 #if RTOS_MPU_PER_TASK_STACK
