@@ -229,13 +229,21 @@ int acc_a2_isr_wake(void) {
     if (a2) rtos_task_delete(a2);
     rtos_msleep(20);
     uint32_t avg = (g_a2_rsp > 0) ? (g_a2_sum / g_a2_rsp) : 0;
+    /* P2 硬实时中断延迟断言：ISR 进入 → 等待任务被唤醒的总延迟（含 PendSV 上下文切换）
+     * 必须 < 10µs @168MHz = 1680 cycles。这是硬实时验收的核心门槛，高于此值即证明
+     * 内核无法在硬实时预算内响应外部中断并唤醒高优任务。 */
+    #define ACC_A2_LATENCY_BUDGET_CYC 1680u   /* 10µs @168MHz */
     int lok = (g_a2_irq >= 200) && (g_a2_rsp >= 200) && (g_a2_max > 0)
-           && (g_a2_max < 5000u) && (g_fault_cfsr == flt0) && (g_stack_overflow == 0);
+           && (g_a2_max < ACC_A2_LATENCY_BUDGET_CYC) && (g_fault_cfsr == flt0)
+           && (g_stack_overflow == 0);
     if (!lok) ok = 0;
     log_printf(app_log(), LOG_INFO, "rtos",
-               "[LATENCY] isr_wake irq=%lu rsp=%lu min=%lu avg=%lu max=%lu (budget<5000cyc) %s\n",
+               "[LATENCY] isr_wake irq=%lu rsp=%lu min=%lu avg=%lu max=%lu "
+               "(budget<%luns=1680cyc) %s\n",
                (unsigned long)g_a2_irq, (unsigned long)g_a2_rsp, (unsigned long)g_a2_min,
-               (unsigned long)avg, (unsigned long)g_a2_max, lok ? "PASS" : "FAIL");
+               (unsigned long)avg, (unsigned long)g_a2_max,
+               (unsigned long)(ACC_A2_LATENCY_BUDGET_CYC * 1000000u / 168000000u),
+               lok ? "PASS" : "FAIL");
     RTOS_TEST_RESULT("ACC_A2_IsrWake", lok);
     return ok;
 }
@@ -599,15 +607,18 @@ static void c2_div0_trigger(void) {
 static void c2_task(void *arg) {
     (void)arg;
     g_c2_task_survived = 0; g_c2_isr_cnt = 0;
-    /* 照搬 RTOSROBUST rb_div0 模式：关中断 + g_robust_fault_active 窗口，确保窗口内
-     * 只有预期的 sdiv 触发 fault，且独立裸函数使恢复 PC=LR 正确回到本任务继续。 */
-    __asm volatile("cpsid i" ::: "memory");
+    /* 照搬 RTOSROBUST rb_div0 模式：仅靠 g_robust_fault_active 标志窗口保证只有 C2 的
+     * 恢复分支生效，独立裸函数使恢复 PC=LR 正确回到本任务继续。
+     *
+     * 关键：触发点【绝不能】用 cpsid i 关中断——mpu.c rtos_fault_handler 注释已明确，
+     * 关中断会把 UsageFault 升级为 HardFault，栈帧 LR 槽装的是 EXC_RETURN 而非真实
+     * 返回地址，恢复会错位（c2_task 因此偶发 fault_delta=0 / survived 错乱）。故此处
+     * 不关中断；c2_isr 仅做计数、不触发 fault，窗口内无竞争。 */
     g_robust_fault_active = 1;
     SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
     c2_div0_trigger();                         /* 触发 DIVBYZERO；恢复后回到此处 */
     SCB->CCR &= ~SCB_CCR_DIV_0_TRP_Msk;
     g_robust_fault_active = 0;
-    __asm volatile("cpsie i" ::: "memory");
     g_c2_task_survived = 1;
 }
 static void c2_isr(void *ctx) {
@@ -622,6 +633,7 @@ int acc_c2_concurrent_fault(void) {
     uint32_t flt0 = g_fault_cfsr;
     rtos_cycle_init();
     g_c2_task_survived = 0;
+    g_robust_fault_cfsr = 0;                  /* 清空 ROBUST 恢复钩子 CFSR 快照 */
     RTOS_TASK_STACK(c2st, 512);
     rtos_task_create("acc_c2t", c2_task, NULL, 10, c2st, sizeof(c2st));
     irq_manager_attach((irq_id_t)TIM5_IRQn, c2_isr, NULL);
@@ -636,29 +648,41 @@ int acc_c2_concurrent_fault(void) {
     task_t *c2t = (task_t *)rtos_kobj_lookup("acc_c2t");
     if (c2t) rtos_task_delete(c2t);
     rtos_msleep(30);
-    int lok = (g_c2_task_survived == 1) && (g_fault_cfsr != flt0)
-           && (g_c2_isr_cnt > 100)            /* 500ms@2kHz 应累计 ~1000 次，验证中断不丢失 */
-           && (g_sched_invariant_fail == 0) && (g_stack_overflow == 0);
+    /* 验收核心：
+     *  (a) 任务在 fault 恢复窗口内触发 DIVBYZERO 后存活(survived==1)；
+     *  (b) ROBUST 恢复钩子捕获到该故障(g_robust_fault_cfsr 含 DIVBYZERO 位 25)——
+     *      用专用变量而非差分 g_fault_cfsr（后者是全局粘性标志，易因前置子测试
+     *      残留值导致 delta 偶发为 0，使 C2 误判 FAIL）；
+     *  (c) 2kHz ISR 在故障恢复期间持续运行不丢失(isr_cnt > 100)；
+     *  (d) 不变量/栈溢出未因并发故障而破坏。 */
+    uint32_t cfsr_captured = g_robust_fault_cfsr;
+    int lok = (g_c2_task_survived == 1)
+           && ((cfsr_captured & (1u << 25u)) != 0)   /* DIVBYZERO 在 UFSR 位 9，CFSR 位 25 */
+           && (g_c2_isr_cnt > 100)
+           && (g_sched_invariant_fail == 0) && (g_stack_overflow == 0)
+           && (g_fault_cfsr == flt0);                /* 全局 CFSR 不应因 C2 而新增（容错） */
     if (!lok) ok = 0;
     log_printf(app_log(), LOG_INFO, "rtos",
-               "[ACC-C2] concurrent-fault: task_survived=%d fault_delta=%lu isr_cnt=%lu inv=%lu %s\n",
-               g_c2_task_survived, (unsigned long)(g_fault_cfsr - flt0),
+               "[ACC-C2] concurrent-fault: task_survived=%d robust_cfsr=0x%lX isr_cnt=%lu inv=%lu %s\n",
+               g_c2_task_survived, (unsigned long)cfsr_captured,
                (unsigned long)g_c2_isr_cnt,
                (unsigned long)g_sched_invariant_fail, lok ? "PASS" : "FAIL");
     RTOS_TEST_RESULT("ACC_C2_ConcurrentFault", lok);
     return ok;
 }
 
-/* =================== C3. 长临界区突破硬实时（机制正确性） =================== */
-/* 验收点：后台任务持 10ms 临界区（BASEPRI 屏蔽 PendSV）期间，2ms 周期的硬实时任务
- * c3_rt 无法被调度，其实测唤醒间隔(真实调度延迟)远超其 2ms 绝对 deadline——证明长临界区
- * 确实突破了硬实时保证。
+/* =================== C3. 长临界区突破硬实时 + 内核有界化捕获（P3 验证） =================== */
+/* 验收点（双证据）：
+ *  (1) 后台任务持 10ms 临界区（BASEPRI 屏蔽 PendSV）期间，2ms 周期的硬实时任务 c3_rt
+ *      无法被调度，其实测唤醒间隔(真实调度延迟)远超其 2ms 绝对 deadline（g_c3_miss > 0）
+ *      ——证明长临界区确实突破了硬实时保证（反例观测）。
+ *  (2) 内核临界区审计（rtos_crit_enter_mark / rtos_crit_exit_audit，见 sched.c）已检测到
+ *      该超长持锁，递增粘性计数 g_rtos_crit_overflow > 0 ——证明 P3「临界区有界化」机制
+ *      生效：长临界区不再是不可见的黑洞，而是被内核量化、可被看门狗/诊断读取。
  *
- * 注意：不直接依赖内核 g_rtos_deadline_violation 计数——它的释放基准 release_tick 在
- * tick ISR 唤醒任务时刷新，而屏蔽 PendSV 期间任务虽被唤醒(刷新 release_tick)却未运行，
- * 故内核监视器看不到“就绪但未运行”的延迟(属监视器语义局限，已在 sched.c 修复 release_tick
- * 刷新后暴露)。因此 C3 改为在 c3_rt 任务内直接测量“实际唤醒间隔 gap”，gap 超 deadline
- * 即为突破的硬证据。 */
+ * C3 不依赖内核 deadline 监视器（其 release_tick 在 tick 唤醒时刷新、屏蔽 PendSV 期间
+ * 任务虽被唤醒却不运行，监视器语义上“看不到”该延迟），故用 g_c3_miss 直接观测 +
+ * g_rtos_crit_overflow 内核审计双轨验证。 */
 static volatile int       g_c3_stop;
 static volatile uint32_t  g_c3_miss;
 static volatile uint32_t  g_c3_maxgap;
@@ -689,6 +713,7 @@ int acc_c3_long_critical(void) {
     int ok = 1;
     rtos_cycle_init();
     uint32_t flt0 = g_fault_cfsr, of0 = g_stack_overflow;   /* 快照：容忍前置子测试遗留 */
+    uint32_t crit0 = g_rtos_crit_overflow;                  /* 内核临界区审计计数快照 */
     g_c3_stop = 0; g_c3_miss = 0; g_c3_maxgap = 0;
     static uint8_t c3rt_st[256] __attribute__((aligned(8)));
     rtos_task_attr_t at = { .rt_class = 1, .deadline_ticks = 2, .wcet_ticks = 2 };
@@ -702,15 +727,20 @@ int acc_c3_long_critical(void) {
     }
     rtos_msleep(1500);
     g_c3_stop = 1; rtos_msleep(50);
-    /* 验收核心：长临界区(10ms)应突破硬实时(2ms deadline RT 任务) -> 任务实测唤醒间隔
-     * gap 多次 > 2ms (g_c3_miss>0)。同时系统不变量/溢出/故障不应因临界区而新增
-     * （与 C2 遗留的 flt0/of0 比较）。 */
-    int lok = (g_c3_miss > 0) && (g_sched_invariant_fail == 0)
+    /* 双证据验收：
+     *  (a) 长临界区(10ms)突破硬实时(2ms deadline RT 任务) -> g_c3_miss > 0；
+     *  (b) 内核临界区审计已捕获超长持锁 -> g_rtos_crit_overflow 相对快照新增 > 0
+     *      （P3 有界化机制生效：长临界区不再是不可见黑洞）。
+     * 同时系统不变量/溢出/故障不应因临界区而新增（与 C2 遗留的 flt0/of0 比较）。 */
+    uint32_t crit_delta = g_rtos_crit_overflow - crit0;
+    int lok = (g_c3_miss > 0) && (crit_delta > 0) && (g_sched_invariant_fail == 0)
            && (g_stack_overflow == of0) && (g_fault_cfsr == flt0);
     if (!lok) ok = 0;
     log_printf(app_log(), LOG_INFO, "rtos",
-               "[ACC-C3] long-critical-breaks-rt: miss=%lu maxgap=%lu inv=%lu flt_delta=%lu %s\n",
+               "[ACC-C3] long-critical: miss=%lu maxgap=%lu crit_overflow_delta=%lu "
+               "inv=%lu flt_delta=%lu %s\n",
                (unsigned long)g_c3_miss, (unsigned long)g_c3_maxgap,
+               (unsigned long)crit_delta,
                (unsigned long)g_sched_invariant_fail,
                (unsigned long)(g_fault_cfsr - flt0), lok ? "PASS" : "FAIL");
     RTOS_TEST_RESULT("ACC_C3_LongCritical", lok);
@@ -719,6 +749,7 @@ int acc_c3_long_critical(void) {
     if (c3rt) rtos_task_delete(c3rt);
     if (c3bg) rtos_task_delete(c3bg);
     rtos_msleep(30);
+    g_rtos_crit_overflow = crit0;   /* 还原快照：不污染后续测试（B2 仍断言 flt0 等） */
     return ok;
 }
 

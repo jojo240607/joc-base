@@ -131,6 +131,19 @@ SECTIONS
     _edata = .;
   } >RAM AT> FLASH
 
+  /* §6.6 覆盖率构建：把 gcov 计数/信息段放进 CCMRAM（主 SRAM 128K 已近饱和，放不下
+   * gcov 计数器）。必须放在 .bss 之前，否则 .bss 的 *(.bss.*) 会先吃掉 .bss.__gcov0.*。
+   * 仅 -DCOVERAGE=ON 时这些段非空；常态构建 gcov 段为空、不占空间。覆盖率构建同时缩小
+   * 常驻任务栈(RTOS_COVERAGE 守卫)以腾出 CCM 余量。 */
+  .gcov (NOLOAD) :
+  {
+    . = ALIGN(4);
+    KEEP(*(.data.__gcov_*))
+    KEEP(*(.bss.__gcov0*))
+    *(.data.__gcov_*)
+    *(.bss.__gcov0*)
+  } >CCMRAM
+
   .bss :
   {
     . = ALIGN(4);

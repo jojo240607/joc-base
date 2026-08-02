@@ -19,7 +19,13 @@
 volatile int g_dbg_auto_rtosall = 0;
 extern volatile int g_rtosall_result;
 
-RTOS_TASK_STACK(g_bist_stack, 3072);  /* BIST 后台任务栈 */
+/* 覆盖率构建：BIST 栈 3K -> 1K，腾 CCM 给 gcov；常态保持 3K。 */
+#if RTOS_COVERAGE
+RTOS_TASK_STACK(g_bist_stack, 1024);
+#else
+RTOS_TASK_STACK(g_bist_stack, 3072);
+#endif
+
 
 void bist_task(void *arg)
 {

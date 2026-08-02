@@ -7,9 +7,15 @@
 #include "drv/uart.h"   /* uart_console_raw / uart_console_putc */
 
 #ifndef GCOV_MAX_FD
+/* 覆盖率构建：F407 主 SRAM 128K 已近饱和，gcov 缓冲必须省。.gcda 逐个文件流式导出，
+ * 故只需 1 个文件槽；常态(非 RAM 受限)可放宽到 4。 */
+#ifdef RTOS_COVERAGE
+#define GCOV_MAX_FD 1
+#else
 #define GCOV_MAX_FD 4
 #endif
-#define GCOV_BUF_SZ 8192            /* 单个 .gcda 远小于此；足够容纳累加缓冲 */
+#endif
+#define GCOV_BUF_SZ 2048            /* 单 TU 的 .gcda 远小于此；覆盖率构建放 CCM 以省主 SRAM */
 #define GCOV_MAGIC  0x47434441U     /* ASCII "G C D A" */
 
 typedef struct {
@@ -19,7 +25,12 @@ typedef struct {
     size_t   len;
 } gcov_file_t;
 
+/* 覆盖率构建：把 gcov 缓冲放进 CCM(仅 CPU、无 DMA)，为主 SRAM 腾出空间。 */
+#ifndef RTOS_COVERAGE
 static gcov_file_t g_gcov[GCOV_MAX_FD];
+#else
+static gcov_file_t g_gcov[GCOV_MAX_FD] __attribute__((section(".ccm_bss")));
+#endif
 
 /* GCC 11+ 起 __gcov_flush 被移除，改用 __gcov_dump（GCC 7.1+ 可用）。
  * 本项目工具链为 GNU Tools for STM32 13.3.1，故用 __gcov_dump。 */

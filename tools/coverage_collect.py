@@ -98,12 +98,21 @@ def run_gcov(gcov_exe, build_dir, gcda_files):
     tot_exec = tot_lines = tot_br_exec = tot_br = 0
     for gcda in gcda_files:
         d = os.path.dirname(gcda)
-        base = os.path.splitext(os.path.basename(gcda))[0]
+        # gcda 文件名形如 "<base>.c.gcda"（newlib 的 gcov 把 TU 名按 .c 源文件命名）；
+        # gcov 解析时按 "<base>.gcno / <base>.gcda" 查找，故必须【去掉 .c 后缀】
+        # 得到裸 base 再传给 gcov（例：sched.c.gcda -> sched）。否则 gcov 会去找
+        # sched.c.gcno（不存在）→ "cannot open notes file" → "No executable lines"。
+        fname = os.path.basename(gcda)
+        if fname.endswith(".gcda"):
+            fname = fname[:-len(".gcda")]
+        if fname.endswith(".c"):
+            fname = fname[:-len(".c")]
+        base = fname
         try:
-            # gcov 必须 cwd 到含 .gcno/.gcda 的目录、并以 basename 形式传入 .gcda；
+            # gcov 必须 cwd 到含 .gcno/.gcda 的目录、并以裸 base 形式传入；
             # 传全路径 + -o <dir> 会让 gcov 误把目录名当对象名（找不到 .gcno）。
             out = subprocess.run(
-                [gcov_exe, "-b", "-c", base + ".gcda"],
+                [gcov_exe, "-b", "-c", base],
                 cwd=d, capture_output=True, text=True, timeout=60)
             txt = out.stdout + out.stderr
         except Exception as e:  # noqa: BLE001
