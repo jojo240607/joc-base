@@ -164,6 +164,10 @@ void uart_console_putc(char c);
  * 帧透传（docs/rtos-test-plan.md §6.6），避免文本模式对 0x0A 插入 CR 破坏数据。 */
 void uart_console_raw(const uint8_t *p, size_t n);
 
+/* 诊断：console 的 HAL 句柄（void* 不透明），供内核断言在临界区/ISR 内做
+ * 纯 polling 串口打印（见 rtos_sched_assert_fail）。无 console 时为 NULL。 */
+extern void *g_debug_uart_hal;
+
 extern const struct uartFun uart_fun;
 
 #endif /* UART_H */

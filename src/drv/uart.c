@@ -13,6 +13,10 @@
 
 static uart *g_console = NULL;
 
+/* 诊断钩子：暴露 console 的 HAL 句柄给内核断言诊断打印用（纯 polling 发送，
+ * 不依赖中断，可在临界区/ISR 安全调用）。见 rtos_sched_assert_fail。 */
+void *g_debug_uart_hal = (void *)0;
+
 /* virtual implementations dispatched through the unified device vtable */
 static int uart_dev_open(device *self);
 static int uart_dev_close(device *self);
@@ -127,6 +131,7 @@ static void uart_set_baudrate(uart *self, uint32_t baud)
 void uart_set_console(uart *self)
 {
     g_console = self;
+    g_debug_uart_hal = self ? self->hal : (void *)0;
 }
 
 void uart_console_putc(char c)

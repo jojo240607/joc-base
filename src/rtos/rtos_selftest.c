@@ -590,7 +590,7 @@ int rtos_deadline_selftest(void) {
         rtos_task_attr_t attr = { .rt_class = 1, .deadline_ticks = 1000, .wcet_ticks = 1000 };
         uint32_t before_v = rtos_rt_violation();
         rtos_task_create_rt("dl_ok", dl_rt_worker, (void *)(uintptr_t)1,
-                            20, dl_st_wcet, sizeof(dl_st_wcet), 1, &attr);
+                            3, dl_st_wcet, sizeof(dl_st_wcet), 1, &attr);
         /* 等待子任务完成（最多 200ms 超时保护，防子任务异常不返回导致死等）。 */
         uint32_t waited = 0;
         while (!g_dl_done && waited < 200) { rtos_msleep(5); waited += 5; }
@@ -611,7 +611,7 @@ int rtos_deadline_selftest(void) {
         /* 读任务 0..N 的 wcet_miss 之和（创建前快照） */
         for (int i = 0; i < 48; i++) b_wcet += rtos_task_wcet_miss(i);
         rtos_task_create_rt("dl_wcet", dl_rt_worker, (void *)(uintptr_t)5,
-                            20, dl_st_wcet, sizeof(dl_st_wcet), 1, &attr);
+                            3, dl_st_wcet, sizeof(dl_st_wcet), 1, &attr);
         uint32_t waited = 0;
         while (!g_dl_done && waited < 200) { rtos_msleep(5); waited += 5; }
         for (int i = 0; i < 48; i++) a_wcet += rtos_task_wcet_miss(i);
@@ -630,7 +630,7 @@ int rtos_deadline_selftest(void) {
         uint32_t b_dl = 0, a_dl = 0;
         for (int i = 0; i < 48; i++) b_dl += rtos_task_deadline_miss(i);
         rtos_task_create_rt("dl_dln", dl_rt_worker, (void *)(uintptr_t)5,
-                            20, dl_st_dln, sizeof(dl_st_dln), 1, &attr);
+                            3, dl_st_dln, sizeof(dl_st_dln), 1, &attr);
         uint32_t waited = 0;
         while (!g_dl_done && waited < 200) { rtos_msleep(5); waited += 5; }
         for (int i = 0; i < 48; i++) a_dl += rtos_task_deadline_miss(i);

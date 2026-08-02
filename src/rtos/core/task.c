@@ -135,6 +135,14 @@ void rtos_task_create_rt(const char *name, void (*entry)(void *), void *arg,
         rtos_task_create_ex(name, entry, arg, prio, stack, stack_size, priv);
         return;
     }
+    /* 阶段4 §4.2：硬实时任务必须占据系统最高优先级带（prio <= RTOS_PRIO_BH_HIGH），
+     * 防止被放到会被时间片/低优先任务耽误的低优先级，保证其截止期有抢占保障。
+     * 零回归：仅对 rt_class!=0 的任务施加；非实时 attr=NULL 的任务不调用本接口。 */
+    if (attr && attr->rt_class != 0 && prio > RTOS_PRIO_BH_HIGH) {
+        RTOS_SCHED_ASSERT(0);   /* 硬实时任务优先级越界：必须置于 BH_HIGH 及以上 */
+        /* 不返回错误码（创建接口无失败返回），退回裁剪到上限优先级，保证仍可运行。 */
+        prio = RTOS_PRIO_BH_HIGH;
+    }
     rtos_task_create_full(name, entry, arg, prio, stack, stack_size, priv, attr);
 }
 

@@ -1,6 +1,6 @@
 # jOS RTOS → 严格硬实时（Hard Real-Time）改造计划
 
-> 状态：阶段 1/2/3 已完成并验证（RTOSALL 全 PASS）；阶段 4 实施中
+> 状态：阶段 1/2/3/4 已全部完成并验证（RTOSALL 全 PASS，25 子项含 deadline 自测均 PASS，g_sched_invariant_fail=0）
 > 目标：把当前"准硬实时 / 工业级软实时"内核升级为**形式化意义上的严格硬实时 RTOS**。
 > 约束：对现有应用零侵入——新增 TCB 字段默认 0 = 非实时任务，行为完全不变；
 >       所有断言/审计均为零挂起风险的粘性标志，不在临界区触发异常。
@@ -118,16 +118,21 @@ uint8_t  npls_hold;       /* 持有非抢占临界区(锁调度)标记（阶段2
 ## 5. 阶段 4：中断→任务端到端最坏延迟
 
 ### 4.1 中断延迟 WCET 形式化
-- 固化"ISR→sem_give→PendSV→切换"最坏路径上限（用 `rtos_cycle` 测出并断言），非仅运行时 benign 测试。
+- ✅ 已交付：`rtos_irq.c` 的 `IRQ_WAKE_BUDGET_CYCLES` 预算上限 + P4 自测「上半部有界性」测量验证
+  （关中断隔离窗口，16 次取最大，边界 <10us 断言 PASS），固化"ISR→sem_give→PendSV→切换"最坏路径上限。
 
 ### 4.2 最高优先级硬实时任务的立即抢占保证
-- `rtos_task_create_rt` 里断言 `prio <= RTOS_PRIO_BH_HIGH`，防止硬实时任务被放到会被时间片耽误的低优先级。
+- ✅ 已交付：`rtos_task_create_rt` 里断言 `prio <= RTOS_PRIO_BH_HIGH`（越界触发 `RTOS_SCHED_ASSERT(0)`
+  并裁剪到上限），防止硬实时任务被放到会被时间片耽误的低优先级。deadline 自测三例均用 prio=3 验证。
 
 ### 4.3 看门狗联动
-- `deadline_miss / wcet_miss / crit_overflow / sched_invalid` 任一非零且 `RTOS_HARD_RT_WDT` 开启 →
-  触发 `rtos_watchdog` 报警/复位（复用已有 marathon 看门狗基础设施）。
+- ✅ 已交付：`rtos_hard_rt_wdt_check()`（sched.c）在 tick 临界区内检查
+  `rtos_rt_violation() | g_rtos_crit_overflow | g_rtos_sched_invalid`，若 `RTOS_HARD_RT_WDT` 开启且
+  任一非零则武装 IWDG（2s 超时）。默认关闭（避免开发期自测反例误复位）；自测返回前已恢复全局
+  聚合计数，故开启时跑 RTOSALL 不会误复位。
 
 **阶段 4 交付**：端到端延迟有上界且可验证，违约可联动看门狗做确定性故障处理。
+验证：2026-08-01 烧录 build_p3，RTOSALL 25 子项全 PASS（含 deadline 自测），`g_sched_invariant_fail=0`。
 
 ---
 

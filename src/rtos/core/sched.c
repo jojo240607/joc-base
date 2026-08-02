@@ -50,6 +50,25 @@ void rtos_sched_assert_fail(const char *file, int line) {
     g_sched_bad_tcb  = g_running;   /* 当前运行任务即最可能双挂的一方 */
     g_sched_bad_line = (uint32_t)line;
     g_sched_invariant_fail++;
+#ifndef RTOS_SCHED_ASSERT_OFF
+    /* 诊断：直接把断言行号打到串口，便于无 GDB 环境定位断言来源。
+     * 用 polling HAL 发送（不依赖 TX 中断，避免临界区内 uart_tx_blocking 死锁）。
+     * 这是断言失败（调度器不变量已破坏）时的最后手段日志，核心层仅以 extern
+     * 形式引用驱动层 g_debug_uart_hal，不引入头文件依赖。 */
+    extern void uart_hal_putc(void *h, char c);
+    extern void *g_debug_uart_hal;
+    void *hal = g_debug_uart_hal;
+    if (!hal) return;
+    const char *pfx = "[SCHED_ASSERT] line=";
+    while (*pfx) uart_hal_putc(hal, *pfx++);
+    uint32_t v = (uint32_t)line;
+    char dig[12]; int di = 0;
+    if (v == 0) dig[di++] = '0';
+    while (v) { dig[di++] = (char)('0' + (v % 10)); v /= 10; }
+    while (di > 0) uart_hal_putc(hal, dig[--di]);
+    uart_hal_putc(hal, '\r');
+    uart_hal_putc(hal, '\n');
+#endif
 }
 
 /* ---- 硬实时违约标志（见 docs/rtos-hard-realtime-plan.md 阶段1，零挂起风险） ----
@@ -123,6 +142,22 @@ uint32_t rtos_rt_violation(void) {
 /* 临界区超长计数查询（看门狗/RTOSALL 聚合用）。 */
 uint32_t rtos_rt_crit_overflow(void) {
     return g_rtos_crit_overflow;
+}
+
+/* 硬实时看门狗联动（阶段4 §4.3）：若 RTOS_HARD_RT_WDT 开启且任一违约计数非零，
+ * 武装独立看门狗使违约升级为确定性复位。零挂起风险：仅在 tick 中检查、不阻塞调度。
+ * 返回 1=已触发联动（看门狗 armed），0=无需触发或本宏关闭。 */
+uint32_t rtos_hard_rt_wdt_check(void) {
+#if RTOS_HARD_RT_WDT
+    if (rtos_rt_violation() != 0 || g_rtos_crit_overflow != 0
+        || g_rtos_sched_invalid != 0) {
+        if (!rtos_watchdog_is_armed()) {
+            rtos_watchdog_enable(2000);   /* 2s 超时：违约后若未恢复则复位 */
+        }
+        return 1;
+    }
+#endif
+    return 0;
 }
 
 /* 硬实时辅助：任务被释放/唤醒时记录释放时刻并清零本窗口预算。
@@ -471,6 +506,9 @@ void rtos_tick_isr(void *ctx) {
      * 并唤醒“定时器任务”；回调在定时器任务上下文执行（任务模式，可耗时）。
      * 过期判定用无符号 tick 比较，48 天(0xFFFFFFFF→0)翻转安全。 */
     rtos_timer_tick();
+    /* 阶段4 §4.3：硬实时看门狗联动检查（若开启且存在违约，武装 IWDG）。
+     * 放在临界区内、timer tick 之后，确保违约状态读到的瞬间一致性。 */
+    rtos_hard_rt_wdt_check();
     rtos_crit_exit(st);
     if (awoke) rtos_schedule_request();
 }

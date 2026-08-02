@@ -252,6 +252,12 @@ int  rtos_sched_validate(void);
 /* 控制台 RTOSSCHED 用的详细打印（每任务 C/T/P/WCRT）。 */
 void rtos_sched_analysis_print(void);
 
+/* ---- 硬实时看门狗联动（阶段4 §4.3，sched.c 定义） ----
+ * 若 RTOS_HARD_RT_WDT 开启且任一硬性实时违约计数（deadline/wcet/crit/sched）非零，
+ * 武装独立看门狗（IWDG）使违约升级为确定性复位。零挂起风险：仅在 tick 中检查，
+ * 不阻塞调度。返回 1=已触发看门狗联动，0=无需触发（或本宏关闭）。 */
+uint32_t rtos_hard_rt_wdt_check(void);
+
 /* 优先级天花板辅助（RTOS_LOCK_CEILING 宏用，仅任务上下文）：把当前任务有效优先级
  * 顶到 ceil_prio 并返回原优先级；restore 恢复原优先级。 */
 uint8_t rtos_task_raise_prio(uint8_t ceil_prio);

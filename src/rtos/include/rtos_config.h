@@ -106,6 +106,17 @@
   #define RTOS_CRIT_MAX_CYCLES 336000U
 #endif
 
+/* 硬实时看门狗联动（见 docs/rtos-hard-realtime-plan.md 阶段4 §4.3）：
+ * 开启后，若任一硬性实时违约计数（deadline_miss / wcet_miss / crit_overflow /
+ * sched_invalid）非零，内核在 tick 中武装独立看门狗（IWDG），使违约升级为确定性
+ * 复位/报警，而非静默漏过。默认关闭：避免自测故意触发的违约（deadline 自测反例）
+ * 导致开发板意外复位；生产构建可开启获得确定性故障处理。
+ * 注意：deadline/wcet/crit 自测在返回前已恢复全局聚合计数，故开启本宏时运行
+ * RTOSALL 不会因自测反例误复位（任务级 miss 仍留，但全局聚合已清零）。 */
+#ifndef RTOS_HARD_RT_WDT
+  #define RTOS_HARD_RT_WDT 0
+#endif
+
 /* 零延迟 IRQ / BASEPRI 阈值（见 docs/rtos-design.md §4.5）：高于该“优先级数”的极少
  * 数最高优先级 ISR 永不被内核临界区屏蔽（用 BASEPRI 而非 PRIMASK 关中断）。
  * 本项目默认 4 = 启用选择性屏蔽：配合语义带 IRQ_PRIO_KERNEL=5 / IRQ_PRIO_ZERO_LATENCY=2
