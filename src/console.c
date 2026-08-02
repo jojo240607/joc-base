@@ -239,6 +239,7 @@ static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_r
 static void cmd_rtosirq(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSIRQ", rtos_irq_selftest()); }
 static void cmd_rtosinv(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSINV", rtos_inv_selftest()); }
 static void cmd_rtosfuzz(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFUZZ", rtos_fuzz_selftest()); }
+static void cmd_rtosaccept(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSACCEPT", rtos_accept_selftest()); }
 #endif /* RTOS_SELFTEST */
 
 /* §6.6 覆盖率：触发把当前累积的 gcov 计数以 .gcda 二进制帧经控制台导出。
@@ -404,7 +405,7 @@ static void cmd_ioxfer(app_ctx_t *c, const char *line)
 /* ---- UART DMA 验证命令：把控制台 UART 切到 DMA 模式，先用 DMA TX 发出一个
  * 特征串（主机若收到即证明 DMAT/路由/TC 全对），再做一个 DMA RX 收 4 字节。
  *
- * 关键在于：bulk RX 读会把 RX DMA 流配成“收满 4 字节才 TC”的阻塞传输，必须保证
+ * 关键在于：bulk RX 读会把 RX DMA 流配成"收满 4 字节才 TC"的阻塞传输，必须保证
  * 主机发的 4 字节确实落在这条已 armed 的 RX DMA 上。所以板子在 armed 之前先打印
  * "RX-READY"，主机看到后才发 4 字节——否则主机早先连发的字节会被交互控制台
  * （IRQ/ring）在模式切换途中消费掉，等 bulk RX armed 时线上已经没有在途字节了。
@@ -516,6 +517,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSUSR",  cmd_rtosusr,  0 },
     { "RTOSIRQ",  cmd_rtosirq,  0 },
     { "RTOSINV",  cmd_rtosinv,  0 },
+    { "RTOSACCEPT", cmd_rtosaccept, 0 },
     { "RTOSFUZZ", cmd_rtosfuzz, 0 },
 #endif
     { "RTOSCOV",  cmd_rtoscov,  0 },   /* §6.6 覆盖率：导出 gcov .gcda 帧 */

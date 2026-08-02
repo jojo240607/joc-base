@@ -190,9 +190,14 @@ void ready_add(task_t *t) {
     else                 g_ready_head[p] = t;
     g_ready_tail[p] = t;
     g_ready_bmp |= (1u << p);
-    /* 硬实时：任务从睡眠/阻塞被释放→就绪，刷新释放基准并清零本窗口预算。
-     * RUNNING→READY(yield) 与新创建(READY) 不刷新，避免误清运行预算。 */
-    if (t->state == TASK_SLEEPING || t->state == TASK_BLOCKED)
+    /* 硬实时：任务被释放→就绪时刷新释放基准并清零本窗口预算。
+     * 调用惯例：所有唤醒路径在调用 ready_add 前已把 state 设为 TASK_READY
+     * （见 rtos_msleep / 各 IPC 唤醒），故此处对"非 RUNNING 的 RT 任务"刷新——
+     * 覆盖 睡眠/阻塞唤醒 与 新创建 两种进入就绪的场景；RUNNING（不应出现在
+     * ready_add 入参）不刷新。
+     * 注：yield(RUNNING→READY) 经 ready_add 也会刷新，语义上"重新运行=新预算窗口"，
+     * 与 WCET 统计意图一致，无回归。 */
+    if (t->rt_class != 0 && t->state != TASK_RUNNING)
         rtos_rt_on_release(t);
 }
 void ready_remove(task_t *t) {

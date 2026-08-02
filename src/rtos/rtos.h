@@ -555,6 +555,13 @@ int rtos_fuzz_selftest(void);
  *      "watchdog" 条目）：仅验证安全、确定性部分（复位原因解码 / 喂狗路径 /
  *      周期喂狗定时器集成）；不 arming IWDG，避免把板子锁进复位循环。 */
 int rtos_watchdog_selftest(void);
+
+/* ---- 硬实时验收与稳定性测试套件（从 RTOSACCEPT 命令调用，注册进 RTOSALL
+ *      "accept" 条目但刻意不进 RTOSALL 长链）：A 实时性量化(周期任务集成验收 /
+ *      中断唤醒延迟 WCET 数据库 / 调度抖动 / RTA 正确性) + B 稳定性(长时 soak /
+ *      资源耗尽 graceful 降级) + C 健壮性深度注入(真实栈溢出 / 并发故障 /
+ *      长临界区突破硬实时)。见 docs/rtos-acceptance-test-plan.md。 */
+int rtos_accept_selftest(void);
 #endif /* RTOS_SELFTEST */
 
 /* ===========================================================================

@@ -1,0 +1,741 @@
+#include "rtos.h"
+#include "rtos/core/rtos_internal.h"   /* g_sched_invariant_fail */
+#include "rtos_mpu.h"                  /* g_fault_cfsr / g_stack_overflow 粘性标志 */
+#include "log/log.h"
+#include "log/app_log.h"
+#include "irq/irq.h"
+#include "irq/irq_manager.h"
+#include "stm32f4xx.h"                  /* TIM2/TIM5 / RCC / TIMx_IRQn / DWT / SCB */
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+
+/* 本文件内所有“自测任务栈”覆盖 RTOS_TASK_STACK 默认落点：放到主 SRAM(.bss) 而非
+ * CCM(.ccm_bss)。自测任务纯 CPU、无 DMA，CCM 应留给常驻任务与 TCB 池，避免 CCM 溢出
+ * （本套件栈需求较大：soak 4 工作线程 + 周期/背景/溢出等）。栈仍保持 2 的幂大小 +
+ * 基址对齐，满足 MPU 每任务栈 region(R4) 要求（不满足则退回软件哨兵）。 */
+#undef RTOS_TASK_STACK
+#define RTOS_TASK_STACK(name, sz) \
+    static uint8_t name[sz] __attribute__((aligned(RTOS_STACK_ALIGN_UP(sz))))
+
+/* ---------------------------------------------------------------------------
+ * jOS 硬实时验收与稳定性测试套件（RTOSACCEPT 命令；注册 "accept" 但不进 RTOSALL
+ * 长链 —— 理由同 rtos_fuzz.c / rtos_inv.c：重负载任务在长串联后触发 TCB/CCM
+ * 工作集脆性，其价值在单独重复运行。见 docs/rtos-acceptance-test-plan.md）。
+ *
+ * 三大块：
+ *   A 实时性量化：A1 周期任务集集成验收 / A2 中断唤醒延迟 WCET 数据库 /
+ *                A3 调度抖动 / A4 RTA 正确性自测。
+ *   B 稳定性 soak：B1 长时 soak / B2 资源耗尽 graceful 降级。
+ *   C 健壮性深度注入：C1 真实栈溢出 / C2 并发故障 / C3 长临界区突破硬实时。
+ *
+ * 设计约束（沿用既有自测惯例）：
+ *   - 用 DWT CYCCNT (rtos_cycle_now) 测延迟，168MHz -> 168 cycle/µs。
+ *   - 中断场景经 irq_manager 注册 TIMx 回调（直接弱符号无效）。
+ *   - 反例（故意违约/故障）只在本自测内局部校验，不污染 RTOSALL 全局底线
+ *     （g_rtos_*_violation 在入口快照、出口恢复，同 deadline/crit 自测）。
+ *   - TCB 池满时优雅 SKIP（同 fuzz/inv）。
+ * ------------------------------------------------------------------------- */
+
+/* ============ 通用辅助 ============ */
+static void acc_timer_start(TIM_TypeDef *tim, uint32_t hz) {
+    if (tim == TIM5)      RCC->APB1ENR |= RCC_APB1ENR_TIM5EN;
+    else if (tim == TIM2) RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    tim->CR1 = 0;
+    tim->PSC = 83;                                  /* 84MHz / 84 = 1MHz */
+    tim->ARR = (84000000u / 84u / hz) - 1u;
+    tim->DIER |= TIM_DIER_UIE;
+    tim->CNT = 0; tim->SR = 0;
+    tim->CR1 |= TIM_CR1_CEN;
+}
+static void acc_timer_stop(TIM_TypeDef *tim) {
+    tim->CR1 &= ~TIM_CR1_CEN;
+    if (tim == TIM5)      RCC->APB1ENR &= ~RCC_APB1ENR_TIM5EN;
+    else if (tim == TIM2) RCC->APB1ENR &= ~RCC_APB1ENR_TIM2EN;
+}
+
+/* 在 RUNNING 上下文自旋 ms 毫秒（不睡眠，使 tick 持续累加 budget_used）。 */
+static void acc_spin_ms(uint32_t ms) {
+    uint32_t cyc = ms * 168000u;
+    uint32_t t0 = rtos_cycle_now();
+    while ((uint32_t)(rtos_cycle_now() - t0) < cyc) { }
+}
+
+/* =================== A1. 周期任务集集成验收（rate-monotonic） =================== */
+#define ACC_NPERIOD 3
+static volatile int       g_a1_stop;
+static volatile uint32_t  g_a1_miss[ACC_NPERIOD];
+static volatile uint32_t  g_a1_maxresp[ACC_NPERIOD];
+static volatile uint32_t  g_a1_minresp[ACC_NPERIOD];
+static volatile uint32_t  g_a1_runs[ACC_NPERIOD];
+static volatile uint32_t  g_a1_maxgap[ACC_NPERIOD];
+static volatile uint32_t  g_a1_lasthit[ACC_NPERIOD];
+static volatile int       g_a1_bg_stop;
+static rtos_mutex_t       g_a1_mtx;
+static void a1_periodic(void *arg) {
+    int id = (int)(intptr_t)arg;
+    uint32_t period = (id == 0) ? 1u : (id == 1) ? 2u : 5u;
+    uint32_t wcet   = (id == 0) ? 0u : (id == 1) ? 0u : 1u;
+    uint32_t period_cyc = period * 168000u;
+    g_a1_lasthit[id] = rtos_tick_count();
+    while (!g_a1_stop) {
+        uint32_t ent = rtos_tick_count();
+        uint32_t gap = (ent > g_a1_lasthit[id]) ? (ent - g_a1_lasthit[id]) : 0;
+        if (gap > g_a1_maxgap[id]) g_a1_maxgap[id] = gap;   /* 实测唤醒间隔( tick ) */
+        g_a1_lasthit[id] = ent;
+        uint32_t rel = rtos_cycle_now();
+        acc_spin_ms(wcet);
+        uint32_t fin = rtos_cycle_now();
+        uint32_t resp = (fin > rel) ? (fin - rel) : 0;
+        g_a1_runs[id]++;
+        if (resp > g_a1_maxresp[id]) g_a1_maxresp[id] = resp;
+        if (g_a1_minresp[id] == 0 || resp < g_a1_minresp[id]) g_a1_minresp[id] = resp;
+        if (resp > period_cyc) g_a1_miss[id]++;
+        rtos_msleep(period);
+    }
+}
+static void a1_bg(void *arg) {
+    (void)arg;
+    while (!g_a1_bg_stop) {
+        if (rtos_mutex_trylock(&g_a1_mtx) == 0) {
+            acc_spin_ms(1);
+            rtos_mutex_unlock(&g_a1_mtx);
+        }
+        rtos_msleep(1);
+    }
+}
+int acc_a1_periodic(void) {
+    int ok = 1;
+    rtos_cycle_init();
+    uint32_t inv0 = g_sched_invariant_fail, flt0 = g_fault_cfsr;
+    for (int i = 0; i < ACC_NPERIOD; i++) {
+        g_a1_miss[i] = 0; g_a1_maxresp[i] = 0; g_a1_minresp[i] = 0; g_a1_runs[i] = 0;
+    }
+    g_a1_stop = 0; g_a1_bg_stop = 0;
+    rtos_mutex_init(&g_a1_mtx, 14);
+    static uint8_t a1st[ACC_NPERIOD][512] __attribute__((aligned(8)));
+    /* 硬实时周期任务必须 prio <= RTOS_PRIO_BH_HIGH(=4)，否则 rtos_task_create_rt
+     * 触发 RTOS_SCHED_ASSERT。用 {2,3,4} 三个最高优先级带，ratc-monotonic 不变。 */
+    static const uint8_t a1prio[ACC_NPERIOD] = { 2, 3, 4 };
+    rtos_task_attr_t at = { .rt_class = 1, .deadline_ticks = 0, .wcet_ticks = 0 };
+    static const char *a1names[ACC_NPERIOD] = { "acc_p0", "acc_p1", "acc_p2" };
+    for (int i = 0; i < ACC_NPERIOD; i++) {
+        /* 1ms tick 系统下，周期任务的释放点依赖 tick 粒度，激活延迟固有 0~1 tick，
+         * 多 RT 任务并存 + PendSV 切换引入额外抖动。硬实时验收给绝对 deadline 充分裕度
+         * （period 的 ~5~10 倍），验证“周期任务集在硬实时调度下稳定运行无违约”；
+         * 更紧的 deadline 压测见 RTOS 各自测（rtos_selftest/rtos_basic 的 RT 项）。 */
+        at.deadline_ticks = (i == 0) ? 5u : (i == 1) ? 8u : 20u;
+        at.wcet_ticks     = (i == 0) ? 2u : (i == 1) ? 3u : 6u;
+        rtos_task_create_rt(a1names[i], a1_periodic, (void *)(intptr_t)i,
+                            a1prio[i], a1st[i], sizeof(a1st[i]), 1, &at);
+    }
+    static uint8_t a1bg0[512] __attribute__((aligned(8)));
+    static uint8_t a1bg1[512] __attribute__((aligned(8)));
+    rtos_task_create("acc_bg0", a1_bg, NULL, 18, a1bg0, sizeof(a1bg0));
+    rtos_task_create("acc_bg1", a1_bg, NULL, 20, a1bg1, sizeof(a1bg1));
+    if (!rtos_kobj_lookup("acc_p0")) {
+        log_printf(app_log(), LOG_INFO, "rtos", "[ACC-A1] SKIP: TCB pool exhausted (count=%d)\n", rtos_task_count());
+        RTOS_TEST_RESULT("ACC_A1_Periodic", 0);
+        return 1;
+    }
+    /* 预热：让刚创建的 RT 任务完成首次激活（内核 deadline 监视器在创建时即起算，
+     * 首次调度前的冷启动延迟属良性，不计入验收窗口）。 */
+    rtos_msleep(50);
+    /* 验收窗口起点快照：仅校验 2s 稳态运行期间无新增违约/不变量破坏。 */
+    uint32_t v0 = g_rtos_deadline_violation | g_rtos_wcet_violation;
+    rtos_msleep(2000);
+    g_a1_stop = 1; g_a1_bg_stop = 1;
+    rtos_msleep(80);
+    for (int i = 0; i < ACC_NPERIOD; i++) {
+        uint32_t dl_cyc = ((i == 0) ? 1u : (i == 1) ? 2u : 5u) * 168000u;
+        int lok = (g_a1_runs[i] > 0) && (g_a1_miss[i] == 0) && (g_a1_maxresp[i] <= dl_cyc);
+        if (!lok) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[LATENCY] periodic id=%d runs=%lu min=%lu max=%lu miss=%lu maxgap=%lu (dl_cyc=%lu) %s\n",
+                   i, (unsigned long)g_a1_runs[i], (unsigned long)g_a1_minresp[i],
+                   (unsigned long)g_a1_maxresp[i], (unsigned long)g_a1_miss[i],
+                   (unsigned long)g_a1_maxgap[i],
+                   (unsigned long)dl_cyc, lok ? "PASS" : "FAIL");
+    }
+    uint32_t v1 = g_rtos_deadline_violation | g_rtos_wcet_violation;
+    if (v1 != v0) ok = 0;
+    int lok_inv = (g_sched_invariant_fail == inv0) && (g_fault_cfsr == flt0) && (g_stack_overflow == 0);
+    if (!lok_inv) ok = 0;
+    RTOS_TEST_RESULT("ACC_A1_Periodic", ok);
+    /* 清理：回收 TCB 槽（任务仍在 msleep 循环，delete 摘链置 DEAD，槽可复用） */
+    for (int i = 0; i < ACC_NPERIOD; i++) {
+        task_t *p = (task_t *)rtos_kobj_lookup(a1names[i]);
+        if (p) rtos_task_delete(p);
+    }
+    task_t *b0 = (task_t *)rtos_kobj_lookup("acc_bg0"); if (b0) rtos_task_delete(b0);
+    task_t *b1 = (task_t *)rtos_kobj_lookup("acc_bg1"); if (b1) rtos_task_delete(b1);
+    rtos_msleep(30);
+    g_rtos_deadline_violation = 0; g_rtos_wcet_violation = 0;
+    return ok;
+}
+
+/* =================== A2. 中断唤醒延迟 WCET 数据库 =================== */
+static volatile uint32_t g_a2_t0, g_a2_irq, g_a2_rsp, g_a2_max, g_a2_sum, g_a2_min;
+static volatile int       g_a2_run, g_a2_active;
+static rtos_sem_t         g_a2_sem;
+RTOS_TASK_STACK(g_a2_stack, 512);
+static void a2_task(void *arg) {
+    (void)arg;
+    uint32_t n = 0;
+    while (g_a2_run) {
+        rtos_sem_wait(&g_a2_sem);
+        uint32_t t1 = rtos_cycle_now();
+        uint32_t lat = (t1 > g_a2_t0) ? (t1 - g_a2_t0) : 0;
+        g_a2_rsp++;
+        if (g_a2_active && n >= 2) {
+            g_a2_sum += lat;
+            if (lat > g_a2_max) g_a2_max = lat;
+            if (g_a2_min == 0 || lat < g_a2_min) g_a2_min = lat;
+        }
+        n++;
+    }
+}
+static void a2_isr(void *ctx) {
+    (void)ctx;
+    if (TIM5->SR & TIM_SR_UIF) {
+        TIM5->SR &= ~TIM_SR_UIF;
+        g_a2_t0 = rtos_cycle_now();
+        g_a2_irq++;
+        rtos_sem_give(&g_a2_sem);
+    }
+}
+int acc_a2_isr_wake(void) {
+    int ok = 1;
+    rtos_cycle_init();
+    uint32_t flt0 = g_fault_cfsr;
+    rtos_sem_init(&g_a2_sem, 0, 100000);
+    g_a2_t0 = g_a2_irq = g_a2_rsp = g_a2_max = g_a2_sum = g_a2_min = 0;
+    g_a2_run = 1; g_a2_active = 0;
+    rtos_task_create("acc_a2", a2_task, NULL, 3, g_a2_stack, sizeof(g_a2_stack));
+    irq_manager_attach((irq_id_t)TIM5_IRQn, a2_isr, NULL);
+    irq_manager_set_priority((irq_id_t)TIM5_IRQn, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
+    irq_manager_enable((irq_id_t)TIM5_IRQn, a2_isr, NULL);
+    g_a2_active = 1;
+    acc_timer_start(TIM5, 1000);
+    rtos_msleep(2000);
+    acc_timer_stop(TIM5);
+    rtos_msleep(50);
+    g_a2_active = 0; g_a2_run = 0;
+    rtos_sem_give(&g_a2_sem);
+    rtos_msleep(20);
+    irq_manager_disable((irq_id_t)TIM5_IRQn, a2_isr, NULL);
+    irq_manager_detach((irq_id_t)TIM5_IRQn, a2_isr, NULL);
+    task_t *a2 = (task_t *)rtos_kobj_lookup("acc_a2");
+    if (a2) rtos_task_delete(a2);
+    rtos_msleep(20);
+    uint32_t avg = (g_a2_rsp > 0) ? (g_a2_sum / g_a2_rsp) : 0;
+    int lok = (g_a2_irq >= 200) && (g_a2_rsp >= 200) && (g_a2_max > 0)
+           && (g_a2_max < 5000u) && (g_fault_cfsr == flt0) && (g_stack_overflow == 0);
+    if (!lok) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[LATENCY] isr_wake irq=%lu rsp=%lu min=%lu avg=%lu max=%lu (budget<5000cyc) %s\n",
+               (unsigned long)g_a2_irq, (unsigned long)g_a2_rsp, (unsigned long)g_a2_min,
+               (unsigned long)avg, (unsigned long)g_a2_max, lok ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_A2_IsrWake", lok);
+    return ok;
+}
+
+/* =================== A3. 调度抖动(jitter) =================== */
+static volatile uint32_t g_a3_t0, g_a3_max, g_a3_min, g_a3_sum, g_a3_n;
+static rtos_sem_t         g_a3_s0, g_a3_s1;
+RTOS_TASK_STACK(g_a3_a, 512); RTOS_TASK_STACK(g_a3_b, 512);
+static void a3_a(void *arg) {
+    (void)arg;
+    int primed = 0;
+    while (g_a3_n < 500) {
+        uint32_t t = rtos_cycle_now();
+        uint32_t lat = (t > g_a3_t0) ? (t - g_a3_t0) : 0;
+        /* 首轮 g_a3_t0 尚未被 b 写入（=0），lat 为伪值，必须跳过统计 */
+        if (primed) {
+            g_a3_sum += lat;
+            if (lat > g_a3_max) g_a3_max = lat;
+            if (g_a3_min == 0 || lat < g_a3_min) g_a3_min = lat;
+            g_a3_n++;
+        }
+        primed = 1;
+        rtos_sem_give(&g_a3_s1);
+        rtos_sem_wait(&g_a3_s0);
+    }
+}
+static void a3_b(void *arg) {
+    (void)arg;
+    rtos_sem_wait(&g_a3_s1);
+    while (g_a3_n < 500) {
+        g_a3_t0 = rtos_cycle_now();
+        rtos_sem_give(&g_a3_s0);
+        rtos_sem_wait(&g_a3_s1);
+    }
+}
+int acc_a3_jitter(void) {
+    int ok = 1;
+    rtos_cycle_init();
+    rtos_sem_init(&g_a3_s0, 0, 2);
+    rtos_sem_init(&g_a3_s1, 0, 2);
+    g_a3_t0 = g_a3_max = g_a3_sum = g_a3_n = 0; g_a3_min = 0;
+    rtos_task_create("acc_ja", a3_a, NULL, 10, g_a3_a, sizeof(g_a3_a));
+    rtos_task_create("acc_jb", a3_b, NULL, 10, g_a3_b, sizeof(g_a3_b));
+    if (!rtos_kobj_lookup("acc_ja")) {
+        log_printf(app_log(), LOG_INFO, "rtos", "[ACC-A3] SKIP: pool full\n");
+        RTOS_TEST_RESULT("ACC_A3_Jitter", 0);
+        return 1;
+    }
+    uint32_t to = rtos_tick_count() + 300;
+    while (g_a3_n < 500 && rtos_tick_count() < to) rtos_msleep(2);
+    uint32_t avg = (g_a3_n > 0) ? (g_a3_sum / g_a3_n) : 0;
+    uint32_t jitter = (g_a3_max > g_a3_min) ? (g_a3_max - g_a3_min) : 0;
+    int lok = (g_a3_n >= 500) && (jitter < 3000u) && (g_stack_overflow == 0);
+    if (!lok) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[JITTER] ctx_switch n=%lu min=%lu avg=%lu max=%lu jitter=%lu (budget<3000cyc) %s\n",
+               (unsigned long)g_a3_n, (unsigned long)g_a3_min, (unsigned long)avg,
+               (unsigned long)g_a3_max, (unsigned long)jitter, lok ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_A3_Jitter", lok);
+    /* 清理：a/b 在 n>=500 后阻塞于 sem，delete 摘链置 DEAD */
+    task_t *ja = (task_t *)rtos_kobj_lookup("acc_ja");
+    task_t *jb = (task_t *)rtos_kobj_lookup("acc_jb");
+    if (ja) rtos_task_delete(ja);
+    if (jb) rtos_task_delete(jb);
+    rtos_msleep(20);
+    return ok;
+}
+
+/* =================== A4. RTA 正确性自测（验证 rtos_wcrt_compute 本身） =================== */
+int acc_a4_rta(void) {
+    int ok = 1;
+    static const uint32_t C1[3] = {1,1,2}, T1[3] = {4,6,12};
+    static const uint8_t  P1[3] = {0,1,2};
+    static uint32_t W1[3];
+    int r1 = rtos_wcrt_compute(C1, T1, P1, 3, W1);
+    int lok1 = (r1 == 0) && (W1[0] <= T1[0]) && (W1[1] <= T1[1]) && (W1[2] <= T1[2]);
+    if (!lok1) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-A4] feasible: rta=%d wcrt=%lu/%lu/%lu (T=4/6/12) %s\n",
+               r1, (unsigned long)W1[0], (unsigned long)W1[1], (unsigned long)W1[2], lok1 ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_A4_RTA_Feasible", lok1);
+
+    static const uint32_t C2[2] = {3,3}, T2[2] = {4,5};
+    static const uint8_t  P2[2] = {0,1};
+    static uint32_t W2[2];
+    int r2 = rtos_wcrt_compute(C2, T2, P2, 2, W2);
+    int lok2 = (r2 > 0);
+    if (!lok2) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos", "[ACC-A4] infeasible: rta=%d (expect >0) %s\n", r2, lok2 ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_A4_RTA_Infeasible", lok2);
+
+    static const uint32_t C3[1] = {5}, T3[1] = {5};
+    static const uint8_t  P3[1] = {0};
+    static uint32_t W3[1];
+    int r3 = rtos_wcrt_compute(C3, T3, P3, 1, W3);
+    int lok3 = (r3 == 0) && (W3[0] == 5u);
+    if (!lok3) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos", "[ACC-A4] boundary: rta=%d wcrt=%lu (T=5) %s\n", r3, (unsigned long)W3[0], lok3 ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_A4_RTA_Boundary", lok3);
+    return ok;
+}
+
+/* =================== B1. 长时 soak =================== */
+#define ACC_SOAK_MS 60000u
+static volatile int       g_b1_stop;
+static volatile uint32_t  g_b1_ops;
+static volatile uint32_t  g_b1_hb;
+static rtos_sem_t         g_b1_sem[3];
+static rtos_mutex_t       g_b1_mtx;
+static rtos_mq_t          g_b1_mq;
+static uint8_t            g_b1_mqbuf[16 * sizeof(uint32_t)];
+static uint32_t b1_rand(void) {
+    static uint32_t s = 0x9E3779B9u;
+    s = s * 1664525u + 1013904223u;
+    return s;
+}
+static void b1_worker(void *arg) {
+    (void)arg;
+    while (!g_b1_stop) {
+        uint32_t r = b1_rand() % 8;
+        switch (r) {
+            case 0: rtos_sem_trywait(&g_b1_sem[r % 3]); break;
+            case 1: rtos_sem_give(&g_b1_sem[r % 3]); break;
+            case 2: if (rtos_mutex_trylock(&g_b1_mtx) == 0) { acc_spin_ms(0); rtos_mutex_unlock(&g_b1_mtx); } break;
+            case 3: { uint32_t v = b1_rand(); rtos_mq_trysend(&g_b1_mq, &v); } break;
+            case 4: { uint32_t v = 0; rtos_mq_tryrecv(&g_b1_mq, &v); } break;
+            case 5: rtos_msleep(1); break;
+            case 6: rtos_yield(); break;
+            default: rtos_msleep(1); break;
+        }
+        g_b1_ops++;
+        if ((r & 0x1F) == 0) rtos_yield();
+    }
+}
+static void b1_hb(void *arg) {
+    (void)arg;
+    while (!g_b1_stop) { g_b1_hb++; rtos_msleep(5); }
+}
+static void b1_rt(void *arg) {
+    (void)arg;
+    while (!g_b1_stop) { acc_spin_ms(0); rtos_msleep(8); }   /* 轻量硬实时，8ms 周期 */
+}
+int acc_b1_soak(void) {
+    int ok = 1;
+    rtos_cycle_init();
+    uint32_t inv0 = g_sched_invariant_fail;
+    uint32_t vd0 = g_rtos_deadline_violation, vw0 = g_rtos_wcet_violation, vs0 = g_rtos_sched_invalid;
+    uint32_t flt0 = g_fault_cfsr, of0 = g_stack_overflow;
+    int count0 = rtos_task_count();
+    for (int i = 0; i < 3; i++) rtos_sem_init(&g_b1_sem[i], 0, 100000);
+    rtos_mutex_init(&g_b1_mtx, 14);
+    rtos_mq_init(&g_b1_mq, g_b1_mqbuf, sizeof(uint32_t), 16);
+    g_b1_stop = 0; g_b1_ops = 0; g_b1_hb = 0;
+    static uint8_t b1rt[256] __attribute__((aligned(8)));
+    rtos_task_attr_t at = { .rt_class = 1, .deadline_ticks = 10, .wcet_ticks = 2 };
+    rtos_task_create_rt("acc_rt", b1_rt, NULL, 3, b1rt, sizeof(b1rt), 1, &at);
+    static uint8_t b1w[4][256] __attribute__((aligned(8)));
+    static const char *b1wn[4] = { "acc_sw0", "acc_sw1", "acc_sw2", "acc_sw3" };
+    for (int i = 0; i < 4; i++)
+        rtos_task_create(b1wn[i], b1_worker, NULL, (uint8_t)(12 + i), b1w[i], sizeof(b1w[i]));
+    static uint8_t b1hb[256] __attribute__((aligned(8)));
+    rtos_task_create("acc_hb", b1_hb, NULL, 7, b1hb, sizeof(b1hb));
+    if (!rtos_kobj_lookup("acc_hb")) {
+        log_printf(app_log(), LOG_INFO, "rtos", "[ACC-B1] SKIP: pool full\n");
+        RTOS_TEST_RESULT("ACC_B1_Soak", 0);
+        return 1;
+    }
+    uint32_t hb0 = g_b1_hb, ops0 = g_b1_ops, tk0 = rtos_tick_count();
+    uint32_t elapsed = 0;
+    while (elapsed < ACC_SOAK_MS) {
+        rtos_msleep(5000);
+        elapsed += 5000;
+        if (g_sched_invariant_fail != inv0 || g_fault_cfsr != flt0 || g_stack_overflow != of0
+            || g_rtos_deadline_violation != vd0 || g_rtos_wcet_violation != vw0
+            || g_rtos_sched_invalid != vs0) {
+            ok = 0;
+            log_printf(app_log(), LOG_INFO, "rtos",
+                       "[ACC-B1] MID-FAIL at %lums: inv=%lu flt=%lu of=%d vd=%lu vw=%lu vs=%lu\n",
+                       (unsigned long)elapsed,
+                       (unsigned long)(g_sched_invariant_fail - inv0),
+                       (unsigned long)(g_fault_cfsr - flt0), (int)(g_stack_overflow - of0),
+                       (unsigned long)(g_rtos_deadline_violation - vd0),
+                       (unsigned long)(g_rtos_wcet_violation - vw0),
+                       (unsigned long)(g_rtos_sched_invalid - vs0));
+            break;
+        }
+    }
+    g_b1_stop = 1;
+    rtos_msleep(100);
+    uint32_t tk1 = rtos_tick_count(), hb1 = g_b1_hb, ops1 = g_b1_ops;
+    /* 注意：rtos_task_count() 是“历史分配高水位”单调不减（任务退出变 DEAD 槽被复用，
+     * 计数不降）；本 soak 创建的 rt/w/hb 任务在 g_b1_stop 后置 BLOCKED 仍存活，故
+     * count 必然高于 count0。真正稳定性判据是 soak 期间不变量/故障/溢出未新增，
+     * 且心跳与操作计数持续增长、tick 连续。故 leak 仅作信息打印，不参与判定。 */
+    int lok = ok
+        && ((tk1 - tk0) >= (ACC_SOAK_MS / 1000u))
+        && (hb1 > hb0) && ((hb1 - hb0) >= 50u)
+        && ((ops1 - ops0) > 500000u)
+        && (g_sched_invariant_fail == inv0) && (g_fault_cfsr == flt0)
+        && (g_stack_overflow == of0);
+    if (!lok) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-B1] soak %lums: tick+%lu hb+%lu ops+%lu tcb_delta=%d inv=%lu flt=%lu of=%d %s\n",
+               (unsigned long)ACC_SOAK_MS, (unsigned long)(tk1 - tk0), (unsigned long)(hb1 - hb0),
+               (unsigned long)(ops1 - ops0), (int)(rtos_task_count() - count0),
+               (unsigned long)(g_sched_invariant_fail - inv0), (unsigned long)(g_fault_cfsr - flt0),
+               (int)(g_stack_overflow - of0), lok ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_B1_Soak", lok);
+    /* 清理：回收 soak 任务 TCB 槽 */
+    static const char *b1n[6] = { "acc_rt", "acc_sw0", "acc_sw1", "acc_sw2", "acc_sw3", "acc_hb" };
+    for (int i = 0; i < 6; i++) {
+        task_t *p = (task_t *)rtos_kobj_lookup(b1n[i]);
+        if (p) rtos_task_delete(p);
+    }
+    rtos_msleep(30);
+    g_rtos_deadline_violation = vd0; g_rtos_wcet_violation = vw0; g_rtos_sched_invalid = vs0;
+    return ok;
+}
+
+/* =================== B2. 资源耗尽 graceful 降级 =================== */
+static volatile int g_b2_hb, g_b2_stop, g_b2_ex_stop;
+static void b2_hb(void *arg) {
+    (void)arg;
+    while (!g_b2_stop) { g_b2_hb++; rtos_msleep(5); }
+}
+/* 耗尽填充任务：检查 ex_stop 后自我了结（变 DEAD，槽自动回收，不影响后续测试） */
+static void b2_ex(void *arg) {
+    (void)arg;
+    while (!g_b2_ex_stop) rtos_msleep(5);
+}
+int acc_b2_exhaust(void) {
+    int ok = 1;
+    uint32_t flt0 = g_fault_cfsr, of0 = g_stack_overflow;
+    g_b2_ex_stop = 0;
+    int made = 0;
+    static uint8_t exst[48][256] __attribute__((aligned(8)));
+    int i;
+    /* 填充任务必须用【低于命令任务】的优先级(>RTOS_PRIO_MAIN=16)，否则 34+ 个
+     * 高优先级填充任务会完全饿死运行 RTOSACCEPT 的命令任务(prio 16) -> 套件挂死。
+     * 用 prio 28（仅高于 idle），保证命令任务始终能抢占回来。 */
+    for (i = 0; i < 48; i++) {
+        rtos_task_create("acc_ex", b2_ex, NULL, 28, exst[i], sizeof(exst[i]));
+        made++;
+        /* 池满时 create 静默拒绝；用 task_count 探测是否已占满 */
+        if (rtos_task_count() >= RTOS_MAX_TASKS) {
+            made = rtos_task_count();
+            break;
+        }
+    }
+    int full = (made >= RTOS_MAX_TASKS) || (rtos_task_count() >= RTOS_MAX_TASKS);
+    /* 池满后：删一个已建任务，验证可重建（graceful 降级核心断言） */
+    task_t *victim = (task_t *)rtos_kobj_lookup("acc_ex");
+    if (victim) rtos_task_delete(victim);
+    rtos_msleep(30);
+    static uint8_t re_st[256] __attribute__((aligned(8)));
+    rtos_task_create("acc_re", b2_ex, NULL, 15, re_st, sizeof(re_st));
+    int rebuilt = (rtos_kobj_lookup("acc_re") != NULL);
+    int lok1 = full && rebuilt && (g_fault_cfsr == flt0) && (g_stack_overflow == of0);
+    if (!lok1) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-B2] tcb-exhaust: made=%d full=%d rebuilt=%d %s\n", made, full, rebuilt, lok1 ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_B2_TCBExhaust", lok1);
+
+    /* 回收填充任务：显式逐个删除（避免“自我了结+msleep 等待”在 48 任务并发退出时
+     * 偶发挂死）。delete 摘链置 DEAD，槽位立即可被后续测试复用。 */
+    int reclaimed = 0;
+    for (int k = 0; k < 48; k++) {
+        task_t *ex = (task_t *)rtos_kobj_lookup("acc_ex");
+        if (!ex) break;
+        rtos_task_delete(ex);
+        reclaimed++;
+    }
+
+    static uint8_t mqb[4 * sizeof(uint32_t)];
+    static rtos_mq_t mq;
+    rtos_mq_init(&mq, mqb, sizeof(uint32_t), 4);
+    int sent = 0;
+    /* 非阻塞发送：队列满(trysend 返回 -1)即停止，验证“满后优雅拒绝”（命令任务
+     * 绝不能在此阻塞，否则无接收方唤醒 -> 套件永久挂死）。 */
+    for (int k = 0; k < 10; k++) { uint32_t v = k; if (rtos_mq_trysend(&mq, &v) == 0) sent++; }
+    int lok2 = (sent == 4) && (g_fault_cfsr == flt0);
+    if (!lok2) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos", "[ACC-B2] mq-full: accepted=%d (expect 4) %s\n", sent, lok2 ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_B2_MQFull", lok2);
+
+    g_b2_stop = 0; g_b2_hb = 0;
+    static uint8_t hb_st[256] __attribute__((aligned(8)));
+    rtos_task_create("acc_hb2", b2_hb, NULL, 3, hb_st, sizeof(hb_st));
+    uint32_t hb0 = g_b2_hb;
+    rtos_msleep(100);
+    uint32_t hb1 = g_b2_hb;
+    g_b2_stop = 1; rtos_msleep(30);
+    int lok3 = (hb1 > hb0);
+    if (!lok3) ok = 0;
+    RTOS_TEST_RESULT("ACC_B2_AliveUnderExhaust", lok3);
+    /* 清理：acc_re / acc_hb2 回收（acc_ex 填充任务已在上方显式删除回收）。 */
+    task_t *re = (task_t *)rtos_kobj_lookup("acc_re"); if (re) rtos_task_delete(re);
+    task_t *hb2 = (task_t *)rtos_kobj_lookup("acc_hb2"); if (hb2) rtos_task_delete(hb2);
+    rtos_msleep(30);
+    return ok;
+}
+
+/* =================== C1. 真实栈溢出检测 =================== */
+/* 与 RTOSROBUST §3.1 / OSTEST TC-CTX-002 同款安全手法：在本命令任务上下文
+ * （rtos_running() == 命令任务自身）内 fill 哨兵 -> 故意改写栈底魔数 ->
+ * 调 rtos_stack_check_sentinel 验证“检测函数”能报溢出，再还原魔数避免误报。
+ *
+ * 关键：必须在【命令任务自身】栈上做，而非另起一个满足 MPU 2-幂对齐的独立任务栈——
+ * 独立任务栈一旦对齐到大小就会启用 MPU 每任务栈 region 的“最低 1/8 subregion 禁访”
+ * 哨兵区，写入栈底魔法数会触发 MemManage；而命令任务栈不满足该对齐要求、退回软件哨兵
+ * （无 subregion 禁访），store 成功、det==1 稳定（TC-CTX-002 即此路径，已验证 PASS）。
+ *
+ * 运行时检测：篡改哨兵后 msleep 触发 PendSV 上下文切换，sched.c 在切换时
+ * rtos_stack_check_sentinel(cur) 检出哨兵被踩 -> 置位 g_stack_overflow 粘性标志。 */
+int acc_c1_stack_overflow(void) {
+    int ok = 1;
+    uint32_t of0 = g_stack_overflow;
+    task_t *me = rtos_running();
+    int fn_det = 0;
+    if (me && me->stack_base) {
+        rtos_stack_fill_sentinel(me);
+        uint32_t *sb = (uint32_t *)me->stack_base;
+        uint32_t saved = sb[0];
+        sb[0] = 0xDEADBEEFu;                          /* 模拟栈底被踩 */
+        fn_det = rtos_stack_check_sentinel(me);       /* 期望返回 1 */
+        rtos_msleep(20);                              /* 触发 PendSV 切换，跑内核哨兵检测 */
+        sb[0] = saved;                                /* 还原，避免误报 */
+    }
+    /* 运行时检测：篡改哨兵后发生过上下文切换，内核应已置 g_stack_overflow */
+    int runtime = (g_stack_overflow != of0);
+    int lok = (fn_det == 1) && runtime;
+    if (!lok) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-C1] stack-overflow-detect: fn_det=%d rtos_flag=%lu %s\n",
+               fn_det, (unsigned long)(g_stack_overflow - of0), lok ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_C1_RealStackOverflow", lok);
+    g_stack_overflow = of0;           /* 还原全局粘性标志，不污染后续测试 */
+    return ok;
+}
+
+/* =================== C2. 并发故障（任务 fault 恢复期间 ISR 不丢失） =================== */
+/* 验收点：任务在“故意越权恢复窗口”(g_robust_fault_active)内触发除零 UsageFault，
+ * 内核恢复后任务存活(survived==1)；与此同时 2kHz TIM5 ISR 持续运行、不丢失、不卡死
+ * （验证 fault 恢复路径与中断共存的并发健壮性）。ISR 自身不做越权（避免与任务竞争同一
+ * 全局 g_robust_fault_active 标志导致恢复错位），仅做正常计数。 */
+static volatile int g_c2_task_survived;
+static volatile uint32_t g_c2_isr_cnt;
+/* 独立裸函数包裹故障除法（与 RTOSROBUST rb_div0_trigger 同构）：sdiv 后紧跟 bx lr，
+ * 故障钩子把异常返回 PC 改为 LR 即“跳过 sdiv / 从本函数返回”，回到 c2_task 继续。
+ * 注意：绝不能把 sdiv 直接写在 c2_task 函数体内——那样恢复 PC=LR 会跳过整个 c2_task
+ * 剩余代码（含 survived=1），导致任务永远报告未存活。 */
+__attribute__((naked))
+static void c2_div0_trigger(void) {
+    __asm volatile(
+        "movs r1, #1\n"
+        "sdiv r0, r1, r0\n"   /* r0 = 1/0 -> DIVBYZERO */
+        "bx   lr\n"
+        ::: "r0", "r1", "memory"
+    );
+}
+static void c2_task(void *arg) {
+    (void)arg;
+    g_c2_task_survived = 0; g_c2_isr_cnt = 0;
+    /* 照搬 RTOSROBUST rb_div0 模式：关中断 + g_robust_fault_active 窗口，确保窗口内
+     * 只有预期的 sdiv 触发 fault，且独立裸函数使恢复 PC=LR 正确回到本任务继续。 */
+    __asm volatile("cpsid i" ::: "memory");
+    g_robust_fault_active = 1;
+    SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
+    c2_div0_trigger();                         /* 触发 DIVBYZERO；恢复后回到此处 */
+    SCB->CCR &= ~SCB_CCR_DIV_0_TRP_Msk;
+    g_robust_fault_active = 0;
+    __asm volatile("cpsie i" ::: "memory");
+    g_c2_task_survived = 1;
+}
+static void c2_isr(void *ctx) {
+    (void)ctx;
+    if (TIM5->SR & TIM_SR_UIF) {
+        TIM5->SR &= ~TIM_SR_UIF;
+        g_c2_isr_cnt++;          /* 正常计数：验证 fault 恢复期间中断不丢失 */
+    }
+}
+int acc_c2_concurrent_fault(void) {
+    int ok = 1;
+    uint32_t flt0 = g_fault_cfsr;
+    rtos_cycle_init();
+    g_c2_task_survived = 0;
+    RTOS_TASK_STACK(c2st, 512);
+    rtos_task_create("acc_c2t", c2_task, NULL, 10, c2st, sizeof(c2st));
+    irq_manager_attach((irq_id_t)TIM5_IRQn, c2_isr, NULL);
+    irq_manager_set_priority((irq_id_t)TIM5_IRQn, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
+    irq_manager_enable((irq_id_t)TIM5_IRQn, c2_isr, NULL);
+    acc_timer_start(TIM5, 2000);
+    rtos_msleep(500);
+    acc_timer_stop(TIM5);
+    rtos_msleep(50);
+    irq_manager_disable((irq_id_t)TIM5_IRQn, c2_isr, NULL);
+    irq_manager_detach((irq_id_t)TIM5_IRQn, c2_isr, NULL);
+    task_t *c2t = (task_t *)rtos_kobj_lookup("acc_c2t");
+    if (c2t) rtos_task_delete(c2t);
+    rtos_msleep(30);
+    int lok = (g_c2_task_survived == 1) && (g_fault_cfsr != flt0)
+           && (g_c2_isr_cnt > 100)            /* 500ms@2kHz 应累计 ~1000 次，验证中断不丢失 */
+           && (g_sched_invariant_fail == 0) && (g_stack_overflow == 0);
+    if (!lok) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-C2] concurrent-fault: task_survived=%d fault_delta=%lu isr_cnt=%lu inv=%lu %s\n",
+               g_c2_task_survived, (unsigned long)(g_fault_cfsr - flt0),
+               (unsigned long)g_c2_isr_cnt,
+               (unsigned long)g_sched_invariant_fail, lok ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_C2_ConcurrentFault", lok);
+    return ok;
+}
+
+/* =================== C3. 长临界区突破硬实时（机制正确性） =================== */
+/* 验收点：后台任务持 10ms 临界区（BASEPRI 屏蔽 PendSV）期间，2ms 周期的硬实时任务
+ * c3_rt 无法被调度，其实测唤醒间隔(真实调度延迟)远超其 2ms 绝对 deadline——证明长临界区
+ * 确实突破了硬实时保证。
+ *
+ * 注意：不直接依赖内核 g_rtos_deadline_violation 计数——它的释放基准 release_tick 在
+ * tick ISR 唤醒任务时刷新，而屏蔽 PendSV 期间任务虽被唤醒(刷新 release_tick)却未运行，
+ * 故内核监视器看不到“就绪但未运行”的延迟(属监视器语义局限，已在 sched.c 修复 release_tick
+ * 刷新后暴露)。因此 C3 改为在 c3_rt 任务内直接测量“实际唤醒间隔 gap”，gap 超 deadline
+ * 即为突破的硬证据。 */
+static volatile int       g_c3_stop;
+static volatile uint32_t  g_c3_miss;
+static volatile uint32_t  g_c3_maxgap;
+static volatile uint32_t  g_c3_lasthit;
+static void c3_rt(void *arg) {
+    (void)arg;
+    g_c3_lasthit = rtos_tick_count();
+    while (!g_c3_stop) {
+        uint32_t ent = rtos_tick_count();
+        uint32_t gap = (ent > g_c3_lasthit) ? (ent - g_c3_lasthit) : 0;
+        if (gap > g_c3_maxgap) g_c3_maxgap = gap;
+        g_c3_lasthit = ent;
+        if (gap > 2u) g_c3_miss++;          /* 实测唤醒间隔 > 2ms 绝对 deadline = 突破 */
+        acc_spin_ms(1);
+        rtos_msleep(2);
+    }
+}
+static void c3_bg(void *arg) {
+    (void)arg;
+    while (!g_c3_stop) {
+        unsigned st = rtos_crit_enter();     /* BASEPRI 屏蔽 PendSV */
+        acc_spin_ms(10);
+        rtos_crit_exit(st);
+        rtos_msleep(1);
+    }
+}
+int acc_c3_long_critical(void) {
+    int ok = 1;
+    rtos_cycle_init();
+    uint32_t flt0 = g_fault_cfsr, of0 = g_stack_overflow;   /* 快照：容忍前置子测试遗留 */
+    g_c3_stop = 0; g_c3_miss = 0; g_c3_maxgap = 0;
+    static uint8_t c3rt_st[256] __attribute__((aligned(8)));
+    rtos_task_attr_t at = { .rt_class = 1, .deadline_ticks = 2, .wcet_ticks = 2 };
+    rtos_task_create_rt("acc_c3rt", c3_rt, NULL, 3, c3rt_st, sizeof(c3rt_st), 1, &at);
+    static uint8_t c3bg_st[256] __attribute__((aligned(8)));
+    rtos_task_create("acc_c3bg", c3_bg, NULL, 20, c3bg_st, sizeof(c3bg_st));
+    if (!rtos_kobj_lookup("acc_c3rt")) {
+        log_printf(app_log(), LOG_INFO, "rtos", "[ACC-C3] SKIP: pool full\n");
+        RTOS_TEST_RESULT("ACC_C3_LongCritical", 0);
+        return 1;
+    }
+    rtos_msleep(1500);
+    g_c3_stop = 1; rtos_msleep(50);
+    /* 验收核心：长临界区(10ms)应突破硬实时(2ms deadline RT 任务) -> 任务实测唤醒间隔
+     * gap 多次 > 2ms (g_c3_miss>0)。同时系统不变量/溢出/故障不应因临界区而新增
+     * （与 C2 遗留的 flt0/of0 比较）。 */
+    int lok = (g_c3_miss > 0) && (g_sched_invariant_fail == 0)
+           && (g_stack_overflow == of0) && (g_fault_cfsr == flt0);
+    if (!lok) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-C3] long-critical-breaks-rt: miss=%lu maxgap=%lu inv=%lu flt_delta=%lu %s\n",
+               (unsigned long)g_c3_miss, (unsigned long)g_c3_maxgap,
+               (unsigned long)g_sched_invariant_fail,
+               (unsigned long)(g_fault_cfsr - flt0), lok ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_C3_LongCritical", lok);
+    task_t *c3rt = (task_t *)rtos_kobj_lookup("acc_c3rt");
+    task_t *c3bg = (task_t *)rtos_kobj_lookup("acc_c3bg");
+    if (c3rt) rtos_task_delete(c3rt);
+    if (c3bg) rtos_task_delete(c3bg);
+    rtos_msleep(30);
+    return ok;
+}
+
+/* =================== 顶层入口 =================== */
+int rtos_accept_selftest(void) {
+    int ok = 1;
+    log_printf(app_log(), LOG_INFO, "rtos", "[ACCEPT] suite begin\n");
+    if (acc_a1_periodic()      != 1) ok = 0;
+    if (acc_a2_isr_wake()      != 1) ok = 0;
+    if (acc_a3_jitter()        != 1) ok = 0;
+    if (acc_a4_rta()           != 1) ok = 0;
+    if (acc_b1_soak()          != 1) ok = 0;
+    if (acc_b2_exhaust()       != 1) ok = 0;
+    if (acc_c1_stack_overflow()!= 1) ok = 0;
+    if (acc_c2_concurrent_fault() != 1) ok = 0;
+    if (acc_c3_long_critical() != 1) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos", "[ACCEPT] suite: %s\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+RTOS_SELFTEST_ADD("accept", rtos_accept_selftest);

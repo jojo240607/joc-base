@@ -163,7 +163,8 @@ if(RTOS)
       src/rtos/rtos_inv.c         # 优先级反转验证：天花板协议把等锁延迟压到有界（RTOSINV）
       src/rtos/rtos_fuzz.c        # 混沌压力：多优先级随机并发 IPC 不崩溃/不死锁（RTOSFUZZ）
       src/rtos/rtos_timer.c       # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER；生产定时器在 core/timer.c）
-      src/rtos/rtos_ostest.c)     # 对照 docs/ostest.md 补齐的缺口用例（自动进入 RTOSALL）
+      src/rtos/rtos_ostest.c      # 对照 docs/ostest.md 补齐的缺口用例（自动进入 RTOSALL）
+      src/rtos/rtos_accept.c)     # 硬实时验收+稳定性soak+深度故障注入（RTOSACCEPT；不进 RTOSALL 长链）
   endif()
 
   target_include_directories(${PROJECT_NAME}.elf PRIVATE
