@@ -134,6 +134,11 @@ void uart_set_console(uart *self)
     g_debug_uart_hal = self ? self->hal : (void *)0;
 }
 
+uart *uart_get_console(void)
+{
+    return g_console;
+}
+
 void uart_console_putc(char c)
 {
     if (!g_console) return;
@@ -166,6 +171,17 @@ void uart_console_raw(const uint8_t *p, size_t n)
     }
 }
 
+/* 纯轮询二进制透传：直接走 uart_hal_putc（忙等 TXE，不经过 TX 状态机 / RTOS 信号量），
+ * 用于 gcov .gcda 这类大块二进制导出——避免 IRQ/DMA TX 状态机在高速连续发送下丢字节
+ * 导致 .gcda 损坏（实测 DMA+IDLE 控制台下逐字节 uart_tx_blocking 会让 .gcda 在固定
+ * 偏移处出现位翻转 / 丢字节）。默认 gcov g_out 指向它。 */
+void uart_console_raw_poll(const uint8_t *p, size_t n)
+{
+    if (!g_console || !p) return;
+    for (size_t i = 0; i < n; i++)
+        uart_hal_putc(g_console->hal, (char)p[i]);
+}
+
 static char uart_getc(uart *self)
 {
     /* drain the RX ring buffer (filled by the receive ISR) */
@@ -182,12 +198,16 @@ static void uart_rx_putc(uart *self, char c)
     if (rb) rb->fun->put(rb, (uint8_t)c);
 }
 
-/* Pop one byte, blocking until the ISR delivers one (thread context). */
+/* Pop one byte, blocking until the ISR delivers one (thread context).
+ * Defensive: if the RX ring was never initialised (rb == NULL) do NOT
+ * busy-wait forever — return 0 so the caller fails gracefully instead of
+ * stalling the whole RTOS task. */
 static char uart_rx_getc(uart *self)
 {
     ringbuffer *rb = stream_device_get_ringbuffer((stream_device *)self);
     uint8_t c = 0;
-    while (!rb || rb->fun->is_empty(rb)) { }   /* wait for the ISR to fill */
+    if (!rb) return 0;
+    while (rb->fun->is_empty(rb)) { }   /* wait for the ISR to fill */
     rb->fun->get(rb, &c);
     return (char)c;
 }
@@ -672,7 +692,10 @@ static int uart_stream_read(stream_device *self, void *buf, size_t len)
     uart *u = (uart *)self;
     if (len < 1 || !buf) return -1;
     if (u->parent.mode == STREAM_MODE_POLL) {
-        while (!uart_hal_rx_pending(u->hal)) { }        /* busy-wait, no ISR */
+        /* NON-blocking: the console command loop polls every device and sleeps
+         * between iterations. A busy-wait here would stall the whole RTOS task
+         * (and every lower-priority task) whenever no char is pending. */
+        if (!uart_hal_rx_pending(u->hal)) return 0;
         *(char *)buf = uart_hal_read_dr(u->hal);
         return 1;
     }
@@ -684,8 +707,14 @@ static int uart_stream_read(stream_device *self, void *buf, size_t len)
      * caller can poll without stalling its loop (the main command loop also
      * services other devices such as USB). If a byte is present, pop it now. */
     ringbuffer *rb = stream_device_get_ringbuffer(self);
-    if (rb && rb->fun->is_empty(rb)) return 0;
-    *(char *)buf = uart_rx_getc(u);      /* ISR-fed ring — byte is ready */
+    if (!rb || rb->fun->is_empty(rb)) return 0;   /* no ring or empty → non-blocking */
+    /* Ring is known non-empty here (checked above). Pop directly instead of
+     * calling the blocking uart_rx_getc busy-wait, which would otherwise stall
+     * the calling task (and every lower-priority task) whenever the ring state
+     * is transiently inconsistent. */
+    uint8_t c = 0;
+    rb->fun->get(rb, &c);
+    *(char *)buf = (char)c;
     return 1;
 }
 

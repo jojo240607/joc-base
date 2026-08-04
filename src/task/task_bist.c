@@ -19,12 +19,9 @@
 volatile int g_dbg_auto_rtosall = 0;
 extern volatile int g_rtosall_result;
 
-/* 覆盖率构建：BIST 栈 3K -> 1K，腾 CCM 给 gcov；常态保持 3K。 */
-#if RTOS_COVERAGE
-RTOS_TASK_STACK(g_bist_stack, 1024);
-#else
+/* BIST 栈统一 3K：selftest_run 深层调用需要。覆盖率构建曾砍到 1K 导致栈溢出；gcov 段已
+ * 搬回主 SRAM，CCM 有余量，恢复正常 3K。 */
 RTOS_TASK_STACK(g_bist_stack, 3072);
-#endif
 
 
 void bist_task(void *arg)

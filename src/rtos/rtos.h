@@ -237,6 +237,13 @@ void rtos_unlock_scheduler(void);
 extern volatile uint32_t g_rtos_crit_overflow;
 uint32_t rtos_rt_crit_overflow(void);   /* 返回 g_rtos_crit_overflow（看门狗聚合用） */
 
+/* ---- 临界区硬上限执行计数（P0-3，sched.c 定义） ----
+ * RTOS_CRIT_KILL != REPORT 时，每次超长临界区退出触发升级处理（杀任务/武装 WDT/
+ * 安全态 panic）即递增（粘性、零挂起风险）。供 RTOSALL / RTOSCRIT 自检读取。 */
+extern volatile uint32_t g_rtos_crit_kill_count;
+/* P0-3 安全态 panic 标志（RTOS_CRIT_KILL=PANIC 时置位）。 */
+extern volatile uint32_t g_rtos_crit_kill_panic;
+
 /* ---- 可调度性静态自检（阶段3，core/rtos_sched_analysis.c） ----
  * 固定优先级「响应时间分析（RTA/WCRT）」在启动/测试期证明硬实时任务集在截止期内
  * 可调度的。若 WCRT > deadline 即判定不可调度，粘性计数 g_rtos_sched_invalid 递增
@@ -562,6 +569,8 @@ int rtos_watchdog_selftest(void);
  *      资源耗尽 graceful 降级) + C 健壮性深度注入(真实栈溢出 / 并发故障 /
  *      长临界区突破硬实时)。见 docs/rtos-acceptance-test-plan.md。 */
 int rtos_accept_selftest(void);
+/* P1-4：RTOSACCEPT long —— 1 小时长时 soak（无 TCB 泄漏 / 无计数漂移验证）。 */
+int acc_b1_soak_long(void);
 #endif /* RTOS_SELFTEST */
 
 /* ===========================================================================

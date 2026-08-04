@@ -158,11 +158,17 @@ typedef struct {
 
 /* console helpers (module-level singleton used by syscalls _write) */
 void uart_set_console(uart *self);
+uart *uart_get_console(void);   /* 取当前控制台 uart 实例（gcov_dump 等需临时改其 TX 引擎） */
 void uart_console_putc(char c);
 
 /* 二进制安全的控制台字节发送（不做 \n->\r 转换）：用于 gcov 覆盖率的 .gcda
  * 帧透传（docs/rtos-test-plan.md §6.6），避免文本模式对 0x0A 插入 CR 破坏数据。 */
 void uart_console_raw(const uint8_t *p, size_t n);
+
+/* 纯轮询二进制透传：直接走 uart_hal_putc（忙等 TXE，不经过 TX 状态机 / RTOS 信号量）。
+ * 用于 gcov .gcda 大块二进制导出，避免 IRQ/DMA TX 状态机在高速连续发送下丢字节导致
+ * .gcda 损坏。默认 gcov g_out 指向它。 */
+void uart_console_raw_poll(const uint8_t *p, size_t n);
 
 /* 诊断：console 的 HAL 句柄（void* 不透明），供内核断言在临界区/ISR 内做
  * 纯 polling 串口打印（见 rtos_sched_assert_fail）。无 console 时为 NULL。 */

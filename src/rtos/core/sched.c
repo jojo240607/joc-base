@@ -82,6 +82,11 @@ volatile uint32_t g_rtos_wcet_violation     = 0;
  * 即递增（粘性）。把“低优长临界区阻塞高优”从不可见变为可测量。 */
 volatile uint32_t g_rtos_crit_overflow = 0;
 
+/* P0-3 临界区硬上限执行：升级触发计数（粘性，零挂起风险）。 */
+volatile uint32_t g_rtos_crit_kill_count = 0;
+/* P0-3 安全态 panic 标志（RTOS_CRIT_KILL=PANIC 时置位，供调试器/复位原因读取）。 */
+volatile uint32_t g_rtos_crit_kill_panic = 0;
+
 /* 临界区审计内部状态：嵌套深度 + 最外层进入 cycle。仅由 rtos_crit_enter_mark /
  * rtos_crit_exit_audit（rtos_internal.h 内联调用）访问，都在关中断/调度锁内，单核安全。
  * 用 cycle(DWT CYCCNT) 而非 tick：锁调度(BASEPRI)屏蔽了 SysTick，tick 在持锁期间不前进，
@@ -91,6 +96,12 @@ volatile uint32_t g_rtos_crit_overflow = 0;
  * 临界区（不应发生），直接跳过审计，避免 fault。arch_in_priv 见 common/lock.h。 */
 static int      g_crit_nest   = 0;
 static uint32_t g_crit_enter_cycle = 0;
+
+#if RTOS_CRIT_KILL == RTOS_CRIT_KILL_TASK
+static void rtos_crit_exit_audit_kill(task_t *t);
+#elif RTOS_CRIT_KILL == RTOS_CRIT_KILL_PANIC
+static void rtos_crit_kill_panic_spin(void);
+#endif
 
 void rtos_crit_enter_mark(void) {
     if (!arch_in_priv()) return;                  /* 非特权：跳过（规避 DWT fault） */
@@ -104,11 +115,55 @@ void rtos_crit_exit_audit(void) {
     if (g_crit_nest == 0) {                             /* 回到最外层：审计总持有时长 */
 #if RTOS_CRIT_MAX_CYCLES > 0
         uint32_t held = (uint32_t)(rtos_cycle_now() - g_crit_enter_cycle);
-        if (held > (uint32_t)RTOS_CRIT_MAX_CYCLES)
-            g_rtos_crit_overflow++;
+        if (held > (uint32_t)RTOS_CRIT_MAX_CYCLES) {
+            g_rtos_crit_overflow++;                     /* 粘性计数（零挂起风险） */
+#if RTOS_CRIT_KILL != RTOS_CRIT_KILL_REPORT
+            /* P0-3 临界区硬上限执行：超长持锁退出最外层时升级为可配置故障处理。
+             * 此刻仍在临界区（BASEPRI/PRIMASK 尚未恢复），但 g_running 有效、
+             * 调度锁即将放开，故 kill/wdt/panic 均在特权态安全执行。 */
+            if (g_running) {
+                g_rtos_crit_kill_count++;               /* 升级触发次数（粘性） */
+                switch (RTOS_CRIT_KILL) {
+                case RTOS_CRIT_KILL_TASK:               /* 杀持锁任务 */
+                    rtos_crit_exit_audit_kill(g_running);
+                    break;
+                case RTOS_CRIT_KILL_WDT:                /* 武装 IWDG，确定性复位 */
+                    if (!rtos_watchdog_is_armed())
+                        rtos_watchdog_enable(2000);
+                    break;
+                case RTOS_CRIT_KILL_PANIC:              /* 进入安全态（自旋） */
+                    g_rtos_crit_kill_panic = 1;
+                    rtos_crit_kill_panic_spin();
+                    break;
+                default:                                /* 未知值：退化为仅报告 */
+                    break;
+                }
+            }
+#endif
+        }
 #endif
     }
 }
+
+#if RTOS_CRIT_KILL == RTOS_CRIT_KILL_TASK
+/* 杀持超长临界区的任务：在临界区内部调用，安全删除 RUNNING 任务自身。
+ * rtos_task_delete 对 g_running 走自删除路径（state=DEAD + pend 切换），
+ * 临界区在返回后立即被 rtos_crit_exit 原样恢复，PendSV 真正切换走死亡任务。 */
+static void rtos_crit_exit_audit_kill(task_t *t)
+{
+    if (t == g_running)
+        rtos_task_delete((task_t *)0);   /* 自删除 */
+    else
+        rtos_task_delete(t);
+}
+#elif RTOS_CRIT_KILL == RTOS_CRIT_KILL_PANIC
+/* 安全态自旋：置标志后关闭中断并自旋，等待看门狗或调试器介入。
+ * 不返回——临界区不会被恢复（已永久关中断），故调用方不应在 panic 后继续。 */
+static void rtos_crit_kill_panic_spin(void)
+{
+    for (;;) { __asm__ volatile("cpsid i" ::: "memory"); }  /* 永久关中断自旋 */
+}
+#endif
 
 /* ---- 非抢占临界区原语（阶段2，见 docs/rtos-hard-realtime-plan.md §3.1） ----
  * rtos_lock_scheduler / rtos_unlock_scheduler：只屏蔽 PendSV（锁调度），不关中断、

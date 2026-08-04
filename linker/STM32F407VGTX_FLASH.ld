@@ -131,19 +131,21 @@ SECTIONS
     _edata = .;
   } >RAM AT> FLASH
 
-  /* §6.6 覆盖率构建：把 gcov 计数/信息段放进 CCMRAM（主 SRAM 128K 已近饱和，放不下
-   * gcov 计数器）。必须放在 .bss 之前，否则 .bss 的 *(.bss.*) 会先吃掉 .bss.__gcov0.*。
-   * 仅 -DCOVERAGE=ON 时这些段非空；常态构建 gcov 段为空、不占空间。覆盖率构建同时缩小
-   * 常驻任务栈(RTOS_COVERAGE 守卫)以腾出 CCM 余量。 */
-  .gcov (NOLOAD) :
-  {
-    . = ALIGN(4);
-    KEEP(*(.data.__gcov_*))
-    KEEP(*(.bss.__gcov0*))
-    *(.data.__gcov_*)
-    *(.bss.__gcov0*)
-  } >CCMRAM
-
+  /* §6.6 覆盖率构建：gcov 计数/信息段的处理（仅 -DCOVERAGE=ON 时非空；常态构建为空）。
+   * 历史教训：
+   * 1) 一度放进 CCMRAM —— CCM 仅 63K 已饱和，且 CCM 无默认 MPU 区，unpriv 任务访问即 BusFault。
+   * 2) 曾放独立 .gcov 段在 .bss 之前 —— Reset_Handler 只清零 _sbss.._ebss（.bss 段），
+   *    漏掉 .gcov 段，gcov 计数器保留 RAM 上电垃圾值，插桩 ++ / __gcov_dump 解引用时卡死
+   *    （这正是 P0-2 coverage 构建 BIST 后卡死的根因，旧注释"必须放在 .bss 之前"逻辑反了）。
+   * 现行方案：.bss.__gcov0* 计数器直接并入下方 .bss 段（KEEP 防 GC），由 Reset_Handler 的
+   * .bss 清零循环统一清零到 0；.data.__gcov_* 自然落入上方 .data 段由 FLASH 拷贝初始化。
+   * 两者均落在主 SRAM（>RAM），CCM 腾出空间保持 8K 主栈。 */
+  /* gcov 覆盖率计数段(.bss.__gcov0.*)。gcov 计数器必须在上电时清零为 0，
+   * 否则插桩 ++ 会在垃圾值上累加、__gcov_dump 解引用时卡死/崩溃。
+   * 关键：直接并入 .bss 段（用 KEEP 防 GC），由 Reset_Handler 的 .bss 清零
+   * 循环统一清零到 0。早期版本把它放在独立 .gcov 段(.bss 之前)导致清零循环
+   * 漏掉、计数器保留 RAM 垃圾值，正是 P0-2 coverage 构建 BIST 后卡死的根因。
+   * 仅 -DCOVERAGE=ON 时这些输入段非空；常态构建 KEEP 为空，布局不变。 */
   .bss :
   {
     . = ALIGN(4);
@@ -151,6 +153,7 @@ SECTIONS
     __bss_start__ = _sbss;
     *(.bss)
     *(.bss.*)
+    KEEP(*(.bss.__gcov0*))
     *(COMMON)
     . = ALIGN(4);
     _ebss = .;

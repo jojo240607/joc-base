@@ -106,6 +106,25 @@
   #define RTOS_CRIT_MAX_CYCLES 336000U
 #endif
 
+/* 临界区硬上限执行（P0-3，见 docs/rtos-hard-realtime-roadmap.md）：把“报告超长持锁”
+ * 升级为“可配置故障处理”。默认 0 = 仅报告（不阻塞、不停机，与 P3 行为完全一致，
+ * 零回归）。可设值：
+ *   0 = RTOS_CRIT_KILL_REPORT  仅递增 g_rtos_crit_overflow（粘性，零挂起风险）
+ *   1 = RTOS_CRIT_KILL_TASK    杀掉持该超长临界区的任务（rtos_task_delete(g_running)）
+ *   2 = RTOS_CRIT_KILL_WDT     武装独立看门狗（IWDG，2s 超时），违约升级为确定性复位
+ *   3 = RTOS_CRIT_KILL_PANIC   进入安全态：置 g_rtos_crit_kill_panic 粘性标志并自旋
+ *                               （非特权任务经 SVC 在 Handler 模式执行，g_running 有效）
+ * 设置 !=0 时，rtos_crit_exit_audit 在检测到超长临界区退出最外层时按本值升级处理。
+ * 注意：杀任务/看门狗联动/panic 都【不】引入新挂起路径——审计只在退出最外层临界区时
+ * 发生，此时调度锁已即将放开，kill/wdt/panic 在特权态安全执行。 */
+#ifndef RTOS_CRIT_KILL
+  #define RTOS_CRIT_KILL 0
+#endif
+#define RTOS_CRIT_KILL_REPORT 0
+#define RTOS_CRIT_KILL_TASK   1
+#define RTOS_CRIT_KILL_WDT    2
+#define RTOS_CRIT_KILL_PANIC  3
+
 /* 硬实时看门狗联动（见 docs/rtos-hard-realtime-plan.md 阶段4 §4.3）：
  * 开启后，若任一硬性实时违约计数（deadline_miss / wcet_miss / crit_overflow /
  * sched_invalid）非零，内核在 tick 中武装独立看门狗（IWDG），使违约升级为确定性

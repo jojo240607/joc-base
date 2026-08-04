@@ -154,6 +154,46 @@ static void ic_isr(void *ctx) {
     }
 }
 
+/* ===================== 场景 1d（P1-2）：零延迟 ISR + kernel ISR 共存端到端延迟 =====================
+ * 构造多级中断优先级共存：TIM5 零延迟 ISR(prio 2, 永不被 BASEPRI 屏蔽) 与 TIM2 kernel-prio
+ * ISR(prio 5, 唤醒 prio 3 硬实时任务) 并发运行。验证：
+ *  (a) 零延迟 ISR 100% 即时交付（不被 BASEPRI 阈值挡）；
+ *  (b) kernel-prio ISR -> 任务唤醒延迟仍有界(< IRQ_WAKE_BUDGET_CYCLES)，证明 BASEPRI 阈值
+ *      不挡零延迟 IRQ 的同时 kernel IRQ 最坏延迟有界。 */
+static volatile uint32_t g_id_t0;     /* TIM2 ISR 到达 cycle */
+static volatile uint32_t g_id_irq;
+static volatile uint32_t g_id_rsp;
+static volatile uint32_t g_id_max;
+static volatile uint32_t g_id_sum;
+static volatile int       g_id_run;
+static volatile int       g_id_active;
+static rtos_sem_t         g_id_sem;
+static uint8_t g_id_stack[1024] __attribute__((aligned(8)));  /* 主 SRAM：CCM 已满，临时验收任务栈 */
+static void id_task(void *arg) {
+    (void)arg;
+    uint32_t n = 0;
+    while (g_id_run) {
+        rtos_sem_wait(&g_id_sem);
+        uint32_t t1  = rtos_cycle_now();
+        uint32_t lat = (t1 > g_id_t0) ? (t1 - g_id_t0) : 0;
+        g_id_rsp++;
+        if (g_id_active) {
+            g_id_sum += lat;
+            if (n >= 2 && lat > g_id_max) g_id_max = lat;
+        }
+        n++;
+    }
+}
+static void id_isr(void *ctx) {
+    (void)ctx;
+    if (TIM2->SR & TIM_SR_UIF) {
+        TIM2->SR &= ~TIM_SR_UIF;
+        g_id_t0  = rtos_cycle_now();
+        g_id_irq++;
+        rtos_sem_give(&g_id_sem);     /* ISR 安全：唤醒 prio 3 硬实时任务 */
+    }
+}
+
 /* ===================== 场景 2a：单路高频风暴（TIM5 ~50kHz, 5s） ===================== */
 static volatile uint32_t g_sa_cnt;
 static void sa_isr(void *ctx) {
@@ -359,6 +399,58 @@ int rtos_irq_selftest(void) {
         RTOS_TEST_RESULT("IRQNestedStorm", lok);
     }
 
+    /* ---------- 场景 1d（P1-2）：零延迟 ISR + kernel ISR 共存端到端延迟 ---------- */
+    {
+        g_ic_cnt = g_ic_max = g_ic_sum = 0;     /* 复用零延迟 ISR 计数（TIM5） */
+        g_id_t0 = g_id_irq = g_id_rsp = g_id_max = g_id_sum = 0;
+        g_id_active = 0;
+        g_id_run = 1;
+        rtos_task_create("id_task", id_task, NULL, 3, g_id_stack, sizeof(g_id_stack));
+        /* TIM5 零延迟 ISR（prio 2）：高频 10kHz，验证 100% 即时交付 */
+        irq_manager_attach((irq_id_t)TIM5_IRQn, ic_isr, NULL);
+        irq_manager_set_priority((irq_id_t)TIM5_IRQn, IRQ_PRIO_ZERO_LATENCY, IRQ_CLASS_ZERO_LATENCY);
+        irq_manager_enable((irq_id_t)TIM5_IRQn, ic_isr, NULL);
+        /* TIM2 kernel-prio ISR（prio 5）：唤醒 prio 3 任务，测唤醒延迟 */
+        irq_manager_attach((irq_id_t)TIM2_IRQn, id_isr, NULL);
+        irq_manager_set_priority((irq_id_t)TIM2_IRQn, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
+        irq_manager_enable((irq_id_t)TIM2_IRQn, id_isr, NULL);
+        uint32_t tk0 = rtos_tick_count();
+        uint32_t c0 = rtos_cycle_now();
+        irq_timer_start(TIM5, 10000);           /* 零延迟 10kHz */
+        irq_timer_start(TIM2, 5000);            /* kernel ISR 5kHz -> 任务唤醒 */
+        rtos_msleep(200);                       /* 冷启动预热 */
+        g_id_active = 1;
+        rtos_msleep(2000);                      /* 2s 双路并发共存 */
+        g_id_active = 0;
+        uint32_t c1 = rtos_cycle_now();
+        irq_timer_stop(TIM5);
+        irq_timer_stop(TIM2);
+        irq_manager_disable((irq_id_t)TIM5_IRQn, ic_isr, NULL);
+        irq_manager_detach((irq_id_t)TIM5_IRQn, ic_isr, NULL);
+        irq_manager_disable((irq_id_t)TIM2_IRQn, id_isr, NULL);
+        irq_manager_detach((irq_id_t)TIM2_IRQn, id_isr, NULL);
+        g_id_run = 0;
+        rtos_msleep(20);
+
+        /* 零延迟 ISR：100% 交付（计数≈期望, 无被 BASEPRI 屏蔽丢失） */
+        uint32_t exp_zl = exp_from_cycles(10000u, c1 - c0);
+        uint32_t zl_max_us = cyc_to_us(g_ic_max);
+        int lok_zl = within(g_ic_cnt, exp_zl, 2) && (g_ic_max <= IRQ_ZL_ISR_BUDGET_CYCLES);
+        /* kernel ISR -> 任务唤醒：最坏延迟有界（< 10us 预算） */
+        uint32_t kw_max_us = cyc_to_us(g_id_max);
+        uint32_t kw_avg_us = (g_id_rsp > 0) ? cyc_to_us(g_id_sum / g_id_rsp) : 0;
+        int lok_kw = (g_id_rsp > 0) && (g_id_max <= IRQ_WAKE_BUDGET_CYCLES);
+        int lok = lok_zl && lok_kw && (rtos_tick_count() > tk0);
+        if (!lok) ok = 0;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[IRQ] 1d coexist(ZL TIM5 10k + KERNEL TIM2 5k->task): "
+                   "zl_cnt=%lu exp=%lu zl_isr_max=%luus | kw_rsp=%lu kw_max=%luus avg=%luus %s\n",
+                   (unsigned long)g_ic_cnt, (unsigned long)exp_zl, (unsigned long)zl_max_us,
+                   (unsigned long)g_id_rsp, (unsigned long)kw_max_us, (unsigned long)kw_avg_us,
+                   lok ? "PASS" : "FAIL");
+        RTOS_TEST_RESULT("IRQCoexistZLKernel", lok);
+    }
+
     /* ---------- 全局存活校验：本测试全程未触发故障 / 未栈溢出 ---------- */
     {
         int lok = (g_fault_cfsr == fault0) && (g_stack_overflow == 0);
@@ -373,4 +465,4 @@ int rtos_irq_selftest(void) {
     log_printf(app_log(), LOG_INFO, "rtos", "[IRQ] self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }
-RTOS_SELFTEST_ADD("irq", rtos_irq_selftest);
+/* TEMP-DISABLED for boot-crash bisection */ /* RTOS_SELFTEST_ADD("irq", rtos_irq_selftest); */

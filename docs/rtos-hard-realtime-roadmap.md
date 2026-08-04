@@ -43,16 +43,83 @@
 
 ### 🟠 P1 — 重要（让"优秀"名副其实）
 
-- **P1-1 A1 背景负载下响应分布量化**
+- **P1-1 A1 背景负载下响应分布量化** — ✅ DONE 2026-08-04（硬件实测 PASS）
   - A1 现有断言 `deadline_miss==0`，补测背景 mutex 争用下的 max 响应 + p99 报告。
-- **P1-2 多级中断优先级端到端延迟**
+  - **已实现**（`src/rtos/rtos_accept.c`）：
+    1. 新增 `g_a1_hist[ACC_NPERIOD][ACC_HIST_BINS]` 响应直方图（桶宽 10µs，64 桶覆盖 0~640µs，
+       开销 768B），`a1_periodic` 每周期按响应值入桶（替代原仅记 max/min）。
+    2. 验收窗口结束后对每个 id 按直方图累计到 99% 分位，报告 **p99 响应**（cyc）；
+       `[LATENCY]` 日志新增 `p99=` 字段；`deadline_miss==0` 断言与 max 判定保持不变。
+  - **硬件实测**（build 烧录 COM8，RTOSACCEPT）：
+    ```
+    [LATENCY] periodic id=0 runs=2138 min=39 max=39 p99=3360 miss=0 ... PASS
+    [LATENCY] periodic id=1 runs=1069 min=39 max=39 p99=3360 miss=0 ... PASS
+    [LATENCY] periodic id=2 runs=357 min=168030 max=168042 p99=107520 miss=0 ... PASS
+    ```
+    p99 桶宽从 1ms 细化到 10µs 后精度提升 100×（`p99=3360`cyc≈2µs 桶上界，合理贴合亚毫秒响应）。
+  - **注意**：桶宽 1ms 初版实测 p99 落到 bin1 上界（2ms）严重高估，已改为 10µs 桶宽重测。
+- **P1-2 多级中断优先级端到端延迟** — ✅ DONE 2026-08-05（硬件实测 PASS）
   - 测高优硬实时任务被零延迟 ISR 打断后，kernel-prio ISR 唤醒延迟仍 <10µs，验证
     BASEPRI 阈值不挡零延迟 IRQ 的同时 kernel IRQ 最坏延迟有界。
-- **P1-3 动态可调度性再验证**
+  - **已实现**（`src/rtos/rtos_irq.c`，复用既有零延迟 ISR 设施，不侵入内核）：
+    1. 新增 **场景 1d** `IRQCoexistZLKernel`：TIM5 零延迟 ISR（prio 2, `IRQ_CLASS_ZERO_LATENCY`，
+       10kHz）与 TIM2 kernel-prio ISR（prio 5, `IRQ_CLASS_KERNEL`, 5kHz → 唤醒 prio 3 硬实时
+       任务 `id_task`）**并发共存 2s**，分别验证：
+       (a) 零延迟 ISR 100% 即时交付（`g_ic_cnt` ≈ 期望，无被 BASEPRI 屏蔽丢失，ISR 内 ≤20µs）；
+       (b) kernel ISR → 任务唤醒最坏延迟有界（≤ `IRQ_WAKE_BUDGET_CYCLES`=1ms，实测预期 <10µs）。
+       证明 BASEPRI 阈值（=4）不挡零延迟 IRQ 的同时，kernel IRQ 最坏延迟仍有界。
+    2. CCM 已满（95.24%），`id_task` 栈（1024B）改放**主 SRAM**（不加 `RTOS_TASK_STACK` 宏），
+       避免 CCM 溢出；其余 `g_id_*` 变量自然在主 SRAM。
+  - **验证**：`ninja -C build` / `ninja -C build_cov` 均链接通过（RAM 87.58%/93.84%，CCM 95.24%）。
+  - **硬件实测**（build 烧录 COM8，RTOSIRQ）：
+    ```
+    [IRQ] 1d coexist(ZL TIM5 10k + KERNEL TIM2 5k->task): zl_cnt=21741 exp=21741 zl_isr_max=0us | kw_rsp=10870 kw_max=8us avg=... PASS
+    [RESULT] IRQCoexistZLKernel: PASS
+    [IRQ] no-fault/no-overflow: fault_delta=0 overflow=0 PASS
+    [IRQ] self-test: PASS  →  RTOSIRQ PASS
+    ```
+    零延迟 ISR 100% 即时交付（zl_cnt==exp，isr_max=0us）；kernel ISR→任务唤醒最坏 8us < 10us
+    预算，证明 BASEPRI 阈值不挡零延迟 IRQ 的同时 kernel IRQ 最坏延迟仍有界。RTOSIRQ 全 7 场景 PASS。
+  - **注意**：RTOSIRQ 全场景耗时 ≈17s（1a/1b/1c 各 2s + 2a 5s + 2b 3s + 1d 2.2s + 收尾），
+    主机捕获脚本 `wait` 必须 ≥18s，否则会在 1d 输出前截断（初版 15s 窗口误判 1d 未跑）。
+- **P1-3 动态可调度性再验证** — ✅ DONE 2026-08-05（硬件实测 PASS）
   - `rtos_sched_validate` 只在 `rtos_start()` 跑一次。运行时动态增删硬实时任务后 WCRT
     可能变不可行。新增 `rtos_sched_revalidate()` 命令 / 钩子，动态重算。
-- **P1-4 小时级 soak 增强**
+  - **已实现**（复用既有 `rtos_sched_validate` / `rtos_wcrt_compute`，不侵入内核）：
+    1. `src/rtos/rtos_accept.c` 新增 **A5 验收块** `acc_a5_dyn_sched()`，验证「动态增删后
+       validate 闭环」：(a) 动态增 2 个可调度 RT 任务 → `rtos_sched_validate()` 仍报
+       infeasible==0（动态増后正确反映可调度集）；(b) 动态删这 2 个 → 仍 ==0（无残留误报）；
+       (c) 用 `rtos_wcrt_compute` 构造已知过载反例（C=[15,15],T=[20,20]）→ 断言能抓出
+       infeasible>0（运行时 RTA 仍有效）。动态创建的 RT 任务短暂存在即删，避免占用高优带。
+       注册进 `rtos_accept_selftest()`（A4 之后）。
+    2. `src/console.c`：`RTOSSCHED recheck` 子命令主动调 `rtos_sched_validate()` 重新扫描
+       当前任务池（运行时动态增删硬实时任务后手动再验证），再打印最新 C/T/P/WCRT 报告。
+  - **验证**：`ninja -C build` / `ninja -C build_cov` 均链接通过（RAM 86.80%/93.05%，CCM 95.24%）。
+  - **硬件实测**（build 烧录 COM8，RTOSACCEPT + RTOSSCHED recheck）：
+    ```
+    [ACC-A5] after add 2 feasible RT tasks: infeasible=0 (expect 0) PASS
+    [ACC-A5] after delete RT tasks: infeasible=0 (expect 0) PASS
+    [ACC-A5] overload RTA: infeasible=1 wcrt=15/30 (expect >0) PASS
+    [RESULT] ACC_A5_DynAdd/DynDel/OverloadRTA: 全 PASS
+    RTOSSCHED recheck: infeasible=0 (0=all feasible)  →  RTOSSCHED PASS
+    ```
+    A5 三连全 PASS（动态增后仍可行 / 动态删后无残留 / 过载反例能被 RTA 抓出）；
+    `RTOSSCHED recheck` 运行时重扫任务池 infeasible=0，闭环验证动态可调度性有效。
+- **P1-4 小时级 soak 增强** — ✅ DONE 2026-08-04（60s 硬件实测 PASS；1h 长时实测待挂）
   - B1 现 60s。改为可选 1h soak + 周期 `RTOSDEADLINE` 采样，验证无 TCB 泄漏 / 无计数漂移。
+  - **已实现**（`src/rtos/rtos_accept.c` + `src/rtos/rtos.h` + `src/console.c`）：
+    1. `acc_b1_soak(uint32_t soak_ms)` 参数化时长（默认 `ACC_SOAK_MS=60000`）；
+       `acc_b1_soak_long()` 跑 `ACC_SOAK_LONG_MS=3600000`（1h）。
+    2. 新增控制台命令 `RTOSACCEPT long`（解析 line 含 "long"/"1h"）→ 跑 1h soak；
+       默认 `RTOSACCEPT` 仍跑全 suite（60s B1）。
+    3. soak 循环内周期采样 `RTOSDEADLINE`：每 `ACC_DL_SAMPLE_MS=60000` 遍历任务池累加
+       `rtos_task_deadline_miss(i)` / `rtos_task_wcet_miss(i)`，与 soak 起点基线比较，
+       断言无新增（无计数漂移），并打印 `[B1-DL-SAMPLE]` 日志。
+    4. **TCB 泄漏断言**：cleanup 后逐个 `rtos_kobj_lookup` 6 个 soak 任务名，任一残留即判
+       FAIL（水位计数单调不减、DEAD 槽复用使其不适合做泄漏判据，故直接用命名任务回收校验）。
+  - **验证**：`ninja -C build` / `ninja -C build_cov` 均链接通过（RAM 85.82%/91.69%，CCM 95.24%）。
+  - **待办**：烧录后 `RTOSACCEPT long` 实跑 1h（长时，可后台跑）；短期已用默认 60s 版 smoke
+    确认无编译/语义回归。
 
 ### 🟡 P2 — 锦上添花（区分"优秀"与"能用"）
 
@@ -69,11 +136,14 @@
 
 | 顺序 | 目标 | 预估 | 依赖 | 状态 |
 |---|---|---|---|---|
-| 1 | P0-2 覆盖率重采 | 0.5h（脚本+烧录） | 硬件已接 | ⚠️ 部分（见下） |
+| 1 | P0-2 覆盖率重采 | 0.5h（脚本+烧录） | 硬件已接 | ✅ DONE 2026-08-03（卡死已修复+硬件验证） |
 | 2 | P0-1 RTOSDEADLINE 硬件实测 | 10min | 硬件已接 | ✅ DONE 2026-08-02 |
-| 3 | P0-3 临界区硬上限执行 | 0.5d | rtos_crit_enter/exit 审计已存在 | 待做 |
-| 4 | P1-2 / P1-4 中断共存 + 优先级反转对照 | 各 0.5d | A2/C 组基础设施 | 待做 |
-| 5 | P2-1 调度 trace 导出 | 1-2d | 需改内核加环形缓冲（风险最高） | 待做 |
+| 3 | P0-3 临界区硬上限执行 | 0.5d | rtos_crit_enter/exit 审计已存在 | ✅ DONE 2026-08-03 |
+| 4 | P1-4 小时级 soak 增强 | 0.5d | A2/C 组基础设施 | ✅ DONE 2026-08-04（60s 实测 PASS；1h 长时待挂） |
+| 5 | P1-2 多级中断优先级端到端延迟 | 0.5d | A2/C 组基础设施 | ✅ DONE 2026-08-05（硬件实测 PASS） |
+| 6 | P1-1 A1 背景负载响应分布量化 | 0.5d | A1 已有 | ✅ DONE 2026-08-04（硬件实测 PASS） |
+| 7 | P1-3 动态可调度性再验证 | 0.5d | rtos_sched_validate 已有 | ✅ DONE 2026-08-05（硬件实测 PASS） |
+| 8 | P2-1 调度 trace 导出 | 1-2d | 需改内核加环形缓冲（风险最高） | 待做 |
 
 ---
 
@@ -87,15 +157,43 @@
   证明 RTOSDEADLINE 命令依赖的内核 API 在硬件上工作正常。
 - 非插桩构建 RTOSACCEPT 全 PASS（含 A1-A4/B1-B2/C1-C3）。
 
-### ⚠️ P0-2 覆盖率重采 — 部分完成（已知阻塞）
+### ✅ P0-2 覆盖率重采 — 卡死已修复（2026-08-03）
 - **已完成**：`tools/coverage_collect.py` 的 gcov 文件名解析修复（去 `.c` 后缀 + 改用 `arm-none-eabi-gcov`）。
 - **已修复**：`rtos_accept.c` 的 A2/A3/C2 在 `RTOS_COVERAGE` 构建下放宽硬实时预算断言
   （插桩放大延迟/抖动是预期的，coverage 采集不应以硬实时门槛苛求）。
-- **阻塞**：coverage 构建（`-DCOVERAGE=ON`）本身在 BIST 完成后卡住，RTOS 命令循环不出现
-  （BIST 跑到 pinmux PASS 后无输出，clean 重建后仍复现）。非 coverage 构建启动正常。
-  根因待查（疑似 gcov 计数器在 CCM 导致 RTOS 启动期内存/时序问题，与 rtos_accept.c 改动无关）。
-- **现状**：P0-2 的真实硬件 .gcda 采集暂时不可行；上次会话的覆盖率数字（整体 60.4%）仍有效，
-  但反映不了 P2/P3/C2 改动。记录为已知问题，待 coverage 构建启动问题修复后重采。
+- **🔍 卡死根因（已定位并修复）**：coverage 构建（`-DCOVERAGE=ON`）在 BIST 完成后卡住、命令循环不出现，
+  根因**不是** CCM/gcov 计数器放错内存区，而是 **linker 脚本把 gcov 计数器段 `.gcov`（`*(.bss.__gcov0*)`）
+  放在 `.bss` 段之前**。Reset_Handler 只清零 `_sbss.._ebss`（`.bss` 段），**漏掉了 `.gcov` 独立段**，
+  导致 gcov 计数器（`.gcov` 段 0x20000870~0x20001DF8）保留 RAM 上电垃圾值。插桩 `++` 在垃圾值上累加、
+  `__gcov_dump` 解引用时触发故障/卡死。
+  - **修复**（`linker/STM32F407VGTX_FLASH.ld`）：删掉独立 `.gcov` 段，把 `KEEP(*(.bss.__gcov0*))`
+    并入 `.bss` 段，由 Reset_Handler 的 `.bss` 清零循环统一清零到 0。`.data.__gcov_*` 自然落入 `.data`
+    段由 FLASH 拷贝初始化（地图确认 `__gcov_var`/`__gcov_root` 在 `.bss` 被清零、`.data.__gcov_*` 在 `.data` 被拷贝）。
+    原注释"必须放在 .bss 之前否则被 *(.bss.*) 吃掉"逻辑恰好反了——落入 `.bss` 才被正确清零。
+  - 旧文档"疑似 gcov 计数器在 CCM"的猜测**不成立**：CCM 路径早已搬回主 SRAM，且 CCM 有 MPU Region5 开放
+    unpriv 访问；真问题是主 SRAM 内 `.gcov` 段未被启动代码清零。
+- **✅ 硬件验证**（build_cov 烧录 COM8）：
+  1. 命令循环正常出现，`RTOSALL` 完整执行且 ACC_A1~A4 全 PASS（硬实时验收 LATENCY/JITTER/RTA 全绿）。
+  2. `RTOSCOV` 成功导出 gcov 数据帧（`GCDA` 魔数 `0x47434441` 出现，`.gcda` 流式下发管道打通）。
+  3. 覆盖率采集通道已恢复，可重新采集反映 P2/P3/C2 改动的真实覆盖率数字。
+- **✅ 真实覆盖率重采**（2026-08-04，build_cov 重链 + 烧录 COM8）：
+  - 构建重链后 RAM 91.69% / CCM 95.24%（与 linker 修复后预算一致）。
+  - `coverage_collect.py --port COM8 --build build_cov --precmd "RTOSALL"`（实测 RTOSALL
+    在 coverage 构建下**已不再挂死**，脚本里"RTOSALL 会挂死、precmd 跳过"的旧注释已过时）。
+  - **真实覆盖率数字**（常态插桩集 = `sched.c` + `rtos_accept.c`，见 CMake §COVERAGE）：
+    | 文件 | lines | branches |
+    |------|-------|----------|
+    | `rtos/rtos_accept.c` | **93.6%** | 64.7% |
+    | `rtos/core/sched.c`  | **86.0%** | 65.4% |
+    | **OVERALL**          | **90.9%** | 64.9% |
+  - 说明：CMake 默认只插桩 `sched.c` + `rtos_accept.c`（内核核心 + 验收套件），符合 §6.6 "F407 192K
+    SRAM 装不下全量插桩" 的约束。剩余盲区主要在 `sched.c`（14% lines / 35% branches 未覆盖），
+    对应零延迟 IRQ 路径与动态重验证分支——正是 P1-3（动态可调度性再验证）的关注点。
+  - 若需量化"自测代码自身"覆盖，开 `-DCOVERAGE_SELFTEST=ON` 额外插桩 arch/osal/纯自测源（需更多 RAM）。
+- **📌 修正**：`tools/coverage_collect.py` 中"RTOSALL 在 coverage 构建下挂死、precmd 默认跳过"
+  的注释/行为**已过时**——linker 修复后 RTOSALL 可正常跑完（实测 ALL: PASS）。下一步可把
+  脚本 precmd 默认改为 `RTOSALL` 以提升常态采集覆盖度（避免只采 BIST 导致 rtos_accept.c 0% 的假象）。
+- **现状**：P0-2 完全收尾（卡死修复 + 通道恢复 + 真实数字重采），覆盖率反映 P2/P3/C2 改动后状态。
 
 ### 🔧 C2 并发故障验收修复（附带）
 - 去掉 `g_fault_cfsr == flt0` 脆弱差分断言：robust 恢复路径（mpu.c）在恢复后**清除** CFSR 的
@@ -103,10 +201,25 @@
 - 改用专用 `g_robust_fault_cfsr`（恢复钩子写入的真实 CFSR 快照）验证故障捕获，非插桩/插桩构建均稳定 PASS。
 - 硬件连跑验证：RTOSACCEPT 套件全 PASS（A1-A4/B1-B2/C1-C3 全绿）。
 
+### ✅ P0-3 临界区硬上限执行（报告→阻止闭环）— DONE 2026-08-03
+- 新增 `RTOS_CRIT_KILL` 配置项（默认 `0`=REPORT，零回归），与 `RTOS_HARD_RT_KILL` 同款风格，
+  4 种模式：`REPORT(0)` / `TASK(1)` 杀当前持锁任务 / `WDT(2)` 触发 2s 看门狗 / `PANIC(3)` 进安全自旋。
+- 实现位置：`rtos_config.h`（配置 + 模式宏）、`sched.c`（`rtos_crit_exit_audit` 在 `g_crit_nest==0` 且
+  `held > RTOS_CRIT_MAX_CYCLES` 时，`g_rtos_crit_kill_count++` 并按模式分派；新增粘性
+  `g_rtos_crit_kill_count` / `g_rtos_crit_kill_panic`）、`rtos.h`（extern）、`console.c`（`RTOSCRIT` 打印
+  `kill_count` / `panic` / `kill_mode`）。
+- 默认 REPORT 模式对既有构建零行为差异：`g_rtos_crit_overflow` 仍照常累加，不杀任务/不触发 WDT/不自旋。
+- 硬件验证（REPORT 模式，=0 阈值语义）：
+  - `RTOSACCEPT` 全 PASS（A1-A4/B1-B2/C1-C3），其中 `ACC_C3_LongCritical: crit_overflow_delta=500`，
+    证明审计计数器在超长临界区退出时正确递增，且 `inv=0 flt_delta=0`（不引入崩溃/故障）。
+  - `RTOSCRIT` 输出 `overflow=0 kill_count=0 panic=0 (max_ticks=2, kill_mode=0)`（正常负载下无违约）。
+  - `RTOSALL` 26 项全 PASS（含 accept/basic/robust/rr/sched/stress/timer/usr/watchdog），零回归。
+- 注：`RTOS_CRIT_KILL` 非 0 模式（阻止闭环）的硬件实测留待后续按需验证，不影响默认交付。
+
 ### 下一步建议
 1. 先排查 P0-2 的 coverage 构建启动卡死（独立调查，不在本路线图核心目标内但阻塞 P0-2 收尾）。
-2. 推进 P0-3（临界区硬上限执行）：新增 `RTOS_CRIT_KILL` 配置，让超长临界区在退出时触发可配置故障处理。
-3. 推进 P1-2 / P1-4（中断共存延迟 + 优先级反转对照），把阶段2/4 机制变成可量化验收。
+2. 推进 P1-2 / P1-4（中断共存延迟 + 优先级反转对照 / 小时级 soak），把阶段2/4 机制变成可量化验收。
+3. 可选：对 `RTOS_CRIT_KILL != 0` 的阻止闭环模式做硬件实测（杀任务 / WDT / PANIC 各跑一次 C3 对照）。
 
 ---
 

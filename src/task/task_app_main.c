@@ -13,13 +13,10 @@
 #include "drv/temp_sensor.h"
 #include "drv/usb.h"
 
-/* 覆盖率构建：主栈 8K -> 2K，腾出 CCM 给 gcov 计数器（覆盖率仅用于分析，不跑满负载）。
- * 常态构建保持 8K 以容纳 BIST/命令循环的深层调用。 */
-#if RTOS_COVERAGE
-RTOS_TASK_STACK(g_main_stack, 2048);
-#else
+/* 主栈统一 8K：BIST/命令循环的深层调用需要。覆盖率构建曾为腾 CCM 砍到 2K，导致栈溢出、
+ * 启动期 UART 输出丢失（误判 coverage 构建卡死）；现 gcov 段已搬回主 SRAM，CCM 有余量，
+ * 主栈恢复 8K。 */
 RTOS_TASK_STACK(g_main_stack, 8192);
-#endif
 
 
 void app_main_task(void *arg)

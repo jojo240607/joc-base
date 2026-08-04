@@ -11,9 +11,11 @@
 用法：
   python tools/coverage_collect.py --port COM8 --build build_cov
   python tools/coverage_collect.py --tcp 127.0.0.1:1234 --build build_cov
-  （默认会先依次发一组“安全”的 RTOS 自测命令覆盖内核路径，再发 RTOSCOV 导出；
-   RTOSALL/RTOSROBUST/RTOSMPU/RTOSUSR/RTOSP4 因覆盖率插桩改变代码布局，其故障/越权
-   恢复依赖精确指令地址会挂死或 FAIL，故默认跳过——见 --precmd 说明）
+  （默认会先依次发一组 RTOS 自测命令覆盖内核路径，再发 RTOSCOV 导出；
+   默认含 RTOSALL（实测在 linker 修复后的 coverage 构建下可正常跑完 ALL: PASS，
+   不再挂死）。RTOSROBUST/RTOSMPU/RTOSUSR/RTOSP4 含故意故障/越权恢复，依赖精确指令
+   地址，在 gcov 改布局下个别用例仍有 FAIL 风险，故默认跳过；RTOSMARATHON 为长跑
+   测试不立即返回，也跳过——见 --precmd 说明）
 
 依赖：pyserial（连 COM 时）。gcov 在 PATH（MinGW 自带 gcov.exe）。
 """
@@ -36,8 +38,47 @@ def open_stream(args):
         s = socket.create_connection((host, int(port)), timeout=10)
         return s.makefile("rwb", buffering=0)
     import serial  # 仅连 COM 时需要
-    ser = serial.Serial(args.port, args.baud, timeout=args.timeout)
+    # 关键：CH340(COM8) 在 open 时会有 DTR 脉冲复位 STM32，导致板子重启动、RTOSCOV
+    # 导出与一次全新 boot 竞争 → 抓到 108 字节的残帧。设 dtr/rts=False 规避，与
+    # cap_raw.py / accept_runner.py / ostest_hil.py 等同款处理。
+    ser = serial.Serial(args.port, args.baud, timeout=args.timeout,
+                        dsrdtr=False, rtscts=False)
+    ser.dtr = False
+    ser.rts = False
     return ser
+
+
+def reset_board(ser):
+    """通过固件 RESET 命令做软件复位（CH340 的 DTR 未接 NRST，硬件 DTR 复位在本板无效），
+    随后排空 boot BIST 直到静默，使命令循环就绪且 gcov 处于全新 boot 状态
+    （保证 RTOSCOV 是首次 __gcov_dump 调用——二次调用只发 START+魔法字就停，
+    产出 108 字节残帧 → 0 覆盖）。"""
+    import time
+    try:
+        ser.write(b"RESET\r\n")
+    except Exception:
+        pass
+    time.sleep(0.3)
+    # 排空启动日志：读到连续 3 次空行（约 3s 静默）即认为 boot 完成、进入命令循环。
+    cap = time.time() + 45
+    silent = 0
+    while time.time() < cap:
+        try:
+            line = ser.readline().decode(errors="replace").strip()
+        except Exception:
+            line = ""
+        if line:
+            silent = 0
+            sys.stdout.write("  boot> " + line + "\n")
+            sys.stdout.flush()
+        else:
+            silent += 1
+            if silent >= 3:
+                break
+    try:
+        ser.reset_input_buffer()
+    except Exception:
+        pass
 
 
 def read_exact(stream, n):
@@ -51,45 +92,60 @@ def read_exact(stream, n):
     return buf
 
 
-def build_gcno_checksum_map(build_dir):
-    """扫描 build 树里的 .gcno，建立 gcov 单元校验和 -> (目录, base) 的映射。
+def build_gcno_list(build_dir):
+    """扫描 build 树里被 --coverage 插桩的 .gcno，返回 [(dir, base, checksum)] 列表。
 
-    裸机 newlib 的 gcov 无法推导每 TU 的真实路径，固件发出的 .gcda 帧名字全部相同
-    （如 "build_cov\\CMakeFiles\\stm32f407_mini"），无法用文件名匹配。但 gcov 在
-    .gcno 与 .gcda 里都嵌入了同一个「单元校验和」（magic "adcg"/"gcno" + version 之后
-    的 4 字节，小端），用它即可把每个 .gcda 帧精确对应到其 .gcno。
+    帧名（newlib gcov 在裸机下发的是 build 目标绝对路径，不可用于配对），故用 .gcno
+    的单元校验和精确配对：.gcno 头部 [tag][version][checksum][0]（小端），校验和在
+    偏移 8:12；.gcda 头部 [tag][version][stamp][checksum]，其 stamp 在偏移 8:12。
+    本工具链中同一 TU 的 .gcno 校验和与 .gcda stamp 一致（见 _dumpinspect.py 的实测），
+    故以「.gcda 偏移 8:12 的值」为键去查 .gcno 校验和表即可无歧义配对，免去暴力试配。
 
-    只收录被 --coverage 插桩的目录（src/rtos、src/osal），避免与非插桩 .gcno 的校验和
-    撞车造成误配。返回 {checksum(int): (dir, base)}。
+    注意 gcc 把 gcno 命名为「对象文件 basename」（如 rtos_accept.c.obj → rtos_accept.c.gcno），
+    故 build 树里的 notes 文件是 rtos_accept.c.gcno，而非 rtos_accept.gcno。gcov 按同
+    base 查找 <base>.gcno / <base>.gcda，所以 .gcda 也必须命名为 rtos_accept.c.gcda、
+    并以 base=rtos_accept.c 调 gcov（切勿再剥 .c 后缀，否则 gcov 去找不存在的
+    rtos_accept.gcno → 0%）。陈旧构建可能残留裸 base 的 .gcno（同名不同校验和），由调用方
+    在 build 树清理掉；本函数如实收录所有候选，由 gcda stamp 选出真正匹配的那个。
     """
+    import os
     import struct
-    mapping = {}
+    lst = []
     for root, _dirs, files in os.walk(build_dir):
-        rel = os.path.relpath(root, build_dir)
-        if "src/rtos" not in rel.replace("\\", "/") and "src/osal" not in rel.replace("\\", "/"):
+        rel = os.path.relpath(root, build_dir).replace("\\", "/")
+        if "src/rtos" not in rel and "src/osal" not in rel:
             continue
         for f in files:
             if not f.endswith(".gcno"):
                 continue
-            path = os.path.join(root, f)
-            try:
-                b = open(path, "rb").read(12)
-            except Exception:
-                continue
-            if len(b) < 12:
-                continue
-            cs = struct.unpack("<I", b[8:12])[0]   # magic(4)+version(4)+checksum(4)
             base = f[:-len(".gcno")]
-            mapping[cs] = (root, base)
-    return mapping
+            cs = 0
+            try:
+                b = open(os.path.join(root, f), "rb").read(12)
+                if len(b) >= 12:
+                    cs = struct.unpack("<I", b[8:12])[0]
+            except Exception:
+                pass
+            lst.append((root, base, cs))
+    return lst
 
 
-def gcda_checksum(payload):
-    """取 .gcda 帧数据里的单元校验和（payload[8:12]，小端）。"""
+def build_gcno_checksum_map(gcno_list):
+    """校验和 -> (dir, base) 映射；同一校验和出现多次时保留首个。"""
+    m = {}
+    for d, base, cs in gcno_list:
+        if cs and cs not in m:
+            m[cs] = (d, base)
+    return m
+
+
+def gcda_match(gcno_cs_map, data):
+    """用 .gcda 偏移 8:12 的单元标识去查 .gcno 校验和表，返回 (dir, base) 或 None。"""
     import struct
-    if len(payload) < 12:
+    if len(data) < 12:
         return None
-    return struct.unpack("<I", payload[8:12])[0]
+    key = struct.unpack("<I", data[8:12])[0]
+    return gcno_cs_map.get(key)
 
 
 def run_gcov(gcov_exe, build_dir, gcda_files):
@@ -98,21 +154,22 @@ def run_gcov(gcov_exe, build_dir, gcda_files):
     tot_exec = tot_lines = tot_br_exec = tot_br = 0
     for gcda in gcda_files:
         d = os.path.dirname(gcda)
-        # gcda 文件名形如 "<base>.c.gcda"（newlib 的 gcov 把 TU 名按 .c 源文件命名）；
-        # gcov 解析时按 "<base>.gcno / <base>.gcda" 查找，故必须【去掉 .c 后缀】
-        # 得到裸 base 再传给 gcov（例：sched.c.gcda -> sched）。否则 gcov 会去找
-        # sched.c.gcno（不存在）→ "cannot open notes file" → "No executable lines"。
+        # gcc 把 notes/data 命名为「对象文件 basename」，即 <base>.gcno / <base>.gcda，
+        # 其中 base 含 .c（如 rtos_accept.c、sched.c）。gcov 按同名 base 查找，故这里
+        # 【只剥 .gcda 后缀、保留 .c】，以 base（如 sched.c）调 gcov，让它找到
+        # sched.c.gcno / sched.c.gcda。若再剥 .c 去找 sched.gcno（不存在）→ 0%。
         fname = os.path.basename(gcda)
         if fname.endswith(".gcda"):
             fname = fname[:-len(".gcda")]
-        if fname.endswith(".c"):
-            fname = fname[:-len(".c")]
         base = fname
         try:
-            # gcov 必须 cwd 到含 .gcno/.gcda 的目录、并以裸 base 形式传入；
-            # 传全路径 + -o <dir> 会让 gcov 误把目录名当对象名（找不到 .gcno）。
+            # 关键：必须把【显式 .gcda 文件】传给 gcov（配合 -o .），不能只传裸 base。
+            # 只传裸 base（gcov -b -c sched.c）时，若同目录残留旧构建的裸 base .gcda
+            # （如 sched.gcda，与 sched.c.gcda 校验和不同），gcov 会误配 → 0%。
+            # 显式指定 <file>.gcda 可无歧义配对对应 .gcno，得到真实覆盖率
+            # （实测 sched.c.gcda：裸 base 0.00% vs 显式文件 94.41%）。
             out = subprocess.run(
-                [gcov_exe, "-b", "-c", base],
+                [gcov_exe, "-b", "-c", "-o", ".", gcda],
                 cwd=d, capture_output=True, text=True, timeout=60)
             txt = out.stdout + out.stderr
         except Exception as e:  # noqa: BLE001
@@ -144,21 +201,28 @@ def main():
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--tcp", help="QEMU serial as host:port, e.g. 127.0.0.1:1234")
     ap.add_argument("--build", default="build_cov", help="CMake build dir (holds .gcno)")
-    ap.add_argument("--gcov", default="gcov", help="gcov executable (default: PATH gcov)")
+    ap.add_argument("--gcov",
+                    default=r"D:/soft/ST/STM32CubeCLT_1.19.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcov.exe",
+                    help="gcov executable (default: the arm-none-eabi-gcov from the same "
+                         "STM32CubeCLT toolchain that built the firmware — MUST match the "
+                         "compiler's gcov format version, else gcov reports 'no functions found')")
     ap.add_argument("--timeout", type=float, default=5.0, help="serial read timeout (s)")
     ap.add_argument("--predelay", type=float, default=0.5,
                     help="open port 后、发 RTOSCOV 前的等待秒数")
-    ap.add_argument("--precmd", default="RTOSBASIC,RTOSIPC,RTOSIPC2,RTOSSTRESS,RTOSFPU,"
-                                         "RTOSBUS,RTOSRR,RTOSTIMER,RTOSBH",
+    ap.add_argument("--precmd", default="RTOSALL",
                     help="发 RTOSCOV 前依次发送的命令（逗号分隔），让自测覆盖 RTOS 路径。"
-                         "注意：RTOSALL / RTOSROBUST / RTOSMPU / RTOSUSR / RTOSP4 在覆盖率构建下"
-                         "会因 gcov 改变代码布局而挂死或 FAIL（其故障/越权恢复依赖精确指令地址），"
-                         "RTOSMARATHON 为长跑测试不立即返回，故默认跳过它们；设为 '' 可完全跳过。")
+                         "默认 RTOSALL（实测在 linker 修复后的 coverage 构建下可正常跑完 ALL: PASS，"
+                         "覆盖度最高，含 rtos_accept 验收套件）。注意：RTOSROBUST / RTOSMPU / RTOSUSR "
+                         "/ RTOSP4 含故意故障/越权恢复、依赖精确指令地址，在 gcov 改布局下个别用例"
+                         "仍有 FAIL 风险，故默认跳过；RTOSMARATHON 为长跑测试不立即返回也跳过。"
+                         "设为 '' 可完全跳过 precmd（仅采 BIST 覆盖）。")
     ap.add_argument("--precmd-timeout", type=float, default=60.0,
                     help="等待每个 --precmd 子命令完成标记（<cmd> PASS|FAIL）的秒数，超时则继续")
     ap.add_argument("--file", default=None,
                     help="离线模式：直接解析已捕获的 dump 文件（tools/_observe.py 等抓取），"
                          "跳过串口连接与 RTOSCOV；其余解析/落盘/gcov 流程不变")
+    ap.add_argument("--save-raw", default=None,
+                    help="把收到的原始 dump（含 START/END 标记）原样存到该文件，便于离线调试")
     args = ap.parse_args()
     if not args.file:
         if not args.port and not args.tcp:
@@ -166,8 +230,9 @@ def main():
     if not os.path.isdir(args.build):
         ap.error("build dir not found: %s" % args.build)
 
-    gcno_map = build_gcno_checksum_map(args.build)
-    if not gcno_map:
+    gcno_list = build_gcno_list(args.build)
+    gcno_cs_map = build_gcno_checksum_map(gcno_list)
+    if not gcno_list:
         print("[ERR] no .gcno found under %s; build with -DCOVERAGE=ON first" % args.build,
               file=sys.stderr)
         return 2
@@ -189,6 +254,11 @@ def main():
             time.sleep(0.5)   # 让 USB CDC 枚举 / DTR 握手稳定（与验证可用的裸机抓取脚本一致）
         except Exception:
             pass
+        # 关键：每次抓取前【硬件复位板子】再排空 boot BIST，保证 __gcov_dump 在全新 boot 后
+        # 第一次被调用（newlib 的 gcov 在首次 dump 后才填充计数；第二次调用会只发 START+魔法字
+        # 就停，产出 108 字节残帧 → 0 覆盖）。DTR 脉冲复位 STM32，随后排空启动日志直到静默，
+        # 与 companion_test.py 同款做法，确保命令循环已就绪、自测路径未被前一次 dump 污染。
+        reset_board(stream)
 
         # 发 --precmd（逗号分隔的多个命令）先让自测覆盖 RTOS 路径，再发 RTOSCOV 触发导出。
         # 必须在发命令期间【轮询读取】每条命令的回显/结果——这会把 TX 环形缓冲排空，使随后
@@ -273,6 +343,14 @@ def main():
         print("[*] read stats: chunks=%d bytes=%d max_gap=%.2fs" % (n_chunks, n_bytes, max_gap),
               flush=True)
 
+    if args.save_raw:
+        try:
+            with open(args.save_raw, "wb") as f:
+                f.write(dump)
+            print("[*] raw dump saved to %s" % args.save_raw, flush=True)
+        except Exception as e:
+            print("[WARN] cannot save raw dump: %s" % e, file=sys.stderr)
+
     i = dump.find(start_marker)
     j = dump.find(end_marker)
     if i < 0:
@@ -300,53 +378,76 @@ def main():
     elif first < 0:
         print("[ERR] no GCOV magic found in dump", file=sys.stderr)
         return 2
-    print("[*] parsing %d dump bytes ..." % n)
-    while pos + 6 <= n:
-        magic = struct.unpack(">I", core[pos:pos+4])[0]
-        if magic != GCOV_MAGIC:
-            # 已解析到若干完整帧后遇到坏 magic：通常是 dump 在被截断处之后的残留字节，
-            # 属正常（板子在大块突发中途卡死），优雅收尾而不是整体 abort。
-            if matched + unmatched > 0:
-                print("[WARN] bad magic 0x%08X at off %d; stop (incomplete dump tail)"
-                      % (magic, pos), file=sys.stderr)
-                break
-            print("[ERR] bad magic 0x%08X at off %d, abort" % (magic, pos), file=sys.stderr)
-            return 2
-        nlen = struct.unpack(">H", core[pos+4:pos+6])[0]
-        pos += 6
+    # 预先扫描所有 GCOV magic 的位置（含结束帧），流式帧的数据区就是「本帧头结束」到
+    # 「下一 magic」之间的字节——裸机 newlib 的 gcov 不会把数据补齐到 64 边界后再发下一帧头，
+    # 故不能再依赖 64 边界扫描（那会跳过非 64 对齐的数据尾部导致取到 0 字节）。直接用下一
+    # magic 作为数据分隔是最稳健的做法（与 gcov_dump.c 的流式协议一致：dlen==0 时 data 直到
+    # 下一 magic / 结束帧）。
+    mag = struct.pack(">I", GCOV_MAGIC)
+    magic_pos = []
+    p = 0
+    while True:
+        p = core.find(mag, p)
+        if p < 0:
+            break
+        magic_pos.append(p)
+        p += 4
+    print("[*] parsing %d dump bytes (%d frames) ..." % (n, len(magic_pos)))
+
+    def frame_info(at):
+        """返回 (nlen, name, dlen, header_end_off)。"""
+        nl = struct.unpack(">H", core[at + 4:at + 6])[0]
+        nm = core[at + 6:at + 6 + nl].decode("utf-8", "replace")
+        dl = struct.unpack(">I", core[at + 6 + nl:at + 10 + nl])[0]
+        he = at + 10 + nl
+        return nl, nm, dl, he
+
+    for idx, at in enumerate(magic_pos):
+        # 结束帧（nlen==0）或头部越界的残帧：停。
+        if at + 10 > n:
+            break
+        nlen, name, dlen, he = frame_info(at)
         if nlen == 0:
             break  # 结束帧
-        if pos + nlen + 4 > n:
-            print("[WARN] truncated name/data header at off %d; stop (incomplete dump)"
-                  % pos, file=sys.stderr)
-            break
-        name = core[pos:pos+nlen].decode("utf-8", "replace")
-        pos += nlen
-        dlen = struct.unpack(">I", core[pos:pos+4])[0]
-        pos += 4
-        if pos + dlen > n:
-            print("[WARN] truncated .gcda data (need %d, have %d) at off %d; stop "
-                  "(incomplete dump — board wedged mid-burst)"
-                  % (dlen, n - pos, pos), file=sys.stderr)
-            break
-        data = core[pos:pos+dlen]
-        pos += dlen
-        # 整帧在线上补齐到 64 字节边界（见 gcov_dump.c），跳到下一帧的起点。
-        pos = (pos + 63) & ~63
-        cs = gcda_checksum(data)
-        ent = gcno_map.get(cs) if cs is not None else None
+        # 下一 magic（或末尾）作为数据结束
+        nxt = magic_pos[idx + 1] if idx + 1 < len(magic_pos) else n
+        if dlen == 0:
+            # 流式：数据从 he 到 nxt
+            data = core[he:nxt]
+        else:
+            if he + dlen > nxt:
+                print("[WARN] truncated .gcda (need %d, have %d) at frame %d; skip"
+                      % (dlen, nxt - he, idx), file=sys.stderr)
+                unmatched += 1
+                continue
+            data = core[he:he + dlen]
+        # 固件 gcov_stage_flush 在旧版本会把末块用零补齐到 64 字节，这些零会混进 .gcda 数据区、
+        # 使文件尾多出零字节导致 gcov 把计数器判成全 0。这里去掉尾部零填充（真实 .gcda 总是
+        # 4 字节对齐、不会以随意零字节结尾），让 gcov 读到精确的计数器区。
+        if data and data[-1] == 0:
+            stripped = data.rstrip(b"\x00")
+            if len(stripped) % 4 == 0 and len(stripped) > 0:
+                data = stripped
+        ent = gcda_match(gcno_cs_map, data)
         if not ent:
-            print("[WARN] no .gcno match for checksum 0x%08X (frame name %r, %d bytes); skip"
-                  % (cs if cs is not None else 0, name, dlen))
+            print("[WARN] no .gcno match for frame %d (%d bytes); skip" % (idx, len(data)))
             unmatched += 1
             continue
         d, base = ent
-        out_path = os.path.join(d, base + ".gcda")
-        with open(out_path, "wb") as f:
-            f.write(data)
-        gcda_files.append(out_path)
+        # gcc 把 notes 命名为「对象文件 basename」即 <base>.gcno（如 rtos_accept.c.gcno），
+        # 故 .gcda 也必须命名为 <base>.gcda（保留 .c），并以 base=rtos_accept.c 调 gcov，
+        # 否则 gcov 去找不存在的裸 base .gcno → "cannot open data file"（0%）。
+        gcda_path = os.path.join(d, base + ".gcda")
+        try:
+            with open(gcda_path, "wb") as f:
+                f.write(data)
+        except Exception as e:
+            print("[WARN] cannot write %s: %s" % (gcda_path, e), file=sys.stderr)
+        gcda_files.append(gcda_path)
         matched += 1
-        print("    recv %s (%d bytes) -> %s" % (base, dlen, out_path))
+        print("    recv %s (%d bytes) -> matched %s" % (base, len(data), os.path.join(d, base)))
+    # 退回兼容旧变量名
+    pos = n
 
     print("[*] received %d .gcda (matched=%d, unmatched=%d); running gcov ..."
           % (matched + unmatched, matched, unmatched))

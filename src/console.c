@@ -221,14 +221,23 @@ static void cmd_rtoscrit(app_ctx_t *c, const char *line) {
      * RTOS_CRIT_MAX_TICKS 即递增，粘性、零挂起风险）。 */
     uint32_t ov = rtos_rt_crit_overflow();
     log_printf(app_log(), LOG_INFO, "rtos",
-               "[CRIT] overflow=%lu (max_ticks=%d)\n",
-               (unsigned long)ov, (int)RTOS_CRIT_MAX_TICKS);
+               "[CRIT] overflow=%lu kill_count=%lu panic=%lu (max_ticks=%d, kill_mode=%d)\n",
+               (unsigned long)ov,
+               (unsigned long)g_rtos_crit_kill_count,
+               (unsigned long)g_rtos_crit_kill_panic,
+               (int)RTOS_CRIT_MAX_TICKS, (int)RTOS_CRIT_KILL);
     selftest_reply(c, "RTOSCRIT", ov == 0);
 }
 static void cmd_rtossched(app_ctx_t *c, const char *line) {
-    (void)line;
     /* 阶段3 可调度性静态自检报告：打印每个硬实时任务的 C/T/P/WCRT 与总体
-     * 利用率、违约数（g_rtos_sched_invalid）。详细 RTA 见 rtos_sched_analysis.c。 */
+     * 利用率、违约数（g_rtos_sched_invalid）。详细 RTA 见 rtos_sched_analysis.c。
+     * P1-3：支持 `RTOSSCHED recheck` 主动调 rtos_sched_validate() 重新扫描当前
+     * 任务池（运行时动态增删硬实时任务后应手动再验证），再打印最新结果。 */
+    if (line && strstr(line, "recheck")) {
+        int inf = rtos_sched_validate();
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[RTOSSCHED] recheck: infeasible=%d (0=all feasible)\n", inf);
+    }
     rtos_sched_analysis_print();
     selftest_reply(c, "RTOSSCHED", rtos_rt_sched_invalid() == 0);
 }
@@ -239,7 +248,14 @@ static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_r
 static void cmd_rtosirq(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSIRQ", rtos_irq_selftest()); }
 static void cmd_rtosinv(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSINV", rtos_inv_selftest()); }
 static void cmd_rtosfuzz(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFUZZ", rtos_fuzz_selftest()); }
-static void cmd_rtosaccept(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSACCEPT", rtos_accept_selftest()); }
+static void cmd_rtosaccept(app_ctx_t *c, const char *line) {
+    /* P1-4：支持 `RTOSACCEPT long` 跑 1 小时 soak（默认 60s 全 suite） */
+    if (line && (strstr(line, "long") || strstr(line, "1h"))) {
+        selftest_reply(c, "RTOSACCEPT_LONG", acc_b1_soak_long());
+    } else {
+        selftest_reply(c, "RTOSACCEPT", rtos_accept_selftest());
+    }
+}
 #endif /* RTOS_SELFTEST */
 
 /* §6.6 覆盖率：触发把当前累积的 gcov 计数以 .gcda 二进制帧经控制台导出。
@@ -274,6 +290,23 @@ static void cmd_rtosmarathon(app_ctx_t *c, const char *line)
     int n = snprintf(out, sizeof(out), "RTOSMARATHON START wdt=%s\r\n",
                      rtos_watchdog_is_armed() ? "ARMED" : "DISARMED");
     c->console->vtable->write(c->console, out, (size_t)n);
+}
+
+/* 软件复位：用于上位机在【不重新烧录】的情况下让板子回到全新 boot 状态，
+ * 保证下一次 RTOSCOV 触发的是首次 __gcov_dump 调用（newlib gcov 首次 dump 后才
+ * 填充计数；二次调用只发 START+魔法字就停 → 108 字节残帧 → 0 覆盖）。host 抓取
+ * 工具在每次采集前发本命令，等价于一次硬件复位。 */
+static void cmd_reset(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    const char *s = "RESET\r\n";
+    c->console->vtable->write(c->console, s, strlen(s));
+    for (volatile uint32_t i = 0; i < 200000; i++) { }   /* 让回显先发出去 */
+    /* 软件复位：写 SCB->AIRCR（地址 0xE000ED0C），KEY=0x5FA，SYSRESETREQ=bit2。
+     * 本仓库未引 CMSIS 设备头，故直接寄存器操作（Cortex-M 通用）。 */
+    uint32_t *aircr = (uint32_t *)0xE000ED0CUL;
+    *aircr = (0x5FAUL << 16) | (1UL << 2);
+    for (;;) { }   /* 等待复位生效 */
 }
 
 static void cmd_rtoskobj(app_ctx_t *c, const char *line)
@@ -507,7 +540,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSALL",  cmd_rtosall,  0 },
     { "RTOSDEADLINE", cmd_rtosdeadline, 0 },
     { "RTOSCRIT",     cmd_rtoscrit,     0 },
-    { "RTOSSCHED",    cmd_rtossched,    0 },
+    { "RTOSSCHED",    cmd_rtossched,    1 },
     { "RTOSFPU",  cmd_rtosfpu,  0 },
     { "RTOSBH",   cmd_rtosbh,   0 },
     { "RTOSTIMER", cmd_rtostimer, 0 },
@@ -517,10 +550,11 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSUSR",  cmd_rtosusr,  0 },
     { "RTOSIRQ",  cmd_rtosirq,  0 },
     { "RTOSINV",  cmd_rtosinv,  0 },
-    { "RTOSACCEPT", cmd_rtosaccept, 0 },
+    { "RTOSACCEPT", cmd_rtosaccept, 1 },
     { "RTOSFUZZ", cmd_rtosfuzz, 0 },
 #endif
     { "RTOSCOV",  cmd_rtoscov,  0 },   /* §6.6 覆盖率：导出 gcov .gcda 帧 */
+    { "RESET",    cmd_reset,    0 },   /* 软件复位：抓取工具在采集前发本命令回到全新 boot */
     { "RTOSKOBJ", cmd_rtoskobj, 0 },
     { "USBOPEN",  cmd_usbopen,  0 },
     { "USBCLOSE", cmd_usbclose, 0 },
