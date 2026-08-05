@@ -1045,6 +1045,111 @@ int acc_c3_long_critical(void) {
     return ok;
 }
 
+/* =================== C4. 优先级反转实测（天花板协议开/关对比） =================== */
+/* plan P2-2 C4：低优(L=14)持锁 + 中优(M=12)争用 + 高优(H=6)等待。
+ * 用 rtos_mutex 优先级天花板协议（RTOS_LOCK_CEILING 的同机制等价物：对非 mutex
+ * 资源用 RTOS_LOCK_CEILING 宏，对 mutex 用 init(ceil)）做“开/关”对比：
+ *   - 天花板=5（高于 M=12 与 H=6）：L 持锁期间 eff 顶到 5，M 无法抢占 L，
+ *     H 阻塞 ≈ L 纯持锁时间（反转被消除）。
+ *   - 天花板=14（等于 L 自身，不提升）：M 可在 L 持锁期间抢占 L 吃掉 CPU，
+ *     H 阻塞被 M 的运行插入放大（典型优先级反转）。
+ * 验收（定性，不苛求绝对周期）：
+ *   (a) 有天花板时 H 阻塞有界且接近 L 纯持锁（不被 M 显著放大）；
+ *   (b) 无天花板时 H 阻塞 > 有天花板时（反转确凿存在）。
+ * 三任务优先级(6/12/14) 均 < RTOS_PRIO_MAIN(=16)，命令任务可随时抢占回来，安全。 */
+#define ACC_C4_HOLD_CYC   10000u    /* L 持锁自旋 ≈60µs @168MHz */
+#define ACC_C4_MSPIN_CYC  1000u     /* M 每轮自旋后 yield，让 L 能推进完成持锁 */
+#define ACC_C4_CEIL_ON    5u        /* 天花板生效：高于 M/H */
+#define ACC_C4_CEIL_OFF   14u       /* 天花板关闭：等于 L 自身，不提升 */
+static volatile int       g_c4_stop;
+static volatile int       g_c4_l_locked;
+static volatile int       g_c4_l_done;
+static volatile int       g_c4_h_done;
+static volatile uint32_t  g_c4_h_block;     /* H 阻塞周期（t0=请求锁, t1=拿到锁） */
+static rtos_mutex_t       g_c4_mtx;
+static rtos_sem_t         g_c4_l_go, g_c4_h_go;
+RTOS_TASK_STACK(g_c4_stM, 512); RTOS_TASK_STACK(g_c4_stL, 512); RTOS_TASK_STACK(g_c4_stH, 512);
+static void c4_M(void *arg) {                 /* 中优先级：持续占 CPU 制造反转条件 */
+    (void)arg;
+    while (!g_c4_stop) {
+        uint32_t t0 = rtos_cycle_now();
+        while ((uint32_t)(rtos_cycle_now() - t0) < ACC_C4_MSPIN_CYC) { }
+        rtos_yield();                          /* 让 L 推进（否则 L 持锁永不结束） */
+    }
+}
+static void c4_L(void *arg) {                 /* 低优先级：持锁并自旋 HOLD 周期 */
+    (void)arg;
+    rtos_sem_wait(&g_c4_l_go);
+    rtos_mutex_lock(&g_c4_mtx);                /* 持锁瞬间 eff 顶到天花板 */
+    g_c4_l_locked = 1;
+    uint32_t t0 = rtos_cycle_now();
+    while ((uint32_t)(rtos_cycle_now() - t0) < ACC_C4_HOLD_CYC) { }
+    rtos_mutex_unlock(&g_c4_mtx);
+    g_c4_l_done = 1;
+}
+static void c4_H(void *arg) {                 /* 高优先级：在 L 已持锁后请求锁，测阻塞 */
+    (void)arg;
+    rtos_sem_wait(&g_c4_h_go);
+    uint32_t t0 = rtos_cycle_now();
+    rtos_mutex_lock(&g_c4_mtx);                /* 阻塞直到 L 释放（天花板交接） */
+    uint32_t t1 = rtos_cycle_now();
+    g_c4_h_block = (t1 > t0) ? (t1 - t0) : 0;
+    rtos_mutex_unlock(&g_c4_mtx);
+    g_c4_h_done = 1;
+}
+/* 跑单场景（天花板 = ceil），返回 H 阻塞周期；TCB 池满则返回 0 并优雅 SKIP。 */
+static uint32_t acc_c4_run_scene(uint8_t ceil) {
+    rtos_cycle_init();
+    rtos_mutex_init(&g_c4_mtx, ceil);
+    rtos_sem_init(&g_c4_l_go, 0, 1);
+    rtos_sem_init(&g_c4_h_go, 0, 1);
+    g_c4_stop = 0; g_c4_l_locked = 0; g_c4_l_done = 0; g_c4_h_done = 0; g_c4_h_block = 0;
+    rtos_task_create("acc_c4M", c4_M, NULL, 12, g_c4_stM, sizeof(g_c4_stM));
+    rtos_task_create("acc_c4L", c4_L, NULL, 14, g_c4_stL, sizeof(g_c4_stL));
+    rtos_task_create("acc_c4H", c4_H, NULL,  6, g_c4_stH, sizeof(g_c4_stH));
+    if (!rtos_kobj_lookup("acc_c4H")) {        /* 池满：优雅 SKIP */
+        log_printf(app_log(), LOG_INFO, "rtos", "[ACC-C4] SKIP: pool full\n");
+        return 0;
+    }
+    rtos_sem_give(&g_c4_l_go);                  /* L 开始持锁 */
+    uint32_t to = rtos_tick_count() + 200;
+    while (!g_c4_l_locked && rtos_tick_count() < to) rtos_msleep(1);
+    rtos_sem_give(&g_c4_h_go);                  /* 确保 L 已持锁后，H 才请求锁 */
+    to = rtos_tick_count() + 200;
+    while (!g_c4_h_done && rtos_tick_count() < to) rtos_msleep(1);
+    g_c4_stop = 1;
+    rtos_msleep(20);
+    task_t *p;
+    if ((p = (task_t *)rtos_kobj_lookup("acc_c4M"))) rtos_task_delete(p);
+    if ((p = (task_t *)rtos_kobj_lookup("acc_c4L"))) rtos_task_delete(p);
+    if ((p = (task_t *)rtos_kobj_lookup("acc_c4H"))) rtos_task_delete(p);
+    rtos_msleep(30);
+    return g_c4_h_block;
+}
+int acc_c4_prio_inversion(void) {
+    int ok = 1;
+    uint32_t flt0 = g_fault_cfsr, of0 = g_stack_overflow;
+    uint32_t block_on  = acc_c4_run_scene(ACC_C4_CEIL_ON);   /* 天花板生效 */
+    uint32_t block_off = acc_c4_run_scene(ACC_C4_CEIL_OFF);  /* 天花板关闭（反转） */
+    /* 定性验收：
+     *  (a) 有天花板：H 阻塞有界（< HOLD*4，证明不被 M 显著放大 —— 反转已消除）；
+     *  (b) 无天花板：H 阻塞 > 有天花板时（反转确凿：M 在 L 持锁期间插入放大）。 */
+    int inv_cured  = (block_on  > 0) && (block_on  < ACC_C4_HOLD_CYC * 4u);
+    int inv_exists = (block_off > 0) && (block_off > block_on);
+    if (!inv_cured || !inv_exists) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-C4] prio-inversion: hold=%lucyc ceil_on(block_H)=%lucyc(~%luus) "
+               "ceil_off(block_H)=%lucyc(~%luus) cured=%d exists=%d %s\n",
+               (unsigned long)ACC_C4_HOLD_CYC,
+               (unsigned long)block_on,  (unsigned long)(block_on  * 1000000u / 168000000u),
+               (unsigned long)block_off, (unsigned long)(block_off * 1000000u / 168000000u),
+               inv_cured, inv_exists, ok ? "PASS" : "FAIL");
+    RTOS_TEST_RESULT("ACC_C4_PrioInversion", ok);
+    /* 不污染后续：本块仅用局部 mutex/sem/任务，无全局违约计数，无需还原快照 */
+    (void)flt0; (void)of0;
+    return ok;
+}
+
 /* =================== 顶层入口 =================== */
 int rtos_accept_selftest(void) {
     int ok = 1;
@@ -1060,6 +1165,7 @@ int rtos_accept_selftest(void) {
     if (acc_c1_stack_overflow()!= 1) ok = 0;
     if (acc_c2_concurrent_fault() != 1) ok = 0;
     if (acc_c3_long_critical() != 1) ok = 0;
+    if (acc_c4_prio_inversion() != 1) ok = 0;
     log_printf(app_log(), LOG_INFO, "rtos", "[ACCEPT] suite: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }

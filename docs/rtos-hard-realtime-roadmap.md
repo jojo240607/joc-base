@@ -125,8 +125,18 @@
 
 - **P2-1 调度轨迹 trace 导出**
   - 环形缓冲记录 `(tick, task_from, task_to, reason)`，导出供 host 离线调度性分析。
-- **P2-2 优先级反转实测对照**
-  - 新增 C4：低优持锁 + 中优争用 + 高优等待，对比有无 `RTOS_LOCK_CEILING` 的天数阻塞时间。
+- **P2-2 优先级反转实测对照** — ✅ CODE DONE 2026-08-05（编译验证通过，待 RTOSACCEPT 硬件实测）
+  - 新增 **C4 验收块** `acc_c4_prio_inversion()`：用 `rtos_mutex` 优先级天花板协议（与
+    `RTOS_LOCK_CEILING` 同机制，对非 mutex 资源用宏、对 mutex 用 `init(ceil)`）做「开/关」对比：
+    低优 L(prio14) 持锁 + 中优 M(prio12) 争用 + 高优 H(prio6) 等待。
+  - **实现**（`src/rtos/rtos_accept.c`，复用 C1/C2/C3 的局部 mutex/sem/任务惯例，不侵入内核）：
+    1. 场景「天花板=5（高于 M/H）」：L 持锁期间 eff 顶到 5，M 无法抢占，H 阻塞 ≈ L 纯持锁。
+    2. 场景「天花板=14（等于 L 自身，不提升）」：M 在 L 持锁期间抢占 L 吃掉 CPU，H 阻塞被放大（反转）。
+    3. 断言（定性）：`ceil_on` 有界（< HOLD*4，反转已消除）且 `ceil_off > ceil_on`（反转确凿）。
+       打印 `[ACC-C4] prio-inversion: ... cured=1 exists=1 PASS`；注册进 `rtos_accept_selftest()`（C3 之后）。
+  - **验证**：`ninja -C build` 链接通过（RAM 90.31%，CCM 95.24%，无新增 lint；仅有预存 sign-compare 警告）。
+  - **待办**：待 P1-4 的 1h soak（COM8 占用中）结束后，烧新 bin 跑 `RTOSACCEPT` 确认
+    `[ACC-C4] ... PASS`（cured=1 exists=1）。
 - **P2-3 IPC 阻塞最坏事延迟验收** — ✅ CODE DONE 2026-08-05（编译验证通过，待 RTOSACCEPT 硬件实测）
   - 新增 **A6 验收块** `acc_a6_ipc_worst()`：量化「高优硬实时任务阻塞在 `rtos_mq_recv`、被低优
     生产者 `rtos_mq_send` 唤醒」的端到端最坏延迟（send 唤醒 recv 等待者 → schedule_request →
