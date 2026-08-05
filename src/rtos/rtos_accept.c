@@ -470,6 +470,119 @@ int acc_a5_dyn_sched(void) {
     return ok;
 }
 
+/* =================== A6. IPC 阻塞最坏事延迟验收（P2-3） ===================
+ * 量化「高优硬实时任务阻塞在 rtos_mq_recv、被低优生产者 rtos_mq_send 唤醒」的
+ * 端到端最坏延迟：send 唤醒 recv 等待者 -> schedule_request -> PendSV 切换 ->
+ * 消费者运行 -> recv 返回。衡量内核 IPC 阻塞路径（含跨优先级抢占）的 WCET 确定性。
+ *
+ * 手法（复用 A1/A3 的 CYCCNT + 直方图惯例）：
+ *   - 消费者 a6_hi (prio 3, 硬实时带) 阻塞于 rtos_mq_recv；
+ *   - 生产者 a6_lo (prio 20, 背景带) 每条：g_a6_t0=rtos_cycle_now() -> rtos_mq_send；
+ *   - 消费者 recv 返回后 lat = rtos_cycle_now() - g_a6_t0，落入直方图 g_a6_hist[]。
+ * 断言：样本足额(>=ACC_A6_N) 且 worst < ACC_A6_BUDGET（非插桩 3000cyc / 插桩 6000cyc）；
+ *       零延迟 ISR 不挡唤醒路径（CYCCNT 不受 BASEPRI 影响，latency 真实含抢占）。
+ */
+#define ACC_A6_N          500u
+#define ACC_A6_BINS       64u
+#define ACC_A6_BIN_CYC    50u    /* 桶宽 50cyc @168MHz（IPC 延迟亚微秒级，细桶区分分布） */
+#define ACC_A6_MQ_CAP     8u
+#ifndef RTOS_COVERAGE
+#  define ACC_A6_BUDGET   3000u  /* 非插桩：上下文切换 + 唤醒确定性预算 */
+#else
+#  define ACC_A6_BUDGET   6000u  /* 覆盖率插桩放大切换路径，放宽 */
+#endif
+static volatile int       g_a6_stop;
+static volatile uint32_t  g_a6_t0;
+static volatile uint32_t  g_a6_max, g_a6_sum, g_a6_n;
+static volatile uint32_t  g_a6_hist[ACC_A6_BINS];
+static rtos_mq_t          g_a6_mq;
+static uint8_t            g_a6_mqbuf[ACC_A6_MQ_CAP * sizeof(uint32_t)];
+RTOS_TASK_STACK(g_a6_hi_stk, 512);
+RTOS_TASK_STACK(g_a6_lo_stk, 512);
+
+static void a6_hi(void *arg) {
+    (void)arg;
+    uint32_t v = 0;
+    while (!g_a6_stop) {
+        rtos_mq_recv(&g_a6_mq, &v);            /* 阻塞：被 send 唤醒后抢占 lo */
+        uint32_t now = rtos_cycle_now();
+        uint32_t lat = (now > g_a6_t0) ? (now - g_a6_t0) : 0;
+        g_a6_sum += lat;
+        if (lat > g_a6_max) g_a6_max = lat;
+        g_a6_n++;
+        unsigned bin = (unsigned)((lat + ACC_A6_BIN_CYC - 1u) / ACC_A6_BIN_CYC);
+        if (bin >= ACC_A6_BINS) bin = ACC_A6_BINS - 1u;
+        g_a6_hist[bin]++;
+    }
+}
+static void a6_lo(void *arg) {
+    (void)arg;
+    uint32_t v = 0;
+    while (!g_a6_stop) {
+        g_a6_t0 = rtos_cycle_now();            /* 生产者打戳：send 前 */
+        rtos_mq_send(&g_a6_mq, &v);            /* 唤醒阻塞的 hi（recv 等待者） */
+        v++;
+        acc_spin_ms(0);                        /* 背景负载，制造切换窗口 */
+        rtos_msleep(1);                        /* 让出，保证 hi 能抢占回来 */
+    }
+}
+int acc_a6_ipc_worst(void) {
+    int ok = 1;
+    rtos_cycle_init();
+    g_a6_stop = 0; g_a6_max = g_a6_sum = g_a6_n = 0;
+    for (unsigned b = 0; b < ACC_A6_BINS; b++) g_a6_hist[b] = 0;
+    rtos_mq_init(&g_a6_mq, g_a6_mqbuf, sizeof(uint32_t), ACC_A6_MQ_CAP);
+
+    /* 先起消费者使其阻塞于 recv，再起生产者制造唤醒 */
+    rtos_task_create("acc_a6hi", a6_hi, NULL, 3, g_a6_hi_stk, sizeof(g_a6_hi_stk));
+    rtos_task_create("acc_a6lo", a6_lo, NULL, 20, g_a6_lo_stk, sizeof(g_a6_lo_stk));
+    if (!rtos_kobj_lookup("acc_a6hi")) {
+        log_printf(app_log(), LOG_INFO, "rtos", "[ACC-A6] SKIP: pool full\n");
+        RTOS_TEST_RESULT("ACC_A6_IPCWorst", 0);
+        return 1;
+    }
+    uint32_t to = rtos_tick_count() + 400;     /* 最多 ~400 tick 采足 500 样本 */
+    while (g_a6_n < ACC_A6_N && rtos_tick_count() < to) rtos_msleep(2);
+
+    uint32_t avg = (g_a6_n > 0) ? (g_a6_sum / g_a6_n) : 0;
+    int lok = (g_a6_n >= ACC_A6_N) && (g_a6_max < ACC_A6_BUDGET) && (g_stack_overflow == 0);
+    if (!lok) ok = 0;
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[IPC-WORST] mq_recv wake n=%lu min~avg=%lu max=%lu (budget<%lucyc%s) %s\n",
+               (unsigned long)g_a6_n, (unsigned long)avg, (unsigned long)g_a6_max,
+               (unsigned long)ACC_A6_BUDGET,
+               #ifdef RTOS_COVERAGE
+               " cov-relaxed",
+               #else
+               "",
+               #endif
+               lok ? "PASS" : "FAIL");
+    /* 直方图（细桶，前若干非空桶） */
+    uint32_t cum = 0, p99_cyc = 0;
+    for (unsigned b = 0; b < ACC_A6_BINS; b++) {
+        cum += g_a6_hist[b];
+        if (g_a6_hist[b]) {
+            log_printf(app_log(), LOG_INFO, "rtos",
+                       "  [IPC-HIST] bin[%2u] %4lu-%4lucyc: %lu\n", b,
+                       (unsigned long)(b * ACC_A6_BIN_CYC),
+                       (unsigned long)((b + 1) * ACC_A6_BIN_CYC),
+                       (unsigned long)g_a6_hist[b]);
+        }
+        if (!p99_cyc && cum >= (g_a6_n * 99u / 100u)) p99_cyc = (b + 1) * ACC_A6_BIN_CYC;
+    }
+    log_printf(app_log(), LOG_INFO, "rtos", "  [IPC-HIST] p99<=%lucyc\n", (unsigned long)p99_cyc);
+    RTOS_TEST_RESULT("ACC_A6_IPCWorst", lok);
+
+    /* 清理：置 stop 后两任务阻塞于 msleep/recv，delete 摘链置 DEAD */
+    g_a6_stop = 1;
+    task_t *hi = (task_t *)rtos_kobj_lookup("acc_a6hi");
+    task_t *lo = (task_t *)rtos_kobj_lookup("acc_a6lo");
+    if (hi) rtos_task_delete(hi);
+    if (lo) rtos_task_delete(lo);
+    rtos_msleep(20);
+    return ok;
+}
+
 /* =================== B1. 长时 soak =================== */
 #define ACC_SOAK_MS 60000u        /* 默认 soak 时长；P1-4 起支持可配置（最长 1h） */
 #define ACC_SOAK_LONG_MS 3600000u /* RTOSACCEPT long 专用的 1 小时 soak */
@@ -941,6 +1054,7 @@ int rtos_accept_selftest(void) {
     if (acc_a3_jitter()        != 1) ok = 0;
     if (acc_a4_rta()           != 1) ok = 0;
     if (acc_a5_dyn_sched()     != 1) ok = 0;
+    if (acc_a6_ipc_worst()      != 1) ok = 0;
     if (acc_b1_soak(ACC_SOAK_MS) != 1) ok = 0;
     if (acc_b2_exhaust()       != 1) ok = 0;
     if (acc_c1_stack_overflow()!= 1) ok = 0;

@@ -127,8 +127,20 @@
   - 环形缓冲记录 `(tick, task_from, task_to, reason)`，导出供 host 离线调度性分析。
 - **P2-2 优先级反转实测对照**
   - 新增 C4：低优持锁 + 中优争用 + 高优等待，对比有无 `RTOS_LOCK_CEILING` 的天数阻塞时间。
-- **P2-3 IPC 阻塞最坏事延迟验收**
-  - 新增 A5：高优任务阻塞在 mq 上，低优生产，测从生产到高优运行的延迟分布。
+- **P2-3 IPC 阻塞最坏事延迟验收** — ✅ CODE DONE 2026-08-05（编译验证通过，待 RTOSACCEPT 硬件实测）
+  - 新增 **A6 验收块** `acc_a6_ipc_worst()`：量化「高优硬实时任务阻塞在 `rtos_mq_recv`、被低优
+    生产者 `rtos_mq_send` 唤醒」的端到端最坏延迟（send 唤醒 recv 等待者 → schedule_request →
+    PendSV 切换 → 消费者运行 → recv 返回）。
+  - **实现**（`src/rtos/rtos_accept.c`，复用 A1/A3 的 CYCCNT + 直方图惯例，不侵入内核）：
+    1. 消费者 `a6_hi`（prio 3, 硬实时带）阻塞于 `rtos_mq_recv`；生产者 `a6_lo`（prio 20, 背景带）
+       每条：`g_a6_t0 = rtos_cycle_now()` → `rtos_mq_send`；消费者 recv 返回后
+       `lat = rtos_cycle_now() - g_a6_t0` 落入细桶直方图（`ACC_A6_BIN_CYC=50cyc`, 64 桶）。
+    2. 断言：样本足额（≥500）且最坏延迟 < 预算（`ACC_A6_BUDGET`：非插桩 3000cyc / 插桩 6000cyc），
+       零延迟 ISR 不挡唤醒路径（CYCCNT 不受 BASEPRI 影响，latency 真实含跨优先级抢占）。
+    3. 打印 `[IPC-WORST] ...` + 直方图分桶 + p99；注册进 `rtos_accept_selftest()`（A5 之后）。
+  - **验证**：`ninja -C build` 链接通过（RAM 88.75%，CCM 95.24%，无新增 lint）。
+  - **待办**：待 P1-4 的 1h soak（COM8 占用中）结束后，烧新 bin 跑 `RTOSACCEPT` 确认
+    `[IPC-WORST] ... PASS` 且 worst < 预算。
 
 ---
 
@@ -143,7 +155,8 @@
 | 5 | P1-2 多级中断优先级端到端延迟 | 0.5d | A2/C 组基础设施 | ✅ DONE 2026-08-05（硬件实测 PASS） |
 | 6 | P1-1 A1 背景负载响应分布量化 | 0.5d | A1 已有 | ✅ DONE 2026-08-04（硬件实测 PASS） |
 | 7 | P1-3 动态可调度性再验证 | 0.5d | rtos_sched_validate 已有 | ✅ DONE 2026-08-05（硬件实测 PASS） |
-| 8 | P2-1 调度 trace 导出 | 1-2d | 需改内核加环形缓冲（风险最高） | 待做 |
+| 8 | P2-3 IPC 阻塞最坏事延迟验收 | 0.5d | mq + CYCCNT + 直方图（A1/A3 惯例） | ✅ CODE DONE 2026-08-05（编译验证，待 RTOSACCEPT 硬件实测） |
+| 9 | P2-1 调度 trace 导出 | 1-2d | 需改内核加环形缓冲（风险最高） | 待做 |
 
 ---
 
