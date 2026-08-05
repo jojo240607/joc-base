@@ -125,18 +125,23 @@
 
 - **P2-1 调度轨迹 trace 导出**
   - 环形缓冲记录 `(tick, task_from, task_to, reason)`，导出供 host 离线调度性分析。
-- **P2-2 优先级反转实测对照** — ✅ CODE DONE 2026-08-05（编译验证通过，待 RTOSACCEPT 硬件实测）
+- **P2-2 优先级反转实测对照** — ✅ 硬件实测 DONE 2026-08-05（烧录 `stm32f407_minimal.bin` 于 COM8 实跑 `RTOSACCEPT`）
   - 新增 **C4 验收块** `acc_c4_prio_inversion()`：用 `rtos_mutex` 优先级天花板协议（与
-    `RTOS_LOCK_CEILING` 同机制，对非 mutex 资源用宏、对 mutex 用 `init(ceil)`）做「开/关」对比：
-    低优 L(prio14) 持锁 + 中优 M(prio12) 争用 + 高优 H(prio6) 等待。
+    `RTOS_LOCK_CEILING` 同机制，对非 mutex 资源用宏、对 mutex 用 `init(ceil)`）做「开/关」对比。
+    本 RTOS 优先级约定为「数值越小越高」（硬实时带 2/3/4 最高，main=16），故三任务全部放在
+    main 之下（L=22/M=20/H=18）以满足反转链 H>M>L 且绝不饿死命令任务。
   - **实现**（`src/rtos/rtos_accept.c`，复用 C1/C2/C3 的局部 mutex/sem/任务惯例，不侵入内核）：
-    1. 场景「天花板=5（高于 M/H）」：L 持锁期间 eff 顶到 5，M 无法抢占，H 阻塞 ≈ L 纯持锁。
-    2. 场景「天花板=14（等于 L 自身，不提升）」：M 在 L 持锁期间抢占 L 吃掉 CPU，H 阻塞被放大（反转）。
-    3. 断言（定性）：`ceil_on` 有界（< HOLD*4，反转已消除）且 `ceil_off > ceil_on`（反转确凿）。
-       打印 `[ACC-C4] prio-inversion: ... cured=1 exists=1 PASS`；注册进 `rtos_accept_selftest()`（C3 之后）。
-  - **验证**：`ninja -C build` 链接通过（RAM 90.31%，CCM 95.24%，无新增 lint；仅有预存 sign-compare 警告）。
-  - **待办**：待 P1-4 的 1h soak（COM8 占用中）结束后，烧新 bin 跑 `RTOSACCEPT` 确认
-    `[ACC-C4] ... PASS`（cured=1 exists=1）。
+    1. L(22) 持锁后**连续自旋 5ms**（需 CPU 的工作）；M(20) 用「自旋 1ms + 睡眠 1ms」交替，真正抢 L 的 CPU；
+       H(18) 在 L 持锁窗口内请求锁，测 `block_H = 请求锁→拿到锁` 的周期。
+    2. 场景「天花板=18（高于 M=20）」：L 持锁期间 eff 顶到 18，M 无法抢占，H 阻塞 ≈ L 纯持锁剩余段。
+    3. 场景「天花板=22（等于 L 自身，不提升）」：M 在 L 持锁期间抢占 L 吃 CPU，L 完成工作量被拉长，H 阻塞放大。
+  - **断言（定性）**：`ceil_on` 有界（< HOLD×3，反转已消除）且 `ceil_off > ceil_on×1.5` 且放大量 > 1/4 段 HOLD
+    （反转确凿）。打印 `[ACC-C4] prio-inversion: ... cured=1 exists=1 PASS`；注册进 `rtos_accept_selftest()`（C3 之后）。
+  - **实测**（COM8 硬件，多次稳定）：`ceil_on(block_H)=~525kcyc(~3-5µs)` vs `ceil_off(block_H)=~841kcyc(~20µs)`，
+    无天花板时 H 阻塞被 M 放大 ~60%，反转确凿；`[RESULT] ACC_C4_PrioInversion: PASS`。
+  - **踩坑记录**：(a) 初版用 `rtos_yield()` 让 M 交替 → yield 只给同级/更高优先级，M 饿死 L（L 永持锁），H 测到的是锁空闲 361cyc；
+    (b) 改持锁睡眠模型 → L wall-clock 由睡眠时间定，M 抢不影响，反转不可见；(c) 最终用「L 连续自旋 + M 自旋1ms/睡眠1ms」
+    才在 H 阻塞时长上显出可见反转。优先级必须全部 < main(16) 以免饿死命令任务。
 - **P2-3 IPC 阻塞最坏事延迟验收** — ✅ CODE DONE 2026-08-05（编译验证通过，待 RTOSACCEPT 硬件实测）
   - 新增 **A6 验收块** `acc_a6_ipc_worst()`：量化「高优硬实时任务阻塞在 `rtos_mq_recv`、被低优
     生产者 `rtos_mq_send` 唤醒」的端到端最坏延迟（send 唤醒 recv 等待者 → schedule_request →
@@ -149,8 +154,11 @@
        零延迟 ISR 不挡唤醒路径（CYCCNT 不受 BASEPRI 影响，latency 真实含跨优先级抢占）。
     3. 打印 `[IPC-WORST] ...` + 直方图分桶 + p99；注册进 `rtos_accept_selftest()`（A5 之后）。
   - **验证**：`ninja -C build` 链接通过（RAM 88.75%，CCM 95.24%，无新增 lint）。
-  - **待办**：待 P1-4 的 1h soak（COM8 占用中）结束后，烧新 bin 跑 `RTOSACCEPT` 确认
-    `[IPC-WORST] ... PASS` 且 worst < 预算。
+  - **硬件实测 DONE 2026-08-05**（COM8 烧录实跑 `RTOSACCEPT`，多次稳定）：
+    `[IPC-WORST] mq_recv wake n=500 min~avg=1313 max=1324 (budget<3000cyc) PASS`，
+    最坏延迟 ~1324cyc 远低于 3000cyc 预算，`[RESULT] ACC_A6_IPCWorst: PASS`。
+  - **踩坑记录**：初版采样窗口 `to = tick+400` 只够 400 样本，而 `ACC_A6_N=500` 要求 ≥500 → 误判 FAIL；
+    放宽为 `to = tick + ACC_A6_N + 200` 后采满 500，延迟本身 max~1300cyc 本就达标。
 
 ---
 

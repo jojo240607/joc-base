@@ -541,7 +541,7 @@ int acc_a6_ipc_worst(void) {
         RTOS_TEST_RESULT("ACC_A6_IPCWorst", 0);
         return 1;
     }
-    uint32_t to = rtos_tick_count() + 400;     /* 最多 ~400 tick 采足 500 样本 */
+    uint32_t to = rtos_tick_count() + ACC_A6_N + 200;  /* 采样窗口须 > ACC_A6_N（lo 每 tick 1 样本） */
     while (g_a6_n < ACC_A6_N && rtos_tick_count() < to) rtos_msleep(2);
 
     uint32_t avg = (g_a6_n > 0) ? (g_a6_sum / g_a6_n) : 0;
@@ -1046,21 +1046,26 @@ int acc_c3_long_critical(void) {
 }
 
 /* =================== C4. 优先级反转实测（天花板协议开/关对比） =================== */
-/* plan P2-2 C4：低优(L=14)持锁 + 中优(M=12)争用 + 高优(H=6)等待。
+/* plan P2-2 C4：低优(L)持锁 + 中优(M)争用 + 高优(H)等待。
+ * 本 RTOS 优先级约定：数值越小越高（硬实时带 2/3/4 最高，main=RTOS_PRIO_MAIN=16）。
+ * 故三任务全部放在 main(16) 之下（数值均 >16），既满足反转链 H>M>L，又绝不会饿死
+ * 命令任务（main 高于它们，能在等待循环里推进并清理）；M 忙等也不会卡死 main。
  * 用 rtos_mutex 优先级天花板协议（RTOS_LOCK_CEILING 的同机制等价物：对非 mutex
  * 资源用 RTOS_LOCK_CEILING 宏，对 mutex 用 init(ceil)）做“开/关”对比：
- *   - 天花板=5（高于 M=12 与 H=6）：L 持锁期间 eff 顶到 5，M 无法抢占 L，
+ *   - 天花板=18（高于 M=20）：L 持锁期间 eff 顶到 18，M(20) 无法抢占 L，
  *     H 阻塞 ≈ L 纯持锁时间（反转被消除）。
- *   - 天花板=14（等于 L 自身，不提升）：M 可在 L 持锁期间抢占 L 吃掉 CPU，
+ *   - 天花板=22（等于 L 自身，不提升）：M(20) 可在 L 持锁期间抢占 L 吃掉 CPU，
  *     H 阻塞被 M 的运行插入放大（典型优先级反转）。
  * 验收（定性，不苛求绝对周期）：
  *   (a) 有天花板时 H 阻塞有界且接近 L 纯持锁（不被 M 显著放大）；
- *   (b) 无天花板时 H 阻塞 > 有天花板时（反转确凿存在）。
- * 三任务优先级(6/12/14) 均 < RTOS_PRIO_MAIN(=16)，命令任务可随时抢占回来，安全。 */
-#define ACC_C4_HOLD_CYC   10000u    /* L 持锁自旋 ≈60µs @168MHz */
-#define ACC_C4_MSPIN_CYC  1000u     /* M 每轮自旋后 yield，让 L 能推进完成持锁 */
-#define ACC_C4_CEIL_ON    5u        /* 天花板生效：高于 M/H */
-#define ACC_C4_CEIL_OFF   14u       /* 天花板关闭：等于 L 自身，不提升 */
+ *   (b) 无天花板时 H 阻塞 > 有天花板时（反转确凿存在）。 */
+#define ACC_C4_HOLD_CYC    840000u  /* L 持锁总自旋工作量 ≈5ms @168MHz（> 调度粒度，便于 H 插入） */
+#define ACC_C4_MSPIN_CYC   168000u  /* M 自旋 1ms（真正吃 CPU）后睡眠让出，与 L 交替抢 */
+#define ACC_C4_PRIO_H     18u       /* 高优等待者：高于 M/L，仍低于 main(16) 之上数值 */
+#define ACC_C4_PRIO_M     20u       /* 中优争用者 */
+#define ACC_C4_PRIO_L     22u       /* 低优持锁者（全部低于 main，避免饿死命令任务） */
+#define ACC_C4_CEIL_ON    18u       /* 天花板生效：高于 M=20，挡住 M 抢占 L */
+#define ACC_C4_CEIL_OFF   22u       /* 天花板关闭：等于 L 自身，不提升 */
 static volatile int       g_c4_stop;
 static volatile int       g_c4_l_locked;
 static volatile int       g_c4_l_done;
@@ -1069,19 +1074,23 @@ static volatile uint32_t  g_c4_h_block;     /* H 阻塞周期（t0=请求锁, t1
 static rtos_mutex_t       g_c4_mtx;
 static rtos_sem_t         g_c4_l_go, g_c4_h_go;
 RTOS_TASK_STACK(g_c4_stM, 512); RTOS_TASK_STACK(g_c4_stL, 512); RTOS_TASK_STACK(g_c4_stH, 512);
-static void c4_M(void *arg) {                 /* 中优先级：持续占 CPU 制造反转条件 */
+static void c4_M(void *arg) {                 /* 中优先级：自旋 1ms + 睡眠 1ms 交替，真正抢 L 的 CPU */
     (void)arg;
     while (!g_c4_stop) {
         uint32_t t0 = rtos_cycle_now();
-        while ((uint32_t)(rtos_cycle_now() - t0) < ACC_C4_MSPIN_CYC) { }
-        rtos_yield();                          /* 让 L 推进（否则 L 持锁永不结束） */
+        while ((uint32_t)(rtos_cycle_now() - t0) < ACC_C4_MSPIN_CYC) { }  /* 吃 CPU */
+        rtos_msleep(1);                        /* 睡眠让出，L 才能跑；醒来再抢 */
     }
 }
-static void c4_L(void *arg) {                 /* 低优先级：持锁并自旋 HOLD 周期 */
+static void c4_L(void *arg) {                 /* 低优先级：持锁后连续自旋（需 CPU 的工作） */
     (void)arg;
     rtos_sem_wait(&g_c4_l_go);
     rtos_mutex_lock(&g_c4_mtx);                /* 持锁瞬间 eff 顶到天花板 */
     g_c4_l_locked = 1;
+    /* 持锁期间做需 CPU 的工作（连续自旋）。ceil_off 时 M(20) 优先级高于 L eff(22)，
+     * 周期性抢走 L 的 CPU（M 自旋 1ms + 睡眠 1ms），拉长 L 完成 5ms 工作量所需的
+     * wall-clock（=H 阻塞时长）；ceil_on 时 L eff 顶到 18，M(20) 无法抢，L 独占，
+     * wall-clock ≈ 纯工作量。二者差异即优先级反转代价，清晰可观测。 */
     uint32_t t0 = rtos_cycle_now();
     while ((uint32_t)(rtos_cycle_now() - t0) < ACC_C4_HOLD_CYC) { }
     rtos_mutex_unlock(&g_c4_mtx);
@@ -1104,18 +1113,17 @@ static uint32_t acc_c4_run_scene(uint8_t ceil) {
     rtos_sem_init(&g_c4_l_go, 0, 1);
     rtos_sem_init(&g_c4_h_go, 0, 1);
     g_c4_stop = 0; g_c4_l_locked = 0; g_c4_l_done = 0; g_c4_h_done = 0; g_c4_h_block = 0;
-    rtos_task_create("acc_c4M", c4_M, NULL, 12, g_c4_stM, sizeof(g_c4_stM));
-    rtos_task_create("acc_c4L", c4_L, NULL, 14, g_c4_stL, sizeof(g_c4_stL));
-    rtos_task_create("acc_c4H", c4_H, NULL,  6, g_c4_stH, sizeof(g_c4_stH));
+    rtos_task_create("acc_c4M", c4_M, NULL, ACC_C4_PRIO_M, g_c4_stM, sizeof(g_c4_stM));
+    rtos_task_create("acc_c4L", c4_L, NULL, ACC_C4_PRIO_L, g_c4_stL, sizeof(g_c4_stL));
+    rtos_task_create("acc_c4H", c4_H, NULL, ACC_C4_PRIO_H, g_c4_stH, sizeof(g_c4_stH));
     if (!rtos_kobj_lookup("acc_c4H")) {        /* 池满：优雅 SKIP */
         log_printf(app_log(), LOG_INFO, "rtos", "[ACC-C4] SKIP: pool full\n");
         return 0;
     }
-    rtos_sem_give(&g_c4_l_go);                  /* L 开始持锁 */
+    rtos_sem_give(&g_c4_l_go);                  /* L 开始持锁（持锁工作量 5ms ≫ 调度粒度） */
+    rtos_msleep(2);                             /* 粗让 L 先持锁并消耗前段工作量 */
+    rtos_sem_give(&g_c4_h_go);                  /* L 仍持锁剩余段时，H 才请求锁（测阻塞） */
     uint32_t to = rtos_tick_count() + 200;
-    while (!g_c4_l_locked && rtos_tick_count() < to) rtos_msleep(1);
-    rtos_sem_give(&g_c4_h_go);                  /* 确保 L 已持锁后，H 才请求锁 */
-    to = rtos_tick_count() + 200;
     while (!g_c4_h_done && rtos_tick_count() < to) rtos_msleep(1);
     g_c4_stop = 1;
     rtos_msleep(20);
@@ -1132,10 +1140,12 @@ int acc_c4_prio_inversion(void) {
     uint32_t block_on  = acc_c4_run_scene(ACC_C4_CEIL_ON);   /* 天花板生效 */
     uint32_t block_off = acc_c4_run_scene(ACC_C4_CEIL_OFF);  /* 天花板关闭（反转） */
     /* 定性验收：
-     *  (a) 有天花板：H 阻塞有界（< HOLD*4，证明不被 M 显著放大 —— 反转已消除）；
-     *  (b) 无天花板：H 阻塞 > 有天花板时（反转确凿：M 在 L 持锁期间插入放大）。 */
-    int inv_cured  = (block_on  > 0) && (block_on  < ACC_C4_HOLD_CYC * 4u);
-    int inv_exists = (block_off > 0) && (block_off > block_on);
+     *  (a) 有天花板：H 阻塞有界（< L 纯持锁 wall-clock 的 3 倍，证明不被 M 显著放大 —— 反转已消除）；
+     *  (b) 无天花板：H 阻塞显著大于有天花板时（> block_on*1.5 且放大量 > 1/4 段 HOLD，
+     *      反转确凿：M 在 L 持锁期间插入抢 CPU，拉长 L 完成工作量所需的 wall-clock）。 */
+    int inv_cured  = (block_on  > 0) && (block_on  < ACC_C4_HOLD_CYC * 3u);
+    int inv_exists = (block_off > 0) && (block_off > block_on * 3u / 2u)
+                     && ((int32_t)(block_off - block_on) > (int32_t)(ACC_C4_HOLD_CYC / 4u));
     if (!inv_cured || !inv_exists) ok = 0;
     log_printf(app_log(), LOG_INFO, "rtos",
                "[ACC-C4] prio-inversion: hold=%lucyc ceil_on(block_H)=%lucyc(~%luus) "
