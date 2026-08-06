@@ -88,6 +88,19 @@ volatile uint32_t g_rtos_crit_kill_count = 0;
 /* P0-3 安全态 panic 标志（RTOS_CRIT_KILL=PANIC 时置位，供调试器/复位原因读取）。 */
 volatile uint32_t g_rtos_crit_kill_panic = 0;
 
+/* 临界区持锁时长直方图（中断延迟优化定位器，见 docs/rtos-hard-realtime-roadmap.md
+ * §中断延迟优化）：每次「最外层」临界区（rtos_crit_enter/exit / sched_lock 区间）退出时，
+ * 把其持锁 cycle 数落入细桶直方图，用于定位「是谁」制造了长临界区 —— 这正是之前 IRQ→任务
+ * 唤醒延迟最坏 32.8µs 的元凶来源。直方图本身零挂起风险：纯计数、无锁（单核、临界区退出时
+ * 仍持调度锁，不重入）。门控 RTOS_SCHED_TRACE：常态构建（=0）零开销、零 RAM；开发/诊断
+ * 构建与 RTOSBENCH 同源，可直接 dump。
+ * 桶宏 RTOS_CRIT_HIST_BUCKETS/STEP/OVER 与 extern 声明见 rtos_internal.h（同门控）。 */
+#if RTOS_SCHED_TRACE
+volatile uint32_t g_crit_hist[RTOS_CRIT_HIST_BUCKETS + 1u];  /* +1 溢出桶(>16us) */
+volatile uint32_t g_crit_hist_total;        /* 采样总数 */
+volatile uint32_t g_crit_hist_max;          /* 历史最坏持锁 cycle 数 */
+#endif
+
 /* 临界区审计内部状态：嵌套深度 + 最外层进入 cycle。仅由 rtos_crit_enter_mark /
  * rtos_crit_exit_audit（rtos_internal.h 内联调用）访问，都在关中断/调度锁内，单核安全。
  * 用 cycle(DWT CYCCNT) 而非 tick：锁调度(BASEPRI)屏蔽了 SysTick，tick 在持锁期间不前进，
@@ -114,8 +127,19 @@ void rtos_crit_exit_audit(void) {
     if (g_crit_nest == 0) return;                       /* 防御：不匹配调用 */
     g_crit_nest--;
     if (g_crit_nest == 0) {                             /* 回到最外层：审计总持有时长 */
-#if RTOS_CRIT_MAX_CYCLES > 0
         uint32_t held = (uint32_t)(rtos_cycle_now() - g_crit_enter_cycle);
+#if RTOS_SCHED_TRACE
+        /* 持锁时长直方图采样：定位「长临界区」真凶（唤醒延迟长尾来源）。
+         * 此处仍在临界区（调度锁未放开），单核不重入，纯计数零挂起风险。 */
+        do {
+            uint32_t b = held / RTOS_CRIT_HIST_STEP;
+            if (b >= RTOS_CRIT_HIST_BUCKETS) b = RTOS_CRIT_HIST_OVER;
+            g_crit_hist[b]++;
+            g_crit_hist_total++;
+            if (held > g_crit_hist_max) g_crit_hist_max = held;
+        } while (0);
+#endif
+#if RTOS_CRIT_MAX_CYCLES > 0
         if (held > (uint32_t)RTOS_CRIT_MAX_CYCLES) {
             g_rtos_crit_overflow++;                     /* 粘性计数（零挂起风险） */
 #if RTOS_CRIT_KILL != RTOS_CRIT_KILL_REPORT

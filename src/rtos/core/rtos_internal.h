@@ -132,6 +132,22 @@ extern int             g_rtos_started;
  * 即递增（粘性、零挂起风险）。供 RTOSALL/RTOSCRIT 自检读取。 */
 extern volatile uint32_t g_rtos_crit_overflow;
 
+/* 临界区持锁时长直方图（中断延迟优化定位器，sched.c 定义，门控 RTOS_SCHED_TRACE）：
+ * 每次「最外层」临界区退出时把持锁 cycle 数落入细桶，定位「长临界区」真凶 —— 即 IRQ→任务
+ * 唤醒延迟最坏 32.8µs 的元凶来源。桶定义与 rtos_latency_t 一致，便于同表对照。
+ *   桶 b (0..BUCKETS-1) 覆盖 [b*STEP, (b+1)*STEP) cyc；溢出桶 = BUCKETS (>BUCKETS*STEP cyc)。
+ * 常态构建（RTOS_SCHED_TRACE=0）不定义这些符号（零开销、零 RAM）。 */
+#if RTOS_SCHED_TRACE
+  #ifndef RTOS_CRIT_HIST_BUCKETS
+    #define RTOS_CRIT_HIST_BUCKETS 16u        /* 0..15us 共 16 桶 */
+  #endif
+  #define RTOS_CRIT_HIST_STEP 168u            /* 1us @168MHz */
+  #define RTOS_CRIT_HIST_OVER (RTOS_CRIT_HIST_BUCKETS)
+extern volatile uint32_t g_crit_hist[RTOS_CRIT_HIST_BUCKETS + 1u];
+extern volatile uint32_t g_crit_hist_total;
+extern volatile uint32_t g_crit_hist_max;
+#endif
+
 /* 软件定时器（core/timer.c，docs/rtos-test-plan.md §6.3）：
  *  - rtos_timer_tick 由 rtos_tick_isr 调用（ISR 上下文，已处于临界区），
  *    扫描活动定时器、到期者置 pending 并唤醒定时器任务；

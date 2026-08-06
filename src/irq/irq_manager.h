@@ -80,6 +80,18 @@ int irq_manager_detach(irq_id_t id, irq_callback_t cb, void *ctx);
  * Line-based: applied to every handler registered on that id. */
 void irq_manager_set_priority(irq_id_t id, uint8_t prio, irq_class_t cls);
 
+/* 便捷封装：把某 IRQ 一键纳入「零延迟带」——即设为 < RTOS_MAX_ZERO_LATENCY_IRQS 的
+ * 优先级 + IRQ_CLASS_ZERO_LATENCY 类别，使其永不被内核临界区（BASEPRI 阈值）屏蔽。
+ * 用途：对延迟/抖动极敏感、且 ISR 内部不调用任何会走 rtos_crit_enter 的内核 API
+ * （只能给 sem/置 flag/写内存，不能调 rtos_task_create/rtos_mq_init 等调度器变更）
+ * 的中断，放入此带后其唤醒请求经 ISR-safe 计数信号量入队，端到端延迟仅 = CPU 入栈 +
+ * PendSV，实测可压到 ~5µs 量级（见 docs/rtos-hard-realtime-roadmap.md §中断延迟优化）。
+ * 契约由 rtos_start() 的 irq_manager_audit_priorities() 校验：若误把 ZERO_LATENCY 类
+ * 设成 >= 阈值优先级，会打印违例（不静默）。 */
+static inline void irq_manager_set_zero_latency(irq_id_t id) {
+    irq_manager_set_priority(id, IRQ_PRIO_ZERO_LATENCY, IRQ_CLASS_ZERO_LATENCY);
+}
+
 /* Boot-time contract check (FreeRTOS-style): every IRQ_CLASS_KERNEL entry must have
  * prio >= zero_latency_threshold (so the critical section can mask it); every
  * IRQ_CLASS_ZERO_LATENCY entry must have prio < threshold (so it is never masked).

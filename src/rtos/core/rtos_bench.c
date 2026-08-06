@@ -53,6 +53,9 @@ typedef struct {
     uint32_t sw_min_cyc, sw_avg_cyc, sw_max_cyc;  /* 任务切换/信号量混洗：单次(rt/2) */
     uint32_t lat_count, lat_min_cyc, lat_avg_cyc, lat_max_cyc;  /* 硬实时唤醒延迟 */
     uint32_t lat_hist[RTOS_LAT_BUCKETS + 1];
+    /* 临界区持锁时长直方图（中断延迟长尾定位器）：0..15us 桶 + 溢出桶(>16us) */
+    uint32_t crit_total, crit_max_cyc;
+    uint32_t crit_hist[RTOS_CRIT_HIST_BUCKETS + 1];
     uint32_t valid;   /* 非零 = 结果有效（bench 已跑完） */
 } bench_result_t;
 bench_result_t g_bench_result;
@@ -190,6 +193,30 @@ void rtos_bench_run(void) {
     g_bench_result.lat_max_cyc  = g_lat.max_cyc;
     for (uint32_t i = 0; i <= RTOS_LAT_BUCKETS; i++)
         g_bench_result.lat_hist[i] = g_lat.hist[i];
+
+    /* ---------- (3) 临界区持锁时长直方图（中断延迟长尾定位器）----------
+     * 直方图自系统启动起累计（含 bench 过程本身的临界区，具代表性）。它直接揭示
+     * 「是谁」持锁过久 —— 即 IRQ→任务唤醒延迟最坏 32.8µs 的元凶。理想分布应
+     * 集中在 0~1us 桶；若 >16us 溢出桶显著，则需定位调用方拆细临界区。 */
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[BENCH] Critical-section hold-time histogram (total=%lu, worst=%lucyc=%luus):\r\n",
+               (unsigned long)g_crit_hist_total,
+               (unsigned long)g_crit_hist_max, (unsigned long)(g_crit_hist_max/168u));
+    for (uint32_t i = 0; i < RTOS_CRIT_HIST_BUCKETS; i++) {
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[BENCH]   [%2lu-%2lu us] : %lu\r\n",
+                   (unsigned long)(i), (unsigned long)(i+1),
+                   (unsigned long)g_crit_hist[i]);
+    }
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[BENCH]   [ >%2lu us ] : %lu\r\n",
+               (unsigned long)RTOS_CRIT_HIST_BUCKETS,
+               (unsigned long)g_crit_hist[RTOS_CRIT_HIST_OVER]);
+
+    g_bench_result.crit_total  = g_crit_hist_total;
+    g_bench_result.crit_max_cyc = g_crit_hist_max;
+    for (uint32_t i = 0; i <= RTOS_CRIT_HIST_BUCKETS; i++)
+        g_bench_result.crit_hist[i] = g_crit_hist[i];
     g_bench_result.valid = 1;
 
     task_t *tr = (task_t *)rtos_kobj_lookup("bench_rt");
