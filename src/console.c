@@ -282,6 +282,21 @@ static void cmd_rtostrace(app_ctx_t *c, const char *line)
 #endif
 }
 
+static void cmd_rtosbench(app_ctx_t *c, const char *line)
+{
+    /* Rhealstone 子集基准 + IRQ→任务唤醒延迟直方图（RTOSBENCH 命令）。
+     * 关闭 RTOS_SCHED_TRACE 时此命令不在 g_cmds 注册，rtos_bench_run 不暴露。 */
+    (void)c; (void)line;
+#if RTOS_SCHED_TRACE
+    rtos_bench_run();
+    selftest_reply(c, "RTOSBENCH", 1);
+#else
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[RTOSBENCH] disabled (RTOS_SCHED_TRACE=0, rebuild with -DRTOS_SCHED_TRACE=1)\n");
+    selftest_reply(c, "RTOSBENCH", 0);
+#endif
+}
+
 static void cmd_rtoscov(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -571,6 +586,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSCOV",  cmd_rtoscov,  0 },   /* §6.6 覆盖率：导出 gcov .gcda 帧 */
 #if RTOS_SCHED_TRACE
     { "RTOSTRACE", cmd_rtostrace, 0 }, /* P2-1 调度轨迹导出（环形缓冲 -> 调试 UART） */
+    { "RTOSBENCH", cmd_rtosbench, 0 }, /* Rhealstone 子集 + IRQ→wakeup 延迟直方图 */
 #endif
     { "RESET",    cmd_reset,    0 },   /* 软件复位：抓取工具在采集前发本命令回到全新 boot */
     { "RTOSKOBJ", cmd_rtoskobj, 0 },

@@ -2,9 +2,8 @@ import serial, time, sys
 
 LOG = "cap_verify_p1_com8.log"
 out = open(LOG, "w", buffering=1)
-
-def log(*a):
-    line = " ".join(str(x) for x in a)
+版本 吧     从  从VV                                      1WWZESQDAREDRSRFV CWSD XRXCVBHNJGGTHTHYFBJFVHNYV BBBBBBBBBYGNTBV       def log(*a):
+    line = " ".join(str(x) for x in a).,KL;     SSSEEWWW XCV
     print(line)
     out.write(line + "\n")
     out.flush()

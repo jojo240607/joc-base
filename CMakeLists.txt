@@ -135,6 +135,7 @@ if(RTOS)
     # 内核核心（core/ 拆分实现，见 docs/rtos-design.md §10）
     src/rtos/core/sched.c
     src/rtos/core/sched_trace.c  # P2-1 调度轨迹 trace（门控 RTOS_SCHED_TRACE，默认不编译）
+    src/rtos/core/rtos_bench.c    # Rhealstone 子集基准 + IRQ→wakeup 延迟直方图（同门控）
     src/rtos/core/task.c
     src/rtos/core/timer.c      # 软件定时器原语 + 48 天 tick 翻转安全（§6.3）
     src/rtos/core/kobj.c

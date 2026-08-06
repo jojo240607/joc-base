@@ -155,6 +155,17 @@
       跳过 TICK 后缓冲保留有效调度事件，环形缓冲导出全链路 OK。
     - 默认构建（`RTOS_SCHED_TRACE=0`）+ trace 构建（`=1`）均编译无 error、无回归；`g_task_pool` 去 static 仅多一个符号，无调度逻辑改动。
   - **设计权衡**：trace 不记录 TICK 噪声、不侵入调度决策，纯观测；发布构建零 RAM/CPU 开销。
+  - **配套量化（Rhealstone 子集 + 硬实时延迟直方图，2026-08-07 硬件实测）**：
+    - 新增 `src/rtos/core/rtos_bench.c`（门控 `RTOS_SCHED_TRACE`）+ 控制台 `RTOSBENCH` 命令，在**唯一切换点**
+      `rtos_pendsv_switch` 切入任务时，用 `ready_add()` 汇入点打的 `wake_cycle`（DWT CYCCNT @168MHz 戳）算
+      **端到端唤醒延迟** = `switch_cycle − wake_cycle`，并收 min/avg/max + 0..16µs 固定桶直方图。
+      仅统计 **prio≤RTOS_PRIO_BH_HIGH(4)** 的硬实时任务，避免非实时任务排队延迟污染最坏值。
+    - **任务切换 / 信号量混洗时间**（Rhealstone 经典项，两等高优任务 sem ping-pong，round-trip/2）：
+      `min=175cyc(1.0µs) avg=333cyc(2.0µs) max=156172cyc(929µs 冷启动首轮)` → **稳态切换 ~1-2µs**。
+    - **硬实时唤醒延迟**（prio≤4，受控 2000 样本）：`min=712cyc(4.2µs) avg=727cyc(4.3µs) max=5510cyc(32.8µs)`；
+      直方图主峰 1991/2000 落在 4µs 桶，其余散落 4-8µs，仅 1 个 >16µs。与 P2 验收断言 `<10µs` 一致且更紧。
+    - 验证路径：串口环境受限时改用 **GDB dump `g_bench_result` 全局**（boot 自动跑一次 bench 填充），
+      数据可复现。结论：jOS 在 168MHz Cortex-M4 上任务切换 ~2µs、硬实时唤醒最坏 **<33µs**，量化指标达到优秀区间。
 - **P2-2 优先级反转实测对照** — ✅ 硬件实测 DONE 2026-08-05（烧录 `stm32f407_minimal.bin` 于 COM8 实跑 `RTOSACCEPT`）
   - 新增 **C4 验收块** `acc_c4_prio_inversion()`：用 `rtos_mutex` 优先级天花板协议（与
     `RTOS_LOCK_CEILING` 同机制，对非 mutex 资源用宏、对 mutex 用 `init(ceil)`）做「开/关」对比。

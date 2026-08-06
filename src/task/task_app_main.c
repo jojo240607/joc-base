@@ -85,6 +85,14 @@ void app_main_task(void *arg)
                "RTOS / RTOSMARATHON / RTOSKOBJ / RTOSCOV\n");
 #endif
 
+#if RTOS_SCHED_TRACE
+    /* trace 调试构建：boot 后自动跑一次 Rhealstone 基准 + 硬实时延迟量化，
+     * 结果存 g_bench_result（GDB 可 dump，绕开串口验证环境限制）。
+     * 在 main 任务 8K 栈上跑，栈余量充足，不会触发 bench 独立小栈的 BusFault。 */
+    log_printf(app_log(), LOG_INFO, "main", "[boot] auto-running RTOSBENCH...\n");
+    rtos_bench_run();
+#endif
+
     console_run(c);   /* 永不返回：读命令 -> 查表派发 */
 }
 

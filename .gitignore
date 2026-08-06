@@ -1,5 +1,6 @@
 # build artifacts
 build/
+build_trace/
 build2/
 build_rel/
 build_cov/

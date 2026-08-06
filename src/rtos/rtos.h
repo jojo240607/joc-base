@@ -65,6 +65,12 @@ struct task {
     uint32_t       budget_used;    /* 当前运行窗口已用 tick（tick 累加，释放清零） */
     volatile uint32_t deadline_miss; /* 截止期违约计数（粘性，永不清零） */
     volatile uint32_t wcet_miss;      /* WCET 预算超出计数（粘性） */
+    /* ---- 实时延迟量化（RTOS_SCHED_TRACE 构建用）----
+     * wake_cycle：任务被释放/唤醒（ready_add 汇入点）那一刻的 CYCCNT 戳；
+     * 在 PendSV 实际切入该任务时算 latency = switch_cycle - wake_cycle，
+     * 即「ISR/唤醒源 → 任务真正运行」的端到端延迟（含 BASEPRI 屏蔽窗 + PendSV 排队）。
+     * 常态构建（RTOS_SCHED_TRACE=0）不使用，零开销。 */
+    uint32_t       wake_cycle;
 };
 
 /* ---- 内核生命周期 ---- */
@@ -319,6 +325,10 @@ void rtos_mpu_init(void);             /* 配置固定 MPU 区域并使能（对�
  * 抢占/睡眠/时间片轮转时序。详见 core/sched_trace.h。 */
 #if RTOS_SCHED_TRACE
 void rtos_trace_dump(void);
+/* Rhealstone 子集基准 + 实时延迟量化导出（RTOSBENCH 命令）：
+ * 测任务切换/信号量混洗时间，并打印系统级 IRQ→任务唤醒延迟直方图。
+ * 详见 core/rtos_bench.c。 */
+void rtos_bench_run(void);
 #endif
 
 /* ===========================================================================

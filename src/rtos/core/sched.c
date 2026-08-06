@@ -235,6 +235,14 @@ static uint32_t g_slice_ticks = RTOS_TIME_SLICE_TICKS;
 
 /* ---- 就绪链表操作（调用方持锁） ---- */
 void ready_add(task_t *t) {
+    /* 延迟量化：在「任务被释放/唤醒」这一刻打 CYCCNT 戳。这是所有唤醒路径
+     * （sem/mq/event/mutex/rtos_post/睡眠唤醒）的统一汇入点，故在此一处打戳
+     * 即可覆盖全部唤醒源，无需改动各 IPC 文件。rtos_cycle_now() 读 DWT CYCCNT，
+     * 168MHz、~6ns 精度、不受 BASEPRI 影响，是量化硬实时延迟的正确时钟。
+     * 仅在 trace 构建下启用，常态构建零开销（编译器会消除未使用写）。 */
+#if RTOS_SCHED_TRACE
+    t->wake_cycle = rtos_cycle_now();
+#endif
     /* 双挂防御：进入就绪队列前，TCB 的 sched_next/sched_prev 必须是空（不在任一条
      * 链表上）。若非空，说明该 TCB 已挂在就绪/睡眠链表而未摘除，即“双挂”破坏者。 */
     RTOS_SCHED_ASSERT(t->sched_next == (task_t *)0
