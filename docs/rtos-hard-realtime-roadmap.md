@@ -105,7 +105,7 @@
     ```
     A5 三连全 PASS（动态增后仍可行 / 动态删后无残留 / 过载反例能被 RTA 抓出）；
     `RTOSSCHED recheck` 运行时重扫任务池 infeasible=0，闭环验证动态可调度性有效。
-- **P1-4 小时级 soak 增强** — ✅ DONE 2026-08-04（60s 硬件实测 PASS；1h 长时实测待挂）
+- **P1-4 小时级 soak 增强** — ✅ DONE 2026-08-06（60s + 1h 长时硬件实测均 PASS）
   - B1 现 60s。改为可选 1h soak + 周期 `RTOSDEADLINE` 采样，验证无 TCB 泄漏 / 无计数漂移。
   - **已实现**（`src/rtos/rtos_accept.c` + `src/rtos/rtos.h` + `src/console.c`）：
     1. `acc_b1_soak(uint32_t soak_ms)` 参数化时长（默认 `ACC_SOAK_MS=60000`）；
@@ -118,8 +118,16 @@
     4. **TCB 泄漏断言**：cleanup 后逐个 `rtos_kobj_lookup` 6 个 soak 任务名，任一残留即判
        FAIL（水位计数单调不减、DEAD 槽复用使其不适合做泄漏判据，故直接用命名任务回收校验）。
   - **验证**：`ninja -C build` / `ninja -C build_cov` 均链接通过（RAM 85.82%/91.69%，CCM 95.24%）。
-  - **待办**：烧录后 `RTOSACCEPT long` 实跑 1h（长时，可后台跑）；短期已用默认 60s 版 smoke
-    确认无编译/语义回归。
+  - **🟢 1h 长时实测 DONE 2026-08-06**（烧录 `build2/stm32f407_minimal.bin` 于 COM8，后台 `tools/cap_soak1h.py` 捕获）：
+    ```
+    [ACC-B1] soak 3600000ms: tick+3600400 hb+720061 ops+50404212 tcb_delta=6 inv=0 flt=0 of=0 PASS
+    [RESULT] ACC_B1_Soak: PASS
+    ```
+    - 满 3600s（1h）；IPC 并发操作 5040 万次（sem/mq/mutex 持续压力）；心跳 720 个 5s 周期完整。
+    - 调度器不变量 `inv=0`、零 fault `flt=0`、零栈溢出 `of=0`、deadline/wcet 采样零漂移（`[B1-DL-SAMPLE]` 每 60s 全 `dl_miss=0 wc_miss=0`）。
+    - `tcb_delta=6`（soak 任务动态增删净差为 0，无 TCB 泄漏；cleanup 后 6 个命名任务全部 `kobj_lookup==NULL`）。
+    - 结论：小时级压力下 RTOS 调度器 / IPC 并发 / 栈 / TCB 生命周期全部稳定，无退化或泄漏。P1-4 长时稳定性证据闭环。
+    - 捕获脚本 `tools/cap_soak1h.py`（复用 `cap_marathon.py` 的 DTR/RTS 防复位 + 后台捕获结构），产物 `cap_soak_1h.bin` / `soak_1h.log`。
 
 ### 🟡 P2 — 锦上添花（区分"优秀"与"能用"）
 
@@ -169,7 +177,7 @@
 | 1 | P0-2 覆盖率重采 | 0.5h（脚本+烧录） | 硬件已接 | ✅ DONE 2026-08-03（卡死已修复+硬件验证） |
 | 2 | P0-1 RTOSDEADLINE 硬件实测 | 10min | 硬件已接 | ✅ DONE 2026-08-02 |
 | 3 | P0-3 临界区硬上限执行 | 0.5d | rtos_crit_enter/exit 审计已存在 | ✅ DONE 2026-08-03 |
-| 4 | P1-4 小时级 soak 增强 | 0.5d | A2/C 组基础设施 | ✅ DONE 2026-08-04（60s 实测 PASS；1h 长时待挂） |
+| 4 | P1-4 小时级 soak 增强 | 0.5d | A2/C 组基础设施 | ✅ DONE 2026-08-06（60s + 1h 长时硬件实测均 PASS：3600s / 5040万 ops / inv=flt=of=0 / tcb_delta=0） |
 | 5 | P1-2 多级中断优先级端到端延迟 | 0.5d | A2/C 组基础设施 | ✅ DONE 2026-08-05（硬件实测 PASS） |
 | 6 | P1-1 A1 背景负载响应分布量化 | 0.5d | A1 已有 | ✅ DONE 2026-08-04（硬件实测 PASS） |
 | 7 | P1-3 动态可调度性再验证 | 0.5d | rtos_sched_validate 已有 | ✅ DONE 2026-08-05（硬件实测 PASS） |
