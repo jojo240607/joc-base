@@ -20,6 +20,10 @@ option(COVERAGE "Build with gcov coverage instrumentation (--coverage)" OFF)
 # 剔除全部自测代码与攻击面（rtos 自测文件、BIST、RTOS* 控制台命令、.rtos_selftests 段）。
 option(RTOS_SELFTEST "Build with jOS RTOS self-tests + board BIST (OFF for release)" ON)
 
+# P2-1 调度轨迹 trace：在 rtos_pendsv_switch 记录 (tick,from,to,reason) 环形缓冲，
+# 供 RTOSTRACE 命令导出。默认 OFF（零开销、零 RAM）；开发/诊断构建设为 ON。
+option(RTOS_SCHED_TRACE "Build with scheduler-switch trace ring buffer (RTOSTRACE cmd)" OFF)
+
 add_executable(${PROJECT_NAME}.elf
     # startup MUST come early so its sections are at the base of .text.
     # When placed last, any growth in .o files before it shifts startup
@@ -130,6 +134,7 @@ if(RTOS)
     src/osal/osal_rtos.c
     # 内核核心（core/ 拆分实现，见 docs/rtos-design.md §10）
     src/rtos/core/sched.c
+    src/rtos/core/sched_trace.c  # P2-1 调度轨迹 trace（门控 RTOS_SCHED_TRACE，默认不编译）
     src/rtos/core/task.c
     src/rtos/core/timer.c      # 软件定时器原语 + 48 天 tick 翻转安全（§6.3）
     src/rtos/core/kobj.c
@@ -172,6 +177,9 @@ if(RTOS)
     src/rtos/include
     src/rtos/core)
   target_compile_definitions(${PROJECT_NAME}.elf PRIVATE JOC_RTOS=1)
+  if(RTOS_SCHED_TRACE)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RTOS_SCHED_TRACE=1)
+  endif()
 else()
   target_sources(${PROJECT_NAME}.elf PRIVATE
     src/osal/osal_baremetal.c)

@@ -2,6 +2,7 @@
 #include "rtos_internal.h"
 #include "common/lock.h"
 #include "irq.h"
+#include "sched_trace.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -470,6 +471,16 @@ void *rtos_pendsv_switch(void *old_sp) {
          * 避免首 tick 用 g_tick-0 误判违约（预算已在唤醒/创建时清零）。 */
         if (nxt->rt_class != 0 && nxt->release_tick == 0)
             nxt->release_tick = g_tick;
+    }
+    /* P2-1 调度轨迹：记录 (tick, cur, nxt, reason)。仅在 PendSV 临界区内单点写入，
+     * 无锁、ISR 安全；关闭 RTOS_SCHED_TRACE 时 rtos_trace_switch 退化为 no-op。 */
+    {
+        uint8_t reason;
+        if (cur == (task_t *)0)            reason = RTOS_TRACE_START;
+        else if (nxt == cur)               reason = RTOS_TRACE_TICK;
+        else if (cur->state == TASK_RUNNING) reason = RTOS_TRACE_PREEMPT; /* 被抢占回就绪 */
+        else                               reason = RTOS_TRACE_BLOCK;  /* 主动睡眠/阻塞让出 */
+        rtos_trace_switch(cur, nxt, reason);
     }
     rtos_crit_exit(st);
     return nxt ? nxt->sp : old_sp;

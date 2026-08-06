@@ -314,6 +314,13 @@ void *rtos_pendsv_switch(void *old_sp); /* 由 PendSV 汇编调用，返回新 s
 void  rtos_tick_isr(void *ctx);        /* 由 systick 共享线调用 */
 void rtos_mpu_init(void);             /* 配置固定 MPU 区域并使能（对特权任务透明） */
 
+/* ---- P2-1 调度轨迹 trace（编译期门控 RTOS_SCHED_TRACE；关闭时此 API 不暴露） ----
+ * 经调试 UART 导出环形缓冲内的 (tick, from, to, reason) 切换轨迹，用于分析
+ * 抢占/睡眠/时间片轮转时序。详见 core/sched_trace.h。 */
+#if RTOS_SCHED_TRACE
+void rtos_trace_dump(void);
+#endif
+
 /* ===========================================================================
  * IPC 原语
  * 所有阻塞 API 都可从中断安全的上下文（ISR）调用其 *_give/_set（非阻塞）变体；

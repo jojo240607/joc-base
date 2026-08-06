@@ -267,6 +267,21 @@ static void cmd_rtosaccept(app_ctx_t *c, const char *line) {
  * gcov_dump 的默认 g_out = uart_console_raw（UART 硬件 COM8，IRQ 驱动的阻塞发送，
  * 不依赖 DMA TX 流，绝不会卡死、可重复运行）。UART 是纯字节流、无「短包=传输结束」概念；
  * uart_console_raw 保证二进制帧不做 \n->\r 转换。 */
+static void cmd_rtostrace(app_ctx_t *c, const char *line)
+{
+    /* P2-1 调度轨迹导出：打印环形缓冲内 (tick, from, to, reason) 切换记录。
+     * 关闭 RTOS_SCHED_TRACE 时此命令不在 g_cmds 注册，rtos_trace_dump 退化为 no-op。 */
+    (void)c; (void)line;
+#if RTOS_SCHED_TRACE
+    rtos_trace_dump();
+    selftest_reply(c, "RTOSTRACE", 1);
+#else
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[RTOSTRACE] disabled (RTOS_SCHED_TRACE=0, rebuild with -DRTOS_SCHED_TRACE=1)\n");
+    selftest_reply(c, "RTOSTRACE", 0);
+#endif
+}
+
 static void cmd_rtoscov(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -554,6 +569,9 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSFUZZ", cmd_rtosfuzz, 0 },
 #endif
     { "RTOSCOV",  cmd_rtoscov,  0 },   /* §6.6 覆盖率：导出 gcov .gcda 帧 */
+#if RTOS_SCHED_TRACE
+    { "RTOSTRACE", cmd_rtostrace, 0 }, /* P2-1 调度轨迹导出（环形缓冲 -> 调试 UART） */
+#endif
     { "RESET",    cmd_reset,    0 },   /* 软件复位：抓取工具在采集前发本命令回到全新 boot */
     { "RTOSKOBJ", cmd_rtoskobj, 0 },
     { "USBOPEN",  cmd_usbopen,  0 },

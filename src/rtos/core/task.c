@@ -14,7 +14,9 @@
  * ------------------------------------------------------------------------- */
 
 /* ---- TCB 静态池（无堆，确定性）：放 CCM，纯 CPU 访问、不占主 SRAM ---- */
-static task_t g_task_pool[RTOS_MAX_TASKS] __attribute__((section(".ccm_bss")));
+/* 非 static：rtos_internal.h 已 extern 声明，供 sched_trace.c 在切换点把 task_t*
+ * 换算成稳定池索引（诊断/导出用，不参与调度逻辑）。其余访问仍走 rtos_task_* API。 */
+task_t g_task_pool[RTOS_MAX_TASKS] __attribute__((section(".ccm_bss")));
 
 /* 前向声明：任务入口返回时调用，标记 TASK_DEAD 并请求重新调度 */
 static void rtos_task_exit(void);

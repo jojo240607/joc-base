@@ -131,8 +131,30 @@
 
 ### 🟡 P2 — 锦上添花（区分"优秀"与"能用"）
 
-- **P2-1 调度轨迹 trace 导出**
-  - 环形缓冲记录 `(tick, task_from, task_to, reason)`，导出供 host 离线调度性分析。
+- **P2-1 调度轨迹 trace 导出** — ✅ DONE 2026-08-06（硬件实测 RTOSTRACE 导出真实切换轨迹）
+  - **实现**（新增 `src/rtos/core/sched_trace.{h,c}` + 编译期门控 `RTOS_SCHED_TRACE` 默认 0，零开销）：
+    - 在**唯一**发生上下文切换的点 `rtos_pendsv_switch`（sched.c 临界区内）单点写入环形缓冲
+      `(tick, from_id, to_id, reason)`；单核、临界区内、不重入 → 无锁、ISR 安全、绝不阻塞。
+    - reason 枚举：`START`（首次启动）/ `PREEMPT`（被抢占回就绪）/ `BLOCK`（主动睡眠/阻塞让出）/
+      `TICK`（时间片续跑）/ `WAKE`（唤醒路径）。**跳过 TICK**（idle 每 1ms 续跑会淹没缓冲，无分析价值），
+      只保留真实切换，使有限容量覆盖更长时间窗。
+    - 导出 `rtos_trace_dump()` 经调试 UART（polling `uart_hal_putc`，与 `rtos_sched_assert_fail` 同款，
+      无 RTOS 依赖、中断安全）；`task_t*` → 池索引换算经 `g_task_pool`（task.c 去 static 导出，rtos_internal.h 声明）。
+    - 控制台命令 `RTOSTRACE`（console.c，门控 `#if RTOS_SCHED_TRACE`），CMake `option(RTOS_SCHED_TRACE ... OFF)`，
+      `-DRTOS_SCHED_TRACE=ON` 开启；关闭时 `rtos_trace_switch`/`rtos_trace_dump` 退化为 no-op、命令不注册。
+  - **硬件验证**（烧录 `build_trace/stm32f407_minimal.bin` 于 COM8，跑 `RTOSIPC` 后 `RTOSTRACE`）：
+    ```
+    [TRACE] count=256 buf=256 (oldest->newest)
+    [TRACE] t=17817 from=5 to=4 BLOCK
+    [TRACE] t=17818 from=4 to=5 BLOCK
+    [TRACE] t=17819 from=5 to=7 BLOCK
+    [TRACE] t=17819 from=7 to=4 BLOCK
+    ...
+    ```
+    - 任务 id 交替（5↔4、5→7→4）真实切换被记录，tick 单调递增，reason 正确标注 BLOCK；
+      跳过 TICK 后缓冲保留有效调度事件，环形缓冲导出全链路 OK。
+    - 默认构建（`RTOS_SCHED_TRACE=0`）+ trace 构建（`=1`）均编译无 error、无回归；`g_task_pool` 去 static 仅多一个符号，无调度逻辑改动。
+  - **设计权衡**：trace 不记录 TICK 噪声、不侵入调度决策，纯观测；发布构建零 RAM/CPU 开销。
 - **P2-2 优先级反转实测对照** — ✅ 硬件实测 DONE 2026-08-05（烧录 `stm32f407_minimal.bin` 于 COM8 实跑 `RTOSACCEPT`）
   - 新增 **C4 验收块** `acc_c4_prio_inversion()`：用 `rtos_mutex` 优先级天花板协议（与
     `RTOS_LOCK_CEILING` 同机制，对非 mutex 资源用宏、对 mutex 用 `init(ceil)`）做「开/关」对比。
@@ -183,7 +205,7 @@
 | 7 | P1-3 动态可调度性再验证 | 0.5d | rtos_sched_validate 已有 | ✅ DONE 2026-08-05（硬件实测 PASS） |
 | 8 | P2-3 IPC 阻塞最坏事延迟验收 | 0.5d | mq + CYCCNT + 直方图（A1/A3 惯例） | ✅ DONE 2026-08-05（硬件实测 PASS） |
 | 9 | A2 中断唤醒延迟偶发超预算（MAX→P99） | 0.5d | A2 直方图 + 尾链抖动分析 | ✅ DONE 2026-08-06（硬件实测 PASS，OpenOCD+GDB 验证） |
-| 10 | P2-1 调度 trace 导出 | 1-2d | 需改内核加环形缓冲（风险最高） | 待做 |
+| 10 | P2-1 调度 trace 导出 | 1-2d | 需改内核加环形缓冲（风险最高） | ✅ DONE 2026-08-06（硬件实测 RTOSTRACE 导出真实切换轨迹；默认构建零开销） |
 
 ---
 

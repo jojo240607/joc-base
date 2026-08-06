@@ -146,6 +146,11 @@ void rtos_timer_run_pending(void);
 /* 任务计数（sched.c 定义并在 rtos_init 中复位；task.c 创建/查询用） */
 extern int g_task_count;
 
+/* 任务对象池（task.c 定义，CCM/.ccm_bss；静态分配、无堆）。
+ * 导出供 sched_trace.c 在切换点把 task_t* 换算成稳定池索引（诊断/导出用，
+ * 不参与调度逻辑，零回归）。 */
+extern task_t g_task_pool[RTOS_MAX_TASKS];
+
 /* IPC 误用计数（§4.2）：当阻塞式 IPC 在“不应阻塞”的上下文（ISR / 内核未启动）
  * 被调用而退化为忙等/非阻塞时累加，便于事后定位误用（行为不变）。sched.c 定义。 */
 extern volatile uint32_t g_ipc_misuse;

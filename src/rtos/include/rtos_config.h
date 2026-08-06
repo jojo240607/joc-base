@@ -83,6 +83,13 @@
   #define RTOS_TIME_SLICE_TICKS 5   /* 每个任务连续运行 5 个节拍(5ms @1kHz)后让出 */
 #endif
 
+/* P2-1 调度轨迹 trace：在唯一切换点（rtos_pendsv_switch）记录 (tick, from, to, reason)
+ * 到固定环形缓冲，供 RTOSTRACE 命令导出。默认关闭（零开销、零 RAM）；开发/诊断构建
+ * 用 -DRTOS_SCHED_TRACE=1 开启（环形缓冲占 RTOS_TRACE_BUF_LEN*12B，默认 256*12≈3KB）。 */
+#ifndef RTOS_SCHED_TRACE
+  #define RTOS_SCHED_TRACE 0
+#endif
+
 /* 硬实时临界区持锁上限（见 docs/rtos-hard-realtime-plan.md 阶段2）：任何内核临界区
  * （rtos_crit_enter/exit、sched_lock 区间）的持有时长超过此 tick 数，即判定为
  * “长临界区阻塞高优任务”，递增粘性计数 g_rtos_crit_overflow（不触发异常、不停机）。
