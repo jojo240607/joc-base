@@ -99,6 +99,10 @@ volatile uint32_t g_rtos_crit_kill_panic = 0;
 volatile uint32_t g_crit_hist[RTOS_CRIT_HIST_BUCKETS + 1u];  /* +1 溢出桶(>16us) */
 volatile uint32_t g_crit_hist_total;        /* 采样总数 */
 volatile uint32_t g_crit_hist_max;          /* 历史最坏持锁 cycle 数 */
+/* PendSV 切换分段计时（见 rtos_internal.h 注释）：仅存最后一次切换的分段画像。 */
+volatile uint32_t g_pendsv_seg[RTOS_PENDSV_SEG_N];
+volatile uint32_t g_pendsv_seg_valid;
+volatile uint32_t g_pendsv_t0;       /* 入口 CYCCNT 基准（存全局，避免 r12 被 C 调用破坏） */
 #endif
 
 /* 临界区审计内部状态：嵌套深度 + 最外层进入 cycle。仅由 rtos_crit_enter_mark /

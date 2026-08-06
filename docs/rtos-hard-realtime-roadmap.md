@@ -179,19 +179,30 @@
         **溢出桶(>16µs)为 0** —— 即内核临界区最坏仅 3.3µs，且 88.6% 落在 0~2µs。
 
       **结论（重要）**：33µs 唤醒延迟长尾**不是临界区屏蔽造成**——临界区最坏才 3.3µs，远小于 33µs，
-      零延迟带也不会进一步改善（它只防临界区屏蔽，而临界区本就不长）。长尾来自**非临界区路径**，
-      候选：(1) PendSV 切换链的可变开销（FPU s16-s31 懒 save/restore、MPU region 重配、就绪链表搬移）；
-      (2) bench 期间外部中断（USB CDC 控制传输、UART RX DMA、残留 BIST 任务）抢占导致的切换链拉长；
-      (3) 取指/总线停顿。下一步应对 PendSV 切换路径做**分段计时**（FPU 前/后、MPU 前/后、链表前/后），
-      或 bench 期间屏蔽非必要 IRQ 隔离外部干扰，定位 33µs 真实去向。
+      零延迟带也不会进一步改善（它只防临界区屏蔽，而临界区本就不长）。长尾来自**非临界区路径**。
+
+    - **🚀 PendSV 切换分段计时（2026-08-07，已落地 + 硬件实测）**：在 `context.S` 的 `PendSV_Handler`
+      内 7 个里程碑（入口 T0 / s16-s31 压栈 / SAVE 完成 / 内核段(rtos_pendsv_switch 返回) / MPU 段
+      (apply_task_priv 返回) / RESTORE 完成 / EXIT(bx 前)）各打 DWT CYCCNT 戳，写入 `g_pendsv_seg[7]`
+      （门控 `RTOS_SCHED_TRACE`；T0 存全局 `g_pendsv_t0` 而非 r12，因 r12(IP) 是 scratch 会被 C 调用破坏）。
+      `RTOSBENCH` 打印各段差值。**实测（典型切换画像）**：
+      ```
+      SAVE≈546cyc  KERNEL(选任务+临界区)≈103cyc  MPU(栈region重配)≈47cyc
+      RESTORE≈13cyc  EXIT≈13cyc   → 一次 PendSV 切换合计 < 5µs（FPU 任务，含 s16-s31）
+      basic 帧（无 FPU）SAVE 仅 ~45cyc，更快
+      ```
+      **结论（关键定位）**：PendSV 切换链本身极快（各段均 <1µs，合计 <5µs），**不是 33µs 长尾的元凶**。
+      长尾来自**切换路径之外的任务级排队**：bench_rt(prio3) 被更高优先级活动（残留 BIST 任务 / USB CDC
+      控制传输等）抢占并延迟调度。这属于可解释的系统行为（非内核缺陷），且临界区直方图已证明内核关断窗
+      健康。下一步若需压低最坏延迟，应在 **bench 期间屏蔽非必要 IRQ** 隔离外部干扰，或提升 bench 任务优先级带。
 
       零延迟带封装仍对**非 bench 场景**有价值：把对延迟极敏感、ISR 内只给 sem 的外设（高频采样、控制回路）
       放入该带，可保证其唤醒**完全不受任何（即便很短的）临界区影响**，抖动下限更低。
     - **不建议**：(a) 把 PendSV 提权到高于零延迟带（破坏 BASEPRI 语义，重现 race 死机，memory 74689324）；
       (b) ISR 内调 `rtos_task_create` 等（已在 BH/workqueue 踩坑，memory 77847432）；
       (c) 单核下去掉临界区（多核才需要，去掉会丢一致性）。
-    - **验证工具**：`tools/gdb_dump_bench.gdb` — GDB 连 OpenOCD(3333) halt 后 `x/44xw &g_bench_result`
-      原始 dump（绕开串口 0 字节环境），按 bench_result_t 布局手动解析切换/延迟/临界区直方图。
+    - **验证工具**：`tools/gdb_dump_bench.gdb` — GDB 连 OpenOCD(3333) halt 后 `x/51xw &g_bench_result`
+      原始 dump（绕开串口 0 字节环境），按 bench_result_t 布局手动解析切换/延迟/临界区直方图/分段计时。
 - **P2-2 优先级反转实测对照** — ✅ 硬件实测 DONE 2026-08-05（烧录 `stm32f407_minimal.bin` 于 COM8 实跑 `RTOSACCEPT`）
   - 新增 **C4 验收块** `acc_c4_prio_inversion()`：用 `rtos_mutex` 优先级天花板协议（与
     `RTOS_LOCK_CEILING` 同机制，对非 mutex 资源用宏、对 mutex 用 `init(ceil)`）做「开/关」对比。

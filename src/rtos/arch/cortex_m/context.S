@@ -27,6 +27,25 @@
 
     .section .text
 
+/* PendSV 切换分段计时宏（定位 33µs 唤醒延迟长尾，门控 RTOS_SCHED_TRACE）：
+ * 在 7 个里程碑处打 DWT CYCCNT 戳（相对入口 T0=r12 的偏移），写入 g_pendsv_seg[idx]。
+ * r12 全程保留 T0（callee-saved，C 函数 apply_task_priv 会保留）；r1/r2 临时用，
+ * 每次重建，不受中间 C 调用影响。常态构建不定义 g_pendsv_seg -> 链接失败，故本宏
+ * 仅在 RTOS_SCHED_TRACE 构建下被引用（context.S 由同一 CMake 开关包含）。 */
+#if RTOS_SCHED_TRACE
+  /* 注意：T0 必须存全局 g_pendsv_t0（不能存 r12）——r12(IP) 是 scratch 寄存器，
+   * 中间的 bl rtos_pendsv_switch / bl rtos_arch_apply_task_priv 会破坏它。 */
+  .macro PSEG idx
+    ldr   r1, =g_pendsv_seg
+    ldr   r2, =0xE0001004    /* DWT CYCCNT */
+    ldr   r2, [r2]
+    ldr   r3, =g_pendsv_t0
+    ldr   r3, [r3]
+    sub   r2, r2, r3         /* 相对入口 T0 */
+    str   r2, [r1, #(\idx * 4)]
+  .endm
+#endif
+
     .global PendSV_Handler
     .global SVC_Handler
     /* 标记为 Thumb 函数，使链接器在向量表里写入地址时置 bit0=1，
@@ -59,6 +78,21 @@ PendSV_Handler:
     ldr    r1, [r1]
     str    r1, [r2]
 
+#if RTOS_SCHED_TRACE
+    /* 入口 T0 戳（相对基准）：存全局 g_pendsv_t0（不能存 r12，会被 C 调用破坏）。
+     * 并置 valid=1、seg[0]=0（T0 本身偏移恒 0）。 */
+    ldr    r1, =0xE0001004    /* DWT CYCCNT */
+    ldr    r2, [r1]
+    ldr    r1, =g_pendsv_t0
+    str    r2, [r1]
+    ldr    r1, =g_pendsv_seg      /* seg[0] = 0 */
+    mov    r2, #0
+    str    r2, [r1]
+    ldr    r1, =g_pendsv_seg_valid
+    mov    r2, #1
+    str    r2, [r1]
+#endif
+
     /* 判定【被切出任务】是否用过 FPU：用 PendSV 的 lr(EXC_RETURN) 的 bit4，与下方
      * RESTORE 路径严格对称（RESTORE 同样用 tst r14,#0x10）。这是 Cortex-M 异常帧的
      * 标准判定法：PendSV 进入时 r14 即“被切出任务被中断时的 EXC_RETURN”，无论 PendSV
@@ -80,26 +114,45 @@ PendSV_Handler:
      * 这同时把硬件懒栈的 S0-S15+FPSCR flush 到本任务栈，使整个 FPU 上下文完整。
      * 布局低→高 = [EXC_RETURN=0xFFFFFFED][r4-r11][s16-s31][hw帧] */
     vstmdb r0!, {s16-s31}
+#if RTOS_SCHED_TRACE
+    PSEG 1                  /* s16-s31 压栈完成（FPU 任务专有；basic 帧 seg[1]=0） */
+#endif
     stmdb  r0!, {r4-r11}
     mov    r3, #0xFFFFFFED
     str    r3, [r0, #-4]!    /* EXC_RETURN(word0) 在最低地址 */
 .Lpendsv_saved:
+#if RTOS_SCHED_TRACE
+    PSEG 2                  /* SAVE 完成（r4-r11 ± s16-s31） */
+#endif
 #else
     /* 无 FPU：布局低→高 = [EXC_RETURN][r4-r11][hw帧] */
     stmdb  r0!, {r4-r11}
     stmdb  r0!, {r14}        /* EXC_RETURN 在最底部（最低地址） */
+#if RTOS_SCHED_TRACE
+    /* basic 帧无 s16-s31 段：显式清 seg[1]，避免残留上次 FPU 切换的值 */
+    ldr   r1, =g_pendsv_seg
+    mov   r2, #0
+    str   r2, [r1, #4]      /* seg[1] = 0 */
+#endif
+    b      .Lpendsv_saved   /* 汇合到 SAVE 完成点（打 PSEG 2） */
 #endif
 
     /* 临界区已收口到 rtos_pendsv_switch 内部（rtos_crit_enter/exit：
      * ZERO_LATENCY>0 时 BASEPRI 选择性屏蔽，否则 PRIMASK），故此处不再粗暴关全中断。
      * 寄存器保存/恢复与 FPU 懒栈本来就运行在中断开启状态，只有“选下一任务”这一小段被保护。 */
     bl     rtos_pendsv_switch /* r0 = 新任务的 sp（PSP）；g_running = nxt */
+#if RTOS_SCHED_TRACE
+    PSEG 3                  /* 内核段完成（rtos_pendsv_switch 返回，含临界区+选任务） */
+#endif
 
     /* 保存 PSP 到 r4（callee-saved，C 函数 rtos_arch_apply_task_priv 会保留它）：
      * 该 C 函数可自由使用 r0-r3，会把 r0(此处即 PSP 栈帧指针) 改掉，故必须先存起来，
      * 否则下方 ldmia r0! 会从垃圾地址取 EXC_RETURN -> BusFault。 */
     mov    r4, r0
     bl     rtos_arch_apply_task_priv   /* 按新任务 priv 设 nPRIV + 重编程 R4 栈 region */
+#if RTOS_SCHED_TRACE
+    PSEG 4                  /* MPU 段完成（apply_task_priv 返回，栈 region 重配） */
+#endif
     mov    r0, r4            /* 恢复 PSP 栈帧指针 */
     ldmia  r0!, {r14}        /* 先恢复 EXC_RETURN（最低地址） */
     /* 恢复顺序必须与 SAVE 严格对称（SAVE 低→高 = EXC_RETURN, r4-r11, s16-s31）。
@@ -114,11 +167,21 @@ PendSV_Handler:
 .Lno_fpu_restore:
     ldmia  r0!, {r4-r11}     /* 无 FPU：仅恢复 r4-r11 */
 .Lrestore_done:
+#if RTOS_SCHED_TRACE
+    PSEG 5                  /* RESTORE 完成（r4-r11 ± s16-s31） */
+#endif
 #else
     ldmia  r0!, {r4-r11}     /* 恢复 r4-r11（在 EXC_RETURN 之上） */
+.Lrestore_done:
+#if RTOS_SCHED_TRACE
+    PSEG 5                  /* RESTORE 完成（无 FPU 构建） */
+#endif
 #endif
 
     msr    PSP, r0
+#if RTOS_SCHED_TRACE
+    PSEG 6                  /* EXIT 段（PSP 写回、bx 前） */
+#endif
     bx     r14                /* 以 EXC_RETURN 返回到新任务（硬件据 bit4 决定是否取回 S0-S15/FPSCR） */
 
 /* ---------------------------------------------------------------------------

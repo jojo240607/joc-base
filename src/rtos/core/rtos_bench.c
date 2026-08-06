@@ -56,6 +56,11 @@ typedef struct {
     /* 临界区持锁时长直方图（中断延迟长尾定位器）：0..15us 桶 + 溢出桶(>16us) */
     uint32_t crit_total, crit_max_cyc;
     uint32_t crit_hist[RTOS_CRIT_HIST_BUCKETS + 1];
+    /* PendSV 切换分段计时（定位 33µs 长尾真实去向）：7 个里程碑相对入口 T0 的偏移(cyc)。
+     *   seg[0]=T0(0) seg[1]=s16-s31压栈后(FPU专有,basic=0) seg[2]=SAVE完成
+     *   seg[3]=内核段(rtos_pendsv_switch返回) seg[4]=MPU段(apply_task_priv返回)
+     *   seg[5]=RESTORE完成 seg[6]=EXIT段(bx前)。差值即各段耗时。 */
+    uint32_t pendsv_seg[RTOS_PENDSV_SEG_N];
     uint32_t valid;   /* 非零 = 结果有效（bench 已跑完） */
 } bench_result_t;
 bench_result_t g_bench_result;
@@ -217,6 +222,31 @@ void rtos_bench_run(void) {
     g_bench_result.crit_max_cyc = g_crit_hist_max;
     for (uint32_t i = 0; i <= RTOS_CRIT_HIST_BUCKETS; i++)
         g_bench_result.crit_hist[i] = g_crit_hist[i];
+
+    /* ---------- (4) PendSV 切换分段计时（定位 33µs 长尾真实去向）----------
+     * 这是「一次上下文切换」的拆解画像（最后一次 PendSV 的 7 个里程碑相对入口 T0 的偏移）。
+     * 直接看 33µs 花在哪段：SAVE / 内核(选任务+临界区) / MPU(栈region重配) / RESTORE / EXIT。
+     * seg[1]>0 表示本次是 FPU 任务切换（含 s16-s31 额外开销）。 */
+    if (g_pendsv_seg_valid) {
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[BENCH] PendSV switch segments (cyc, rel T0): "
+                   "SAVE=%lu KERNEL=%lu MPU=%lu RESTORE=%lu EXIT=%lu%s\r\n",
+                   (unsigned long)g_pendsv_seg[2],
+                   (unsigned long)(g_pendsv_seg[3] - g_pendsv_seg[2]),
+                   (unsigned long)(g_pendsv_seg[4] - g_pendsv_seg[3]),
+                   (unsigned long)(g_pendsv_seg[5] - g_pendsv_seg[4]),
+                   (unsigned long)(g_pendsv_seg[6] - g_pendsv_seg[5]),
+                   (g_pendsv_seg[1] > 0) ? " [FPU-task]" : " [non-FPU]");
+        if (g_pendsv_seg[1] > 0)
+            log_printf(app_log(), LOG_INFO, "rtos",
+                       "[BENCH]   FPU s16-s31 save overhead ~%lucyc (seg[1] before r4-r11)\r\n",
+                       (unsigned long)g_pendsv_seg[1]);
+    } else {
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[BENCH] PendSV segments: NOT COLLECTED (no switch occurred)\r\n");
+    }
+    for (uint32_t i = 0; i < RTOS_PENDSV_SEG_N; i++)
+        g_bench_result.pendsv_seg[i] = g_pendsv_seg[i];
     g_bench_result.valid = 1;
 
     task_t *tr = (task_t *)rtos_kobj_lookup("bench_rt");

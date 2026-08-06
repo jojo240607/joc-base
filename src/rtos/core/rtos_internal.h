@@ -148,6 +148,22 @@ extern volatile uint32_t g_crit_hist_total;
 extern volatile uint32_t g_crit_hist_max;
 #endif
 
+/* PendSV 切换分段计时（定位 33µs 唤醒延迟长尾的真实去向，门控 RTOS_SCHED_TRACE）：
+ * 在 context.S 的 PendSV_Handler 内、7 个里程碑处各打一次 DWT CYCCNT 戳（相对入口 T0 的
+ * 偏移，cycle 数），用于把「一次上下文切换」拆成 SAVE / KERNEL(选任务+临界区) / MPU(栈 region
+ * 重配) / RESTORE / EXIT 各段，精确看 33µs 花在哪。
+ *   索引：0=T0(入口,恒0) 1=s16-s31 压栈后(FPU任务专有,basic帧不更新)
+ *         2=SAVE 完成(r4-r11 ± s16-s31) 3=rtos_pendsv_switch 返回(内核段)
+ *         4=apply_task_priv 返回(MPU段) 5=RESTORE 完成 6=bx 前(EXIT段)
+ * 仅存「最后一次」切换的分段（典型切换画像）；g_pendsv_seg_valid 非零表示已采集。
+ * 常态构建（=0）不定义，零开销、零 RAM。 */
+#if RTOS_SCHED_TRACE
+  #define RTOS_PENDSV_SEG_N 7u
+extern volatile uint32_t g_pendsv_seg[RTOS_PENDSV_SEG_N];
+extern volatile uint32_t g_pendsv_seg_valid;
+extern volatile uint32_t g_pendsv_t0;   /* PendSV 入口 CYCCNT 基准（存全局，避免被 C 调用破坏 r12） */
+#endif
+
 /* 软件定时器（core/timer.c，docs/rtos-test-plan.md §6.3）：
  *  - rtos_timer_tick 由 rtos_tick_isr 调用（ISR 上下文，已处于临界区），
  *    扫描活动定时器、到期者置 pending 并唤醒定时器任务；
