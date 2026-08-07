@@ -47,7 +47,7 @@ void demo_hello_task(void *arg)
     for (;;) {
         s_cnt++;
         log_printf(app_log(), LOG_INFO, "demo",
-                   "[demo_hello] tick=%lu cnt=%lu — releasing sem for user task\n",
+                   "[demo_hello] tick=%lu cnt=%lu — releasing sem for UNPRIV user task\n",
                    (unsigned long)rtos_tick_count(), (unsigned long)s_cnt);
         rtos_sem_give(&g_demo_sem);          /* 唤醒等待的非特权任务 */
         rtos_msleep(1000);
@@ -64,11 +64,12 @@ void demo_user_task(void *arg)
     (void)arg;
     for (;;) {
         /* 非特权任务调用 IPC 原语 -> 经 SVC 门进入特权 Handler 模式执行。
-         * 这里会真实阻塞（pend），由 demo_hello 周期 give 唤醒。 */
+         * 这里会真实阻塞（pend），由 demo_hello 周期 give 唤醒。
+         * 注意：非特权任务【不能】直接碰外设（如 UART），也不能写 main-SRAM
+         * 的 .bss/.data（unpriv 只开了 CCM 区），否则触发 MemFault；
+         * 故此处只做 SVC 门 IPC，不调用 log_printf、不碰任何全局，唤醒由
+         * 特权 hello 任务的 give 计数间接证明 SVC 门工作正常。 */
         rtos_sem_wait(&g_demo_sem);
-        log_printf(app_log(), LOG_INFO, "demo",
-                   "[demo_user] UNPRIV task woken via SVC gate (tick=%lu)\n",
-                   (unsigned long)rtos_tick_count());
     }
 }
 RTOS_TASK(demo_user, "demo_user", demo_user_task, RTOS_PRIO_MAIN - 2,
