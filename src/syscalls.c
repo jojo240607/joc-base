@@ -63,8 +63,15 @@ int _fstat(int file, struct stat *st) { (void)file; st->st_mode = S_IFCHR; retur
 void *_sbrk(ptrdiff_t incr)
 {
     extern char _end;
+    extern char __HeapLimit;
     static char *heap = &_end;
     char *prev = heap;
+    /* 越界保护：堆不得超过主 SRAM 上界(__HeapLimit)，否则返回 (void *)-1
+     * 让 malloc 失败而非吐出未映射区的野指针(曾导致 coverage 构建启动总线错误)。 */
+    if (incr > 0 && (heap + incr) > &__HeapLimit) {
+        errno = ENOMEM;
+        return (void *)-1;
+    }
     heap += incr;
     return (void *)prev;
 }

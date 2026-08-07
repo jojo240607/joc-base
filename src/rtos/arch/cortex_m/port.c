@@ -89,6 +89,37 @@ irq_id_t rtos_arch_tick_id(void) {
     return (irq_id_t)SysTick_IRQn;
 }
 
+/* 启动节拍时钟源：直接使能 SysTick 硬件，按 RTOS_TICK_HZ 频率产生节拍中断。
+ *
+ * 这是【修复 PING 无响应】的关键：内核核心 rtos_init 仅向 irq 框架注册了
+ * rtos_tick_isr 回调，但从不启动时钟本身；而原先指望板级 systick 节点经
+ * SysTick_Config 去使能 SysTick，但该节点从未出现在 g_nodes[]、且其使能路径
+ * 依赖 clock_hal_sysclk_hz() 等外部状态，任一环节失效都会让 SysTick 不运行、
+ * g_tick 恒为 0、所有 rtos_msleep 永久阻塞（main 任务睡死在 console_run 的
+ * rtos_msleep(1)），从而永不读 uart、RXNE 不清除、PING 无响应。故节拍时钟源
+ * 的启动必须由 arch 层在此【无条件】显式保证，与“是否注册了 systick 外设节点”
+ * 及“clock 全局是否就绪”彻底解耦。
+ *
+ * 实现直接写 SysTick 寄存器（core_cm4.h 的 SysTick_Type），不依赖 SysTick_Config
+ * 内联函数（某些 CMSIS 包含树里它是 static inline，跨 TU 链接会 undefined），也
+ * 不依赖 SystemCoreClock 全局——节拍频率取自 RTOS_TICK_HZ，CPU 频率取 arch 已知
+ * 的 STM32F4 设计常量（与 clock_hal 配置一致，见 stm32f4_discovery.c）。 */
+#include "rtos_config.h"   /* RTOS_TICK_HZ */
+void rtos_arch_tick_start(void) {
+    /* STM32F407 核心时钟（HCLK）由板级 clock 驱动锁定为 168 MHz；此处用设计常量，
+     * 避免依赖运行时全局（SystemCoreClock 的 .data 初值为 16M，需 clock_hal 改写）。 */
+    const uint32_t cpu_hz = 168000000UL;
+    const uint32_t ticks   = cpu_hz / (uint32_t)RTOS_TICK_HZ;
+
+    SysTick->LOAD = (ticks & SysTick_LOAD_RELOAD_Msk) - 1UL;  /* 节拍周期 */
+    SysTick->VAL  = 0UL;                                       /* 清当前值与标志 */
+    SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk |               /* 内核时钟 (HCLK) */
+                    SysTick_CTRL_TICKINT_Msk  |               /* 使能节拍中断 */
+                    SysTick_CTRL_ENABLE_Msk;                  /* 启动计数器 */
+    /* 优先级随后由 rtos_arch_start 在 RTOS_MAX_ZERO_LATENCY_IRQS>0 分支统一设为最低，
+     * 确保 SysTick 可被 BASEPRI 临界区屏蔽（与 FreeRTOS configKERNEL_INTERRUPT_PRIORITY 一致）。 */
+}
+
 /* 使能 DWT 周期计数器（供 P4 收尾自测测量调度延迟 / 上半部有界性）。
  * DWT 属 ARMv7-M ISA 特性，仅在 arch 层访问；可移植核心经 rtos_cycle_now() 只读计数。
  * 幂等：已使能则直接返回，可安全地从 rtos_start() 与自测里多次调用。 */

@@ -279,7 +279,13 @@ static int uart_setup_engine(uart *u, stream_xfer_mode_t engine, uart_frame_t fr
     /* --- allocate + init the state the new (engine, framing) needs --- */
     if (engine == STREAM_MODE_IRQ) {
         uart_irq_t *e = (uart_irq_t *)malloc(sizeof(uart_irq_t));
-        if (!e) return -1;
+        if (!e) {                       /* heap too tight: degrade to POLL */
+            u->eng = NULL;
+            u->parent.mode = STREAM_MODE_POLL;
+            u->framing = (framing == UART_FRAME_IDLE) ? UART_FRAME_NONE : framing;
+            uart_select_rx_engine(u);
+            return 0;
+        }
         memset(e, 0, sizeof(*e));
         osal_sem_init(&e->ctl.tx_idle, 1);   /* line starts free */
         u->eng = e;
@@ -292,7 +298,15 @@ static int uart_setup_engine(uart *u, stream_xfer_mode_t engine, uart_frame_t fr
                         ? sizeof(uart_dma_t)
                         : offsetof(uart_dma_t, idle_buf);
         uart_dma_t *e = (uart_dma_t *)malloc(sz);
-        if (!e) return -1;
+        if (!e) {                       /* heap too tight: try IRQ, then POLL */
+            if (uart_setup_engine(u, STREAM_MODE_IRQ, framing) == 0)
+                return 0;
+            u->eng = NULL;
+            u->parent.mode = STREAM_MODE_POLL;
+            u->framing = UART_FRAME_NONE;
+            uart_select_rx_engine(u);
+            return 0;
+        }
         memset(e, 0, sz);
         osal_sem_init(&e->ctl.tx_idle, 1);
         u->eng = e;

@@ -36,6 +36,13 @@ void rtos_schedule_request(void);
  * 不直接依赖任何芯片 HAL（如 irq_hal_systick_id）。 */
 irq_id_t rtos_arch_tick_id(void);
 
+/* 启动节拍时钟源（使能 SysTick 硬件，按 RTOS 节拍频率 1 kHz 计数）。
+ * 必须由【可移植核心】在注册 rtos_tick_isr 之后调用，以保证内核节拍一定运行——
+ * 否则只注册 ISR 而不启动时钟，g_tick 永不递增、所有 rtos_msleep 永久阻塞。
+ * 实现只写 SysTick 寄存器（arch 层职责），不依赖任何芯片 HAL（如 SysTick_Config /
+ * SystemCoreClock），从而不破坏核心/移植边界契约。节拍频率取自 rtos_config.h。 */
+void rtos_arch_tick_start(void);
+
 /* 周期计数器（Cortex-M DWT CYCCNT）：仅供收尾自测测量调度延迟 / 上半部有界性。
  * DWT 属 ISA 特性，仅在 arch 层访问；可移植核心只通过本接口读取，绝不接触
  * 0xE000xxxx 魔法地址（遵守核心/移植边界契约）。 */

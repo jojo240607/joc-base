@@ -406,6 +406,10 @@ void rtos_init(void) {
     /* 在 systick 共享线上注册 RTOS 节拍（与 systick 驱动 ISR 并存）。
      * 节拍中断 id 由 arch 层给出，核心不直接依赖任何芯片 HAL。 */
     irq_register(rtos_arch_tick_id(), rtos_tick_isr, (void *)0);
+    /* 注册回调后【必须启动节拍时钟源】：否则只挂 ISR 而不使能 SysTick，g_tick 永不
+     * 递增，所有 rtos_msleep 永久阻塞（main 任务睡死、uart 永不被读取）。节拍源的
+     * 使能在 arch 层（rtos_arch_tick_start），与板级是否注册 systick 节点解耦。 */
+    rtos_arch_tick_start();
 }
 
 void rtos_yield(void) {

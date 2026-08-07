@@ -18,6 +18,11 @@ MEMORY
   CCMRAM (xrw) : ORIGIN = 0x10000000, LENGTH = 63K         /* 内核对象(任务栈/TCB池)；顶部 1K 留给 MSP */
 }
 
+/* 堆上界：主 SRAM 顶端(0x20020000)下方留 1K 安全余量，避免 _sbrk 越界写到
+ * 未映射区(0x20020000 起)造成总线错误。主栈在 CCM，故主 SRAM 除 .data/.bss
+ * 外全部可作堆，无需再为主栈预留。 */
+__HeapLimit = ORIGIN(RAM) + LENGTH(RAM) - 0x400;
+
 SECTIONS
 {
   .isr_vector :
