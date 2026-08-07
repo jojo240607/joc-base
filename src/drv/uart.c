@@ -23,6 +23,7 @@ static int uart_dev_close(device *self);
 static int uart_dev_read(device *self, void *buf, size_t len);
 static int uart_dev_write(device *self, const void *buf, size_t len);
 static int uart_dev_ioctl(device *self, int cmd, void *arg);
+static int uart_dev_irq_id(device *self);
 
 /* subclass vtable (defined below; forward-declared so uart_init can reference it) */
 static const struct stream_deviceVtable uart_stream_vtable;
@@ -67,6 +68,7 @@ static const struct deviceVtable uart_dev_vtable = {
     .read  = uart_dev_read,
     .write = uart_dev_write,
     .ioctl = uart_dev_ioctl,
+    .irq_id = uart_dev_irq_id,
 };
 
 /* Uniform create signature for the board layer: takes ONLY the driver's own
@@ -873,4 +875,10 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg)
     default:
         return -1;
     }
+}
+
+static int uart_dev_irq_id(device *self)
+{
+    uart *u = (uart *)self;
+    return (int)uart_hal_irq_id(u->hal);
 }

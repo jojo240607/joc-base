@@ -104,6 +104,7 @@ static int  usb_dev_close(device *self);
 static int  usb_dev_read(device *self, void *buf, size_t len);
 static int  usb_dev_write(device *self, const void *buf, size_t len);
 static int  usb_dev_ioctl(device *self, int cmd, void *arg);
+static int  usb_dev_irq_id(device *self);
 
 static int  usb_stream_read(stream_device *self, void *buf, size_t len);
 static int  usb_stream_write(stream_device *self, const void *buf, size_t len);
@@ -133,6 +134,7 @@ static const struct deviceVtable usb_dev_vtable = {
     .read  = usb_dev_read,
     .write = usb_dev_write,
     .ioctl = usb_dev_ioctl,
+    .irq_id = usb_dev_irq_id,
 };
 
 /* ---- CDC class accessors (called from usbd_cdc_core.c) ---------------- */
@@ -719,4 +721,10 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
     default:
         return -1;
     }
+}
+
+static int usb_dev_irq_id(device *self)
+{
+    usb *u = (usb *)self;
+    return (int)usb_hal_irq_id(u->hal);
 }

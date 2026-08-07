@@ -96,6 +96,12 @@ struct deviceVtable {
     int (*read)(device *self, void *buf, size_t len);   /* bytes read, <0 on error */
     int (*write)(device *self, const void *buf, size_t len); /* bytes written, <0 */
     int (*ioctl)(device *self, int cmd, void *arg);     /* device-specific control */
+    /* OPTIONAL: the chip IRQ line this device's ISR lives on (>=0), or -1 if the
+     * device has no interrupt (e.g. polling-only). Used by the benchmark isolate
+     * switch (RTOSBENCH) to keep the console interrupt alive while every other IRQ
+     * is masked — so benchmarks see a clean task-switch path with no external
+     * preemption. Drivers that don't set it leave it NULL and return -1. */
+    int (*irq_id)(device *self);
 };
 
 struct _device {

@@ -3,6 +3,14 @@
 
 #include "irq.h"
 
+/* Size of the centralized attachment pool (g_mgr[]). Drivers attach one entry
+ * per (id, cb, ctx); shared lines get several. Exposed here so callers that
+ * snapshot masked-line ids (e.g. the benchmark isolation switch) can size
+ * their stack buffer correctly. Keep in sync with irq_manager.c. */
+#ifndef IRQ_MGR_POOL
+#define IRQ_MGR_POOL 48
+#endif
+
 /*
  * Centralized interrupt MANAGER — a thin layer ON TOP of the platform-neutral
  * irq framework (irq_register / irq_enable / ...).
@@ -105,5 +113,33 @@ void irq_manager_dump(void);
 
 /* Lookup the first attached entry on a line (NULL if out of range or none). */
 const irq_mgr_entry_t *irq_manager_get(irq_id_t id);
+
+/* BENCHMARK ISOLATION: mask every attached IRQ EXCEPT the ones in keep[] (and the
+ * system tick, which must stay alive so rtos_msleep() timeouts still work). This
+ * freezes out every external preempter (USB, UART RX, ADC stream, timers, DMA,
+ * EXTI, ...) so a real-time benchmark (RTOSBENCH) measures the *pure* task-switch
+ * / wakeup path with no interrupt jitter. The console IRQs (UART + USB) are passed
+ * in keep[] so the benchmark can still print its result and the operator can still
+ * interact. Call irq_manager_bench_unquiet() afterwards to restore exactly the
+ * pre-bench state — every masked line is re-enabled via its recorded (cb, ctx), so
+ * shared lines and reference counts come back intact. Re-entrant-safe: a second
+ * quiet while already quiet is a no-op; unquiet only releases the outermost one. */
+/* BENCHMARK ISOLATION: mask every attached IRQ EXCEPT the ones in keep[] (and the
+ * system tick, which must stay alive so rtos_msleep() timeouts still work). This
+ * freezes out every external preempter (USB, UART RX, ADC stream, timers, DMA,
+ * EXTI, ...) so a real-time benchmark (RTOSBENCH) measures the *pure* task-switch
+ * / wakeup path with no interrupt jitter. The console IRQs (UART + USB) are passed
+ * in keep[] so the benchmark can still print its result and the operator can still
+ * interact.
+ *
+ * The masked-line ids are written into masked_out[] (caller-provided, sized
+ * masked_cap) and the count is returned; pass that list to irq_manager_bench_
+ * unquiet() afterwards to restore EXACTLY the pre-bench state — every masked line
+ * is re-enabled via its recorded (cb, ctx) from g_mgr, so shared lines and ref
+ * counts come back intact. Keeping the snapshot on the CALLER's stack (not in
+ * BSS) avoids growing the already-tight build-time RAM footprint. */
+int  irq_manager_bench_quiet(irq_id_t *keep, int keep_n,
+                             irq_id_t *masked_out, int masked_cap);
+void irq_manager_bench_unquiet(irq_id_t *masked, int masked_n);
 
 #endif /* IRQ_MANAGER_H */

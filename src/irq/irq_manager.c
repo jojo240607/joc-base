@@ -25,9 +25,7 @@
 
 /* Flat pool of attached handlers, bounded by the realistic number of
  * concurrently-attached interrupt sources (well under IRQ_HAL_TABLE_SIZE even
- * with shared lines). */
-#define IRQ_MGR_POOL 48
-
+ * with shared lines). IRQ_MGR_POOL is defined in irq_manager.h. */
 static irq_mgr_entry_t g_mgr[IRQ_MGR_POOL];
 
 /* Count the enabled handlers on a given irq line. */
@@ -179,6 +177,47 @@ const irq_mgr_entry_t *irq_manager_get(irq_id_t id)
         if (g_mgr[i].registered && g_mgr[i].id == id)
             return &g_mgr[i];     /* first registered on this line */
     return NULL;
+}
+
+/* ---- BENCHMARK ISOLATION ----------------------------------------------
+ * Mask every enabled handler except those in keep[], so a real-time benchmark
+ * sees a clean task-switch path with no external preemption. The masked-line
+ * ids are returned in masked_out[] (caller-owned, kept off BSS to protect the
+ * RAM-tight build); irq_manager_bench_unquiet() re-enables each via its g_mgr
+ * (cb, ctx) so shared lines / ref-counts come back exactly. */
+static int bench_keep_contains(irq_id_t *keep, int keep_n, irq_id_t id)
+{
+    for (int i = 0; i < keep_n; i++)
+        if (keep[i] == id)
+            return 1;
+    return 0;
+}
+
+int irq_manager_bench_quiet(irq_id_t *keep, int keep_n,
+                            irq_id_t *masked_out, int masked_cap)
+{
+    int n = 0;
+    for (int i = 0; i < IRQ_MGR_POOL; i++) {
+        if (!g_mgr[i].registered || !g_mgr[i].enabled)
+            continue;               /* only mask live, armed handlers */
+        if (bench_keep_contains(keep, keep_n, g_mgr[i].id))
+            continue;               /* keep the console + tick alive */
+        if (n < masked_cap) {
+            masked_out[n] = g_mgr[i].id;
+            n++;
+        }
+        irq_manager_disable(g_mgr[i].id, g_mgr[i].cb, g_mgr[i].ctx);
+    }
+    return n;                        /* # masked (also the count to pass to unquiet) */
+}
+
+void irq_manager_bench_unquiet(irq_id_t *masked, int masked_n)
+{
+    for (int i = 0; i < masked_n; i++) {
+        const irq_mgr_entry_t *e = irq_manager_get(masked[i]);
+        if (e)
+            irq_manager_enable(masked[i], e->cb, e->ctx);
+    }
 }
 
 void irq_manager_dump(void)

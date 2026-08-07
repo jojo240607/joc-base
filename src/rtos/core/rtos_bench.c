@@ -26,6 +26,8 @@
 #include "rtos.h"
 #include "rtos/core/rtos_internal.h"
 #include "rtos/core/sched_trace.h"   /* rtos_lat_* / rtos_lat_dump */
+#include "irq/irq_manager.h"          /* irq_manager_bench_quiet / _unquiet */
+#include "app_shared.h"               /* g_app_ctx: console uart/usb device */
 #include "log/log.h"
 #include "log/app_log.h"
 #include <stdint.h>
@@ -129,6 +131,24 @@ void rtos_bench_run(void) {
     rtos_cycle_init();
     log_printf(app_log(), LOG_INFO, "rtos",
                "[BENCH] Rhealstone subset @168MHz (CYCCNT, 168cyc=1us)\r\n");
+
+    /* ---- 外部 IRQ 隔离：benchmark 期间屏蔽所有非控制台/非 tick 中断 ----
+     * 这样测到的是「纯净」任务切换 / 唤醒路径，不受 USB/ADC/TIM/DMA/EXTI 等
+     * 外部抢占引入的长尾抖动。控制台(UART+USB)与系统 tick 必须保留，否则无法
+     * 输出结果、rtos_msleep 超时兜底也会死。irq_manager_bench_unquiet 在末尾
+     * 精确还原（含共享线与引用计数）。快照放在调用方栈上，避免增大 BSS。 */
+    irq_id_t keep[3];
+    int keep_n = 0;
+    if (g_app_ctx.uart && g_app_ctx.uart->vtable->irq_id)
+        keep[keep_n++] = (irq_id_t)g_app_ctx.uart->vtable->irq_id(g_app_ctx.uart);
+    if (g_app_ctx.usb && g_app_ctx.usb->vtable->irq_id)
+        keep[keep_n++] = (irq_id_t)g_app_ctx.usb->vtable->irq_id(g_app_ctx.usb);
+    keep[keep_n++] = rtos_arch_tick_id();   /* 系统 tick 必须活着 */
+    irq_id_t masked[IRQ_MGR_POOL];
+    int masked_n = irq_manager_bench_quiet(keep, keep_n, masked, IRQ_MGR_POOL);
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[BENCH] external-IRQ isolation ON (%d IRQ(s) masked, console+tick kept)\r\n",
+               masked_n);
 
     /* ---------- (1) 任务切换 / 信号量混洗 ---------- */
     rtos_sem_init(&g_bs_sem, 0, 1);
@@ -251,6 +271,9 @@ void rtos_bench_run(void) {
 
     task_t *tr = (task_t *)rtos_kobj_lookup("bench_rt");
     if (tr) rtos_task_delete(tr);
+
+    /* 还原外部 IRQ（精确恢复共享线 + 引用计数） */
+    irq_manager_bench_unquiet(masked, masked_n);
 }
 
 #endif /* RTOS_SCHED_TRACE */
