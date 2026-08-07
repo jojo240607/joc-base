@@ -74,15 +74,15 @@ void app_main_task(void *arg)
 #if RTOS_SELFTEST
     log_printf(app_log(), LOG_INFO, "main",
                "READY. Commands: PING / ECHO <text> / BIST / ADC [ch] / TEMP / TICKS / "
-               "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / BTN / BTN2 / "
+               "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / "
                "RTOS / RTOSIPC / RTOSBUS / RTOSMPU / RTOSSTRESS / RTOSFPU / RTOSBH / "
                "RTOSP4 / RTOSUSR / RTOSRR / RTOSKOBJ / RTOSALL / "
                "RTOSBASIC / RTOSIPC2 / RTOSROBUST\n");
 #else
     log_printf(app_log(), LOG_INFO, "main",
                "READY. Commands: PING / ECHO <text> / ADC [ch] / TEMP / TICKS / "
-               "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / BTN / BTN2 / "
-               "RTOS / RTOSMARATHON / RTOSKOBJ / RTOSCOV\n");
+               "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / "
+               "RTOS / RTOSMARATHON / RTOSKOBJ / RTOSCOV / DEMO\n");
 #endif
 
 #if RTOS_SCHED_TRACE

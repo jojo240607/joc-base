@@ -29,8 +29,8 @@
 #include "drv/i2c.h"
 #include "drv/timer.h"         /* TIMERDMA: timer_dma_burst / timer_get_ccr */
 #include "drv/pinmux.h"
-#include "drv/exti.h"           /* BTN/ BTN2 命令：软件触发按键边沿以演示上下半部 */
-#include "task/task_button_wq.h" /* BTN2C 命令：读工作队列版按键中断计数 */
+#include "drv/exti.h"           /* EXTI 设备接口 */
+#include "task/task_demo.h"      /* DEMO 命令：运行时动态创建用户层任务 */
 #include "rtos.h"
 #include "rtos/rtos_mpu.h"
 #include "common/gcov_dump.h"   /* §6.6 RTOSCOV：导出 gcov .gcda 帧（覆盖率构建） */
@@ -390,50 +390,6 @@ static void cmd_usbdbg(app_ctx_t *c, const char *line)
     }
 }
 
-static void cmd_btn(app_ctx_t *c, const char *line)
-{
-    (void)line;
-    /* 软件触发 btn 的 EXTI 边沿：走真实 ISR -> 上半部(button_isr_cb) ->
-     * 下半部(button_bh_fn) 全链路，无需物理按键即可演示（见 task_button.c）。 */
-    device *btnd = device_manager_get("btn");
-    if (!btnd) { usb_reply(c, "BTN: no dev\r\n"); return; }
-    btnd->vtable->ioctl(btnd, EXTI_IOCTL_TRIGGER, NULL);
-    usb_reply(c, "BTN: edge triggered (watch bottom-half log + LED)\r\n");
-}
-
-static void cmd_btnc(app_ctx_t *c, const char *line)
-{
-    (void)line;
-    device *btnd = device_manager_get("btn");
-    if (!btnd) { usb_reply(c, "BTNC: no dev\r\n"); return; }
-    uint32_t cnt = 0;
-    btnd->vtable->ioctl(btnd, EXTI_IOCTL_GET_COUNT, &cnt);
-    char out[40];
-    int n = snprintf(out, sizeof(out), "BTNC count=%lu\r\n", (unsigned long)cnt);
-    c->console->vtable->write(c->console, out, (size_t)n);
-}
-
-static void cmd_btn2(app_ctx_t *c, const char *line)
-{
-    (void)line;
-    /* 软件触发 btn2 的 EXTI 边沿：走真实 ISR -> 上半部(button2_isr_cb) ->
-     * 下半部(button2_work_fn，运行在共享 wq 任务) 全链路，无需物理按键
-     * （见 task_button_wq.c）。 */
-    device *btnd = device_manager_get("btn2");
-    if (!btnd) { usb_reply(c, "BTN2: no dev\r\n"); return; }
-    btnd->vtable->ioctl(btnd, EXTI_IOCTL_TRIGGER, NULL);
-    usb_reply(c, "BTN2: edge triggered (watch WORKQUEUE bottom-half log + LED)\r\n");
-}
-
-static void cmd_btn2c(app_ctx_t *c, const char *line)
-{
-    (void)line;
-    char out[48];
-    int n = snprintf(out, sizeof(out), "BTN2C count=%lu\r\n",
-                     (unsigned long)button2_press_count());
-    c->console->vtable->write(c->console, out, (size_t)n);
-}
-
 static void cmd_ioxfer(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -594,10 +550,7 @@ static const cmd_entry_t g_cmds[] = {
     { "USBCLOSE", cmd_usbclose, 0 },
     { "USBSTAT",  cmd_usbstat,  0 },
     { "USBDBG",   cmd_usbdbg,   1 },
-    { "BTN",      cmd_btn,      0 },
-    { "BTNC",     cmd_btnc,     0 },
-    { "BTN2",     cmd_btn2,     0 },
-    { "BTN2C",    cmd_btn2c,    0 },
+    { "DEMO",     cmd_demo,     0 },   /* 用户层 demo：运行时动态创建任务 */
     { "IOXFER",   cmd_ioxfer,   0 },
     { "UARTDMA",  cmd_uartdma,  0 },
     { "TIMERDMA", cmd_timerdma, 0 },
