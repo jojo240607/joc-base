@@ -21,6 +21,8 @@ void uart_hal_destroy(uart_hal_handle_t *h);
 void uart_hal_init(uart_hal_handle_t *h);
 void uart_hal_deinit(uart_hal_handle_t *h);
 void uart_hal_set_baudrate(uart_hal_handle_t *h, uint32_t baud);
+void uart_hal_set_parity(uart_hal_handle_t *h, int parity);   /* 0=none,1=odd,2=even */
+void uart_hal_set_stopbits(uart_hal_handle_t *h, int stop);   /* 1 or 2 stop bits */
 void uart_hal_putc(uart_hal_handle_t *h, char c);
 char uart_hal_getc(uart_hal_handle_t *h);
 uint32_t uart_hal_get_baudrate(uart_hal_handle_t *h); /* read back logical baud */

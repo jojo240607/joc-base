@@ -875,6 +875,14 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg)
         uart_hal_set_inverted(u->hal, rx_inv, tx_inv);
         return 0;
     }
+    case UART_IOCTL_SET_PARITY:
+        if (!arg) return -1;
+        uart_hal_set_parity(u->hal, (int)(*(const uint32_t *)arg));
+        return 0;
+    case UART_IOCTL_SET_STOPBITS:
+        if (!arg) return -1;
+        uart_hal_set_stopbits(u->hal, (int)(*(const uint32_t *)arg));
+        return 0;
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;

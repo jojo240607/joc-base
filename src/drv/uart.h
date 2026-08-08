@@ -36,6 +36,10 @@
  * bitmask — bit0 = RXINV (receive inverted), bit1 = TXINV (transmit inverted);
  * set a bit to enable that direction's inversion. See uart_hal_set_inverted(). */
 #define UART_IOCTL_SET_INVERTED 0x07   /* arg: const uint32_t* (bitmask) */
+/* Line-protocol parameters beyond baud (e.g. SBUS = 100000/8E2). arg: const
+ * uint32_t* scalar. SET_PARITY: 0=none,1=odd,2=even. SET_STOPBITS: 1 or 2. */
+#define UART_IOCTL_SET_PARITY   0x08   /* arg: const uint32_t* (0/1/2) */
+#define UART_IOCTL_SET_STOPBITS 0x09   /* arg: const uint32_t* (1 or 2) */
 
 /* framing (RX frame-end detection) axis — see the comment above. */
 typedef enum {
