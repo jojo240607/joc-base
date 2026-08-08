@@ -38,6 +38,15 @@ typedef struct {
 
 /* 命令解释器主循环：从 uart/usb 读行 -> 查表派发 -> 调对应 handler。
  * 永不返回（for(;;) 阻塞读，空闲时让出 1ms）。 */
+
+#ifdef RUST_APP_LIB
+/* 运行时验证 Rust 应用层已挂载：读取 rust_ticks() 心跳计数。
+ * 符号由 joc-app-rust/libapp.a 提供，仅当 Rust 层被链接时声明。 */
+extern uint32_t rust_ticks(void);
+void cmd_rust(app_ctx_t *c, const char *line);
+#endif
+
+
 void console_run(app_ctx_t *c);
 
 #endif /* CONSOLE_H */

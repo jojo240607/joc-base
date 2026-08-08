@@ -145,6 +145,21 @@ static void cmd_ticks(app_ctx_t *c, const char *line)
     c->console->vtable->write(c->console, out, (size_t)n);
 }
 
+#ifdef RUST_APP_LIB
+void cmd_rust(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    char out[64];
+    /* rust_ticks() 由 joc-app-rust 的 rust_task_entry 每 500ms 自增，
+     * 读取到 >0 即证明 Rust 应用层任务已挂载并在运行。 */
+    uint32_t t = rust_ticks();
+    int n = snprintf(out, sizeof(out),
+                     "RUST mounted: rust_demo alive, ticks=%lu\r\n",
+                     (unsigned long)t);
+    c->console->vtable->write(c->console, out, (size_t)n);
+}
+#endif
+
 static void cmd_rtos(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -552,6 +567,9 @@ static const cmd_entry_t g_cmds[] = {
     { "IOXFER",   cmd_ioxfer,   0 },
     { "UARTDMA",  cmd_uartdma,  0 },
     { "TIMERDMA", cmd_timerdma, 0 },
+#ifdef RUST_APP_LIB
+    { "RUST",     cmd_rust,     0 },
+#endif
 };
 
 static void dispatch(app_ctx_t *c, const char *line)
