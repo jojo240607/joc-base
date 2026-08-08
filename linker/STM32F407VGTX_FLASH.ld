@@ -218,6 +218,10 @@ SECTIONS
     . = ALIGN(4);
   } >APP_SLOT_RAM
 
+  /* 系统堆 + 栈底标记：落在 APP_RAM(0x2001E000 起 8K)，避免与上面固定在
+   * 0x2001DC00 的 .app_slot 重叠。主栈在 CCM(_estack=0x10010000)，故主
+   * SRAM 此处仅需 _Min_Heap_Size 堆空间，无需预留栈。APP_RAM 常态单 ELF
+   * 构建里为系统堆/App 共用，足以容纳。 */
   ._user_heap_stack :
   {
     . = ALIGN(8);
@@ -225,7 +229,7 @@ SECTIONS
     PROVIDE ( _end = . );
     . = . + _Min_Heap_Size;
     . = ALIGN(8);
-  } >RAM
+  } >APP_RAM
 
   /* CCM BSS：RTOS 任务栈 + TCB 池等“仅 CPU 访问、永不被 DMA 触碰”的对象。
    * 这些 static 数组本在 .bss，显式搬进 CCM 释放主 SRAM 给 DMA 缓冲。

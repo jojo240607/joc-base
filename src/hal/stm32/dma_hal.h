@@ -115,6 +115,8 @@ typedef enum {
     DMA_REQ_USART3_TX, DMA_REQ_USART3_RX,
     DMA_REQ_UART4_TX,  DMA_REQ_UART4_RX,
     DMA_REQ_UART5_TX,  DMA_REQ_UART5_RX,
+    /* USART6 — DMA2, channel 5 (TX=Stream7, RX=Stream2) */
+    DMA_REQ_USART6_TX, DMA_REQ_USART6_RX,
     /* SPI / I2S (I2S2 = SPI2, I2S3 = SPI3) — all on DMA channel 3 */
     DMA_REQ_SPI1_TX,  DMA_REQ_SPI1_RX,
     DMA_REQ_SPI2_TX,  DMA_REQ_SPI2_RX,   /* == I2S2 TX / RX */

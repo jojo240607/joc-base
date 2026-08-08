@@ -196,6 +196,8 @@ dma_route_t dma_hal_route(dma_req_id_t req)
     case DMA_REQ_UART4_RX:  return (dma_route_t){ "dma1", 2, 4 };
     case DMA_REQ_UART5_TX:  return (dma_route_t){ "dma1", 7, 4 };
     case DMA_REQ_UART5_RX:  return (dma_route_t){ "dma1", 0, 4 };
+    case DMA_REQ_USART6_TX: return (dma_route_t){ "dma2", 7, 5 };
+    case DMA_REQ_USART6_RX: return (dma_route_t){ "dma2", 2, 5 };
     /* ---- SPI / I2S (I2S2=SPI2, I2S3=SPI3) ----
      * Channel is the DMA request multiplexer select (CHSEL). On STM32F4 the
      * SPI/I2S request lines are wired to CHANNEL 0 (NOT 3 — that is SPI1's

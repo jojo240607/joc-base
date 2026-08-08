@@ -108,7 +108,61 @@ static const uart_config_t g_uart0 = {
     .engine     = STREAM_MODE_DMA,        /* RX engine: circular DMA */
     .framing    = UART_FRAME_IDLE,        /* framing: IDLE marks frame end (zero per-byte ISR) */
 };
+/* uart1: GPS 串口（飞控 Rust 应用层经此收 NMEA/UBX）。USART2@PA2/PA3，非控制台。
+ * RTOS 总线/外设提供到 uart 这一层，具体 GPS 协议解析由 Rust 应用层完成。 */
+static const uart_config_t g_uart1 = {
+    .name       = "uart1",
+    .periph     = (void *)USART2,
+    .baud       = 57600,                  /* 常见 UBLOX GPS 默认波特 */
+    .is_console = 0,
+    .tx_signal  = "USART2_TX_PA2",        /* TX = PA2, AF7 */
+    .rx_signal  = "USART2_RX_PA3",        /* RX = PA3, AF7 */
+    .dma_tx_req = DMA_REQ_USART2_TX,      /* TX -> DMA1_Stream6 CH4 */
+    .dma_rx_req = DMA_REQ_USART2_RX,      /* RX -> DMA1_Stream5 CH4 */
+    .engine     = STREAM_MODE_DMA,        /* RX engine: circular DMA */
+    .framing    = UART_FRAME_IDLE,        /* framing: IDLE marks frame end */
+};
+/* uart2: USART3 @ PD8(TX)/PD9(RX)，AF7，非控制台。TX->DMA1_Stream3 CH4，
+ * RX->DMA1_Stream1 CH4。PD8/PD9 在 Discovery 上空闲，未与其它驱动冲突。 */
+static const uart_config_t g_uart2 = {
+    .name       = "uart2",
+    .periph     = (void *)USART3,
+    .baud       = 115200,
+    .is_console = 0,
+    .tx_signal  = "USART3_TX_PD8",        /* TX = PD8, AF7 */
+    .rx_signal  = "USART3_RX_PD9",        /* RX = PD9, AF7 */
+    .dma_tx_req = DMA_REQ_USART3_TX,      /* TX -> DMA1_Stream3 CH4 */
+    .dma_rx_req = DMA_REQ_USART3_RX,      /* RX -> DMA1_Stream1 CH4 */
+    .engine     = STREAM_MODE_DMA,
+    .framing    = UART_FRAME_IDLE,
+};
+/* uart3: USART6 @ PC6(TX)/PC7(RX)，AF8，非控制台。TX->DMA2_Stream7 CH5，
+ * RX->DMA2_Stream2 CH5。注意 PC6 与 pwm1 的 TIM8_CH1_PC6 复用同一脚——
+ * 二者不会同时 open，故此处仅描述 uart3 信号；若需 PWM 输出 PC6 则改用 pwm1。 */
+static const uart_config_t g_uart3 = {
+    .name       = "uart3",
+    .periph     = (void *)USART6,
+    .baud       = 115200,
+    .is_console = 0,
+    .tx_signal  = "USART6_TX_PC6",        /* TX = PC6, AF8 */
+    .rx_signal  = "USART6_RX_PC7",        /* RX = PC7, AF8 */
+    .dma_tx_req = DMA_REQ_USART6_TX,      /* TX -> DMA2_Stream7 CH5 */
+    .dma_rx_req = DMA_REQ_USART6_RX,      /* RX -> DMA2_Stream2 CH5 */
+    .engine     = STREAM_MODE_DMA,
+    .framing    = UART_FRAME_IDLE,
+};
 static const gpio_config_t g_led   = { "led",   "GPIOD_12", 1 }; /* D12, output */
+/* 通用 GPIO 引脚，对外暴露给 Rust 应用层做任意数字 IO（经 device vtable 的
+ * open/read/write/ioctl）。均为 Discovery 上空闲脚，避免与已占用脚冲突：
+ *   PB0  -> 输出，默认 0
+ *   PC0  -> 输入（无上拉下拉，由调用方经 ioctl 设置）
+ *   PD13 -> 输出，默认 1
+ *   PE3  -> 输入（exti 用 PE1/5/6，PE3 空闲）
+ */
+static const gpio_config_t g_gpio_pb0  = { "gpiob0",  "GPIOB_0",  0 }; /* B0,  output */
+static const gpio_config_t g_gpio_pc0  = { "gpioc0",  "GPIOC_0",  0 }; /* C0,  input  */
+static const gpio_config_t g_gpio_pd13 = { "gpiod13", "GPIOD_13", 1 }; /* D13, output */
+static const gpio_config_t g_gpio_pe3  = { "gpioe3",  "GPIOE_3",  0 }; /* E3,  input  */
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
@@ -145,6 +199,19 @@ static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 0, 1,
  * Output pins PC6 (CH1) + PA7 (CH1N), both AF3. */
 static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM8, 168000000, 0, 1,
                                       "TIM8_CH1_PC6", "TIM8_CH1N", 64, 1, 0, 0 };
+/* pwm2: CH1 of TIM1 (ADVANCED TIM), COORDINATING with timer1 (owns TIM1's 20 Hz
+ * period + counter). Output pin PA8 (AF1). TIM1 与 TIM8 同为高级定时器，需
+ * BDTR.MOE=1，驱动已设置。PA8 亦为 i2c2 SCL，二者不会同时 open。 */
+static const pwm_config_t g_pwm2 = { "pwm2", (void *)TIM1, 168000000, 0, 1,
+                                      "TIM1_CH1_PA8", NULL, 0, 1, 0, 0 };
+/* pwm3: CH1 of TIM4 (GP TIM), COORDINATING with timer12 (owns TIM4's 20 Hz
+ * period). Output pin PD12 (AF2)。注意避开 PB6（i2c0 SCL）与 PB7。 */
+static const pwm_config_t g_pwm3 = { "pwm3", (void *)TIM4, 84000000, 0, 1,
+                                      "TIM4_CH1_PD12", NULL, 0, 1, 0, 0 };
+/* pwm4: CH1 of TIM12 (GP TIM, 无 CH1N/死区), COORDINATING 与 timer7 (owns TIM12's
+ * 20 Hz period)。Output pin PB14 (AF9)。PB14 在 Discovery 上空闲（i2s0 用 PB15）。 */
+static const pwm_config_t g_pwm4 = { "pwm4", (void *)TIM12, 84000000, 0, 1,
+                                      "TIM12_CH1_PB14", NULL, 0, 1, 0, 0 };
 /* External interrupt demo. exti0 (PE5) and exti1 (PE6) SHARE EXTI9_5 (IRQ23) —
  * same port E, different pin fields in SYSCFG EXTICR, so no conflict — which
  * exercises the multi-handler irq framework's sibling-guard on a shared line.
@@ -170,12 +237,38 @@ static const exti_config_t g_btn2 = { "btn2",  "GPIOA_3", EXTI_EDGE_RISING, 2 };
 static const i2c_config_t g_i2c0 = { "i2c0", (void *)I2C1, 42000000, 100000,
                                      "I2C1_SCL_PB6", "I2C1_SDA_PB7",
                                      DMA_REQ_I2C1_TX, DMA_REQ_I2C1_RX };
+/* I2C master demo: i2c1 is I2C2 on PB10(SCL)/PB11(SDA), 100 kHz. PB10/11 在
+ * Discovery 上空闲（USART3 的备用脚在 PD8/9，故此处无冲突）。PCLK1 = 42 MHz。 */
+static const i2c_config_t g_i2c1 = { "i2c1", (void *)I2C2, 42000000, 100000,
+                                     "I2C2_SCL_PB10", "I2C2_SDA_PB11",
+                                     DMA_REQ_I2C2_TX, DMA_REQ_I2C2_RX };
+/* I2C master demo: i2c2 is I2C3 on PA8(SCL)/PC9(SDA), 100 kHz. PA8/PC9 在
+ * Discovery 上空闲（PA8 亦为 pwm2 的 TIM1_CH1 脚，二者不会同时 open）。PCLK1 = 42 MHz。 */
+static const i2c_config_t g_i2c2 = { "i2c2", (void *)I2C3, 42000000, 100000,
+                                     "I2C3_SCL_PA8", "I2C3_SDA_PC9",
+                                     DMA_REQ_I2C3_TX, DMA_REQ_I2C3_RX };
 /* SPI master demo: spi0 is SPI1 on PA5(SCK)/PA6(MISO)/PA7(MOSI), ~1 MHz SCK. */
 static const spi_config_t g_spi0 = { "spi0", (void *)SPI1, 84000000, 1000000,
                                      "SPI1_SCK_PA5", "SPI1_MISO_PA6",
                                      "SPI1_MOSI_PA7",
                                      DMA_REQ_SPI1_TX,      /* TX -> DMA2_Stream3 CH3 */
                                      DMA_REQ_SPI1_RX };    /* RX -> DMA2_Stream2 CH3 */
+/* SPI master demo: spi1 is SPI2 on PI1(SCK)/PI2(MISO)/PI3(MOSI), ~1 MHz SCK.
+ * Discovery 上 SPI2 的 PB13/PB15 已被 i2s0 占用，故 spi1 用 SPI2 的备用脚
+ * PI1/PI2/PI3（AF5），与 i2s0 互不冲突。TX->DMA1_Stream4 CH0，RX->DMA1_Stream3 CH0。 */
+static const spi_config_t g_spi1 = { "spi1", (void *)SPI2, 42000000, 1000000,
+                                     "SPI2_SCK_PI1", "SPI2_MISO_PI2",
+                                     "SPI2_MOSI_PI3",
+                                     DMA_REQ_SPI2_TX,      /* TX -> DMA1_Stream4 CH0 */
+                                     DMA_REQ_SPI2_RX };    /* RX -> DMA1_Stream3 CH0 */
+/* SPI master demo: spi2 is SPI3 on PB3(SCK)/PB4(MISO)/PB5(MOSI), ~1 MHz SCK.
+ * PB3/4/5 在 Discovery 上空闲（JTAG 默认已禁用，仅 SWD 用 PA13/14），AF6。
+ * TX->DMA1_Stream5 CH0，RX->DMA1_Stream2 CH0。 */
+static const spi_config_t g_spi2 = { "spi2", (void *)SPI3, 42000000, 1000000,
+                                     "SPI3_SCK_PB3", "SPI3_MISO_PB4",
+                                     "SPI3_MOSI_PB5",
+                                     DMA_REQ_SPI3_TX,      /* TX -> DMA1_Stream5 CH0 */
+                                     DMA_REQ_SPI3_RX };    /* RX -> DMA1_Stream2 CH0 */
 /* SDIO host: sdio0 on PC8-PC12(4-bit) + PD2(CMD), AF12. */
 static const sdio_config_t g_sdio0 = { "sdio0", (void *)SDIO,
                                      "SDIO_CK", "SDIO_CMD",
@@ -288,7 +381,14 @@ static const board_node_t g_nodes[] = {
     { pinmux_create,      &g_pinmux },
     { clock_create,       &g_clk },
     { uart_create,        &g_uart0 },
+    { uart_create,        &g_uart1 },
+    { uart_create,        &g_uart2 },
+    { uart_create,        &g_uart3 },
     { gpio_pin_create,    &g_led },
+    { gpio_pin_create,    &g_gpio_pb0 },
+    { gpio_pin_create,    &g_gpio_pc0 },
+    { gpio_pin_create,    &g_gpio_pd13 },
+    { gpio_pin_create,    &g_gpio_pe3 },
     { adc_create,         &g_adc0 },
     { temp_sensor_create, &g_temp0 },
     { timer_create,       &g_timer0 },
@@ -307,13 +407,20 @@ static const board_node_t g_nodes[] = {
     { timer_create,       &g_timer13 },
     { pwm_create,         &g_pwm0 },
     { pwm_create,         &g_pwm1 },
+    { pwm_create,         &g_pwm2 },
+    { pwm_create,         &g_pwm3 },
+    { pwm_create,         &g_pwm4 },
     { exti_create,        &g_exti0 },
     { exti_create,        &g_exti1 },
     { exti_create,        &g_exti2 },
     { exti_create,        &g_btn },
     { exti_create,        &g_btn2 },
     { i2c_create,         &g_i2c0 },
+    { i2c_create,         &g_i2c1 },
+    { i2c_create,         &g_i2c2 },
     { spi_create,         &g_spi0 },
+    { spi_create,         &g_spi1 },
+    { spi_create,         &g_spi2 },
     { sdio_create,        &g_sdio0 },
     { sd_card_create,     &g_sd_card0 },
     { dac_create,         &g_dac0 },
