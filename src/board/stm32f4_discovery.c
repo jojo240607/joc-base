@@ -136,9 +136,8 @@ static const uart_config_t g_uart2 = {
     .engine     = STREAM_MODE_DMA,
     .framing    = UART_FRAME_IDLE,
 };
-/* uart3: USART6 @ PC6(TX)/PC7(RX)，AF8，非控制台。TX->DMA2_Stream7 CH5，
- * RX->DMA2_Stream2 CH5。注意 PC6 与 pwm1 的 TIM8_CH1_PC6 复用同一脚——
- * 二者不会同时 open，故此处仅描述 uart3 信号；若需 PWM 输出 PC6 则改用 pwm1。 */
+/* uart3: USART6 @ PC6(TX)/PC7(RX)，AF8，非控制台（飞控遥测下行）。TX->DMA2_Stream7 CH5，
+ * RX->DMA2_Stream2 CH5。pwm1 已改用 TIM1_CH2_PA9，不再占用 PC6，与本 uart3 无冲突。 */
 static const uart_config_t g_uart3 = {
     .name       = "uart3",
     .periph     = (void *)USART6,
@@ -185,29 +184,26 @@ static const timer_config_t g_timer10 = { "timer10", (void *)TIM13, 84000000,  2
 static const timer_config_t g_timer11 = { "timer11", (void *)TIM3, 84000000, 20 }; /* TIM3,  APB1 84MHz, 20Hz, IRQ29 */
 static const timer_config_t g_timer12 = { "timer12", (void *)TIM4, 84000000, 20 }; /* TIM4,  APB1 84MHz, 20Hz, IRQ30 */
 static const timer_config_t g_timer13 = { "timer13", (void *)TIM5, 84000000, 20 }; /* TIM5,  APB1 84MHz, 20Hz, IRQ50 */
-/* PWM demo: pwm0 is CH1 of TIM3, COORDINATING with timer11 (which owns TIM3's
- * period + counter as a 20 Hz TICK source). pwm0 only configures the channel
- * and duty on the SAME TIM3, so one peripheral emits BOTH a periodic event AND
- * a PWM waveform — this is the timer<->pwm "配合". Output pin PA6 (AF2). */
-static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 0, 1,
+/* PWM (飞控 4 路 ESC): pwm0..3 均为 INDEPENDENT 400 Hz 模式（freq_hz=400），
+ * 由本驱动自管 PSC/ARR 并启动计数器，不依赖任何 COORDINATE timer。ESC 要求
+ * ~400 Hz 更新率，不能用 20 Hz 的 COORDINATE 模式。 */
+/* pwm0: CH1 of TIM3 (GP TIM, 84 MHz APB1). Output pin PA6 (AF2). */
+static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 400, 1,
                                       "TIM3_CH1_PA6", NULL, 0, 0, 0, 0 };
-/* Advanced-timer PWM demo: pwm1 is CH1 of TIM8 (an ADVANCED TIM), COORDINATING
- * with timer4 (which owns TIM8's 20 Hz period + counter as a TICK source). TIM8
- * is advanced, so its PWM pins stay dead until BDTR.MOE=1 — the driver sets it.
- * pwm1 also exercises the advanced-only features: a COMPLEMENTARY output
- * (CH1N on PA7) and a 64-tick DEAD-TIME inserted between the two switches.
- * Output pins PC6 (CH1) + PA7 (CH1N), both AF3. */
-static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM8, 168000000, 0, 1,
-                                      "TIM8_CH1_PC6", "TIM8_CH1N", 64, 1, 0, 0 };
-/* pwm2: CH1 of TIM1 (ADVANCED TIM), COORDINATING with timer1 (owns TIM1's 20 Hz
- * period + counter). Output pin PA8 (AF1). TIM1 与 TIM8 同为高级定时器，需
- * BDTR.MOE=1，驱动已设置。PA8 亦为 i2c2 SCL，二者不会同时 open。 */
-static const pwm_config_t g_pwm2 = { "pwm2", (void *)TIM1, 168000000, 0, 1,
-                                      "TIM1_CH1_PA8", NULL, 0, 1, 0, 0 };
-/* pwm3: CH1 of TIM4 (GP TIM), COORDINATING with timer12 (owns TIM4's 20 Hz
- * period). Output pin PD12 (AF2)。注意避开 PB6（i2c0 SCL）与 PB7。 */
-static const pwm_config_t g_pwm3 = { "pwm3", (void *)TIM4, 84000000, 0, 1,
-                                      "TIM4_CH1_PD12", NULL, 0, 1, 0, 0 };
+/* pwm1: CH2 of TIM1 (ADVANCED TIM, 168 MHz APB2). Output pin PA9 (AF1).
+ * 注意：原 TIM8_CH1_PC6 与 uart3(USART6_TX_PC6) 复用同一脚冲突，故改到 PA9。
+ * pwm1 与 pwm2 共享 TIM1、同频 400 Hz，各自独立设 CCR，互不干扰（驱动对同 TIM
+ * 重复 set_period/start 幂等）。TIM1 为高级定时器，需 BDTR.MOE=1，驱动已设置。 */
+static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM1, 168000000, 400, 2,
+                                      "TIM1_CH2_PA9", NULL, 0, 0, 0, 0 };
+/* pwm2: CH1 of TIM1 (ADVANCED TIM, 168 MHz APB2), 400 Hz INDEPENDENT.
+ * Output pin PA8 (AF1)。PA8 亦为 i2c2 SCL，二者不会同时 open。 */
+static const pwm_config_t g_pwm2 = { "pwm2", (void *)TIM1, 168000000, 400, 1,
+                                      "TIM1_CH1_PA8", NULL, 0, 0, 0, 0 };
+/* pwm3: CH1 of TIM4 (GP TIM, 84 MHz APB1), 400 Hz INDEPENDENT.
+ * Output pin PD12 (AF2)。注意避开 PB6（i2c0 SCL）与 PB7。 */
+static const pwm_config_t g_pwm3 = { "pwm3", (void *)TIM4, 84000000, 400, 1,
+                                      "TIM4_CH1_PD12", NULL, 0, 0, 0, 0 };
 /* pwm4: CH1 of TIM12 (GP TIM, 无 CH1N/死区), COORDINATING 与 timer7 (owns TIM12's
  * 20 Hz period)。Output pin PB14 (AF9)。PB14 在 Discovery 上空闲（i2s0 用 PB15）。 */
 static const pwm_config_t g_pwm4 = { "pwm4", (void *)TIM12, 84000000, 0, 1,

@@ -196,18 +196,18 @@ uint32_t uart_hal_get_cr1(uart_hal_handle_t *h)
     return h ? h->usart->CR1 : 0UL;
 }
 
-/* Logic-level inversion for SBUS / inverted peripherals. RXINV (bit15) and
- * TXINV (bit16) in USART_CR1 invert the RX/TX line polarity. We mask out the
- * two bits first then OR in the requested ones so a re-call cleanly toggles
- * either direction without disturbing the rest of CR1 (TE/RE/UE stay intact). */
+/* Logic-level inversion for SBUS / inverted peripherals.
+ *
+ * NOTE: STM32F407's USART has NO hardware invert bit (RXINV/TXINV exist only on
+ * F3/L0/F7/H7). On F4 the SBUS inverted line MUST be handled by an external
+ * inverter (NPN + pull-up, or a vendor USB-UART adapter with invert jumper).
+ * This function is therefore a no-op on F4 — it keeps the driver ABI stable so
+ * the Rust SBUS layer's SET_INVERTED call is harmless, but does NOT touch any
+ * register (there is none). If you port to an F7/H7, implement the CR1 bits. */
 void uart_hal_set_inverted(uart_hal_handle_t *h, int rx_inv, int tx_inv)
 {
-    if (!h) return;
-    uint32_t cr1 = h->usart->CR1;
-    cr1 &= ~(USART_CR1_RXINV | USART_CR1_TXINV);
-    if (rx_inv) cr1 |= USART_CR1_RXINV;
-    if (tx_inv) cr1 |= USART_CR1_TXINV;
-    h->usart->CR1 = cr1;
+    (void)h; (void)rx_inv; (void)tx_inv;
+    /* F4: no hardware invert. SBUS inversion is external. */
 }
 
 void *uart_hal_get_dr_addr(uart_hal_handle_t *h)
