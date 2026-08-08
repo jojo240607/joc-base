@@ -6,12 +6,17 @@
 #include "devmgr/device_manager.h"
 #include "log/log.h"
 #include "log/app_log.h"
-#include "board.h"
-#include "drv/clock.h"
-#include "drv/gpio_pin.h"
-#include "drv/adc.h"
-#include "drv/temp_sensor.h"
-#include "drv/usb.h"
+
+/* 本文件是 RTOS 固件的【系统启动任务】(main)，不属于用户层 demo。
+ * 职责仅限：拉起设备、填充应用上下文、挂载 Rust 应用层、跑控制台循环。
+ * 任何 demo / 业务任务都在 Rust 应用层(joc-app-rust)经 rust_app_start() 创建。 */
+
+/* Rust 应用层挂载点：由 joc-app-rust/libapp.a 提供。
+ * 仅当 Rust 应用层被链接进固件时声明，RTOS 侧只负责调用；
+ * 用户层 demo / 飞控示例任务全部在 Rust 层内经 ABI 契约自行创建。 */
+#ifdef RUST_APP_LIB
+extern void rust_app_start(app_ctx_t *ctx);
+#endif
 
 /* 主栈统一 8K：BIST/命令循环的深层调用需要。覆盖率构建曾为腾 CCM 砍到 2K，导致栈溢出、
  * 启动期 UART 输出丢失（误判 coverage 构建卡死）；现 gcov 段已搬回主 SRAM，CCM 有余量，
@@ -40,14 +45,7 @@ void app_main_task(void *arg)
     d_adc->vtable->open(d_adc);
     d_temp->vtable->open(d_temp);
 
-    uint32_t hz = 0;
-    d_clk->vtable->ioctl(d_clk, CLK_IOCTL_GET_SYSCLK_HZ, &hz);
-    log_printf(app_log(), LOG_INFO, "main", "Hello from STM32F407 Discovery (OOC) on jOS RTOS!\n");
-    log_printf(app_log(), LOG_INFO, "main", "System clock: %lu Hz, USART1 @ 115200 8N1\n",
-               (unsigned long)hz);
-    log_printf(app_log(), LOG_INFO, "main",
-               "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
-               __DATE__, __TIME__);
+    log_printf(app_log(), LOG_INFO, "main", "jOS RTOS ready (STM32F407 Discovery, OOC)\n");
 
     /* Bring up the CDC device EARLY and leave it connected so a real PC host can
      * enumerate it at boot — INDEPENDENT of the BIST running in its own task. */
@@ -61,7 +59,7 @@ void app_main_task(void *arg)
                    "[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\n");
     }
 
-    /* 填充应用上下文，供 blink / bist / 命令 handler 使用 */
+    /* 填充应用上下文，供命令 handler 使用（console.c 直接读 c->uart/c->adc/...） */
     c->uart      = d_uart;
     c->usb       = d_usb;
     c->led       = d_led;
@@ -69,7 +67,6 @@ void app_main_task(void *arg)
     c->temp      = d_temp;
     c->clk       = d_clk;
     c->console   = d_uart;        /* 默认控制台为 UART；USB CDC 收到命令时动态切换 */
-    g_rtos_demo_ready = 1;        /* blink 此后可安全独占 LED */
 
 #if RTOS_SELFTEST
     log_printf(app_log(), LOG_INFO, "main",
@@ -82,15 +79,15 @@ void app_main_task(void *arg)
     log_printf(app_log(), LOG_INFO, "main",
                "READY. Commands: PING / ECHO <text> / ADC [ch] / TEMP / TICKS / "
                "I2C_IRQ / USBOPEN / USBCLOSE / USBSTAT / USBDBG [0|1] / "
-               "RTOS / RTOSMARATHON / RTOSKOBJ / RTOSCOV / DEMO\n");
+               "RTOS / RTOSMARATHON / RTOSKOBJ / RTOSCOV\n"
+               "  (user-layer demo / flight-ctrl example tasks are mounted by the Rust app layer at boot)\n");
 #endif
 
-#if RTOS_SCHED_TRACE
-    /* trace 调试构建：boot 后自动跑一次 Rhealstone 基准 + 硬实时延迟量化，
-     * 结果存 g_bench_result（GDB 可 dump，绕开串口验证环境限制）。
-     * 在 main 任务 8K 栈上跑，栈余量充足，不会触发 bench 独立小栈的 BusFault。 */
-    log_printf(app_log(), LOG_INFO, "main", "[boot] auto-running RTOSBENCH...\n");
-    rtos_bench_run();
+#ifdef RUST_APP_LIB
+    log_printf(app_log(), LOG_INFO, "main", "[boot] starting Rust app layer...\n");
+    rust_app_start(c);
+#else
+    log_printf(app_log(), LOG_INFO, "main", "[boot] no Rust app layer linked.\n");
 #endif
 
     console_run(c);   /* 永不返回：读命令 -> 查表派发 */

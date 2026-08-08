@@ -34,10 +34,10 @@ add_executable(${PROJECT_NAME}.elf
     src/console.c            # 命令解释器（命令表 + handler，从 main.c 抽出）
     # 应用任务（每个任务一个 c/h，自管栈 + 自带 RTOS_TASK 段注册；见 src/task/）
     # 干净默认配置：仅 idle（强制）+ app_main（设备拉起 + 控制台）。
-    # 其余任务被剔除，只保留 task_demo 作为“用户层测试 task demo”。
+    # 用户层 demo / 飞控示例任务全部迁移到 Rust 应用层（joc-app-rust），
+    # 由 Rust 在 rust_app_start() 内经 ABI 契约自行 rtos_task_create 挂上 RTOS。
     src/task/task_app_main.c # main 任务：设备拉起 + 跑控制台（不自动跑 BIST）
     src/task/task_idle.c     # 空闲任务（RTOS 强制最低优先级任务）
-    src/task/task_demo.c     # 用户层演示/测试任务（LED/hello/非特权IPC/动态创建）
     # 以下任务默认不编译（示例/辅助任务）；需要时取消注释即可加回：
     # src/task/task_blink.c    # blink 演示任务（已被 task_demo 的 LED 任务取代）
     # src/task/task_button.c   # 按键中断示例(BH 任务版)
@@ -239,6 +239,30 @@ target_link_options(${PROJECT_NAME}.elf PRIVATE
     -Wl,--no-warn-rwx-segments
     -Wl,--print-memory-usage
 )
+
+# ---- Rust 应用层（解耦独立工程：joc-app-rust 独立 cargo build 出 libapp.a）----
+# 设计：RTOS 只“链接”外部 libapp.a，不内联 cargo build，不与 Rust 工程耦合源码。
+# 使用：
+#   cmake -DRUST_APP_LIB=/abs/path/to/joc-app-rust/.../libapp.a ..
+# 不指定 RUST_APP_LIB 则纯 C 固件（无 Rust 任务），保持兼容。
+# 覆盖率(COVERAGE)下不链接 Rust（避免与 --coverage 冲突）。
+# Rust 入口符号(rust_task_entry/rust_ticks/rust_wait_once)经 rust_app.h 引用。
+if(RUST_APP_LIB AND NOT COVERAGE)
+  if(NOT EXISTS "${RUST_APP_LIB}")
+    message(FATAL_ERROR "RUST_APP_LIB 指向的文件不存在: ${RUST_APP_LIB}")
+  endif()
+  # IMPORTED 静态库，把 libapp.a 纳入链接（--gc-sections 会裁掉未引用段）。
+  add_library(app_rust STATIC IMPORTED)
+  set_target_properties(app_rust PROPERTIES IMPORTED_LOCATION "${RUST_APP_LIB}")
+  target_link_libraries(${PROJECT_NAME}.elf PRIVATE app_rust)
+  target_include_directories(${PROJECT_NAME}.elf PRIVATE ${CMAKE_SOURCE_DIR}/app/rust)
+  # 注入 C 宏 RUST_APP_LIB，使 task_app_main.c 的 #ifdef RUST_APP_LIB 分支生效
+  # （仅声明/调用 rust_app_start，符号由 libapp.a 提供）。
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RUST_APP_LIB=1)
+  message(STATUS "Rust app layer LINKED from: ${RUST_APP_LIB}")
+else()
+  message(STATUS "Rust app layer DISABLED (set -DRUST_APP_LIB=<path/libapp.a> to enable)")
+endif()
 
 # ---- 覆盖率 ----
 # RTOS_COVERAGE 全目标定义（仅影响预处理，几乎不占 RAM）；--coverage 只加在

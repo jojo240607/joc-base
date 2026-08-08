@@ -1,9 +1,0 @@
-[verify] board reset, waiting for boot + BIST to finish...
-RT1_TX_PA9 / GPIOD_12 / ADC1_IN0) - Jul 27 2026 16
-[verify] RESULTS:
-  bist    : FAIL
-  ping    : FAIL
-  echo    : FAIL
-  rtosping: FAIL
-  uartdma : FAIL
-[verify] OVERALL: FAIL

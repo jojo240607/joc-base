@@ -1,6 +1,0 @@
-[1/2] Flashing via OpenOCD program (interface/stlink.cfg + target/stm32f4x.cfg)...
-  Retries up to 18 times. Press the board RESET button to wake a asleep core.
-  --- attempt 1/18 ---
-ERROR: Input redirection is not supported, exiting the process immediately.
-[OK] Flashed build\stm32f407_minimal.bin via OpenOCD
-EXITCODE=0 

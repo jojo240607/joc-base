@@ -30,7 +30,6 @@
 #include "drv/timer.h"         /* TIMERDMA: timer_dma_burst / timer_get_ccr */
 #include "drv/pinmux.h"
 #include "drv/exti.h"           /* EXTI 设备接口 */
-#include "task/task_demo.h"      /* DEMO 命令：运行时动态创建用户层任务 */
 #include "rtos.h"
 #include "rtos/rtos_mpu.h"
 #include "common/gcov_dump.h"   /* §6.6 RTOSCOV：导出 gcov .gcda 帧（覆盖率构建） */
@@ -550,7 +549,6 @@ static const cmd_entry_t g_cmds[] = {
     { "USBCLOSE", cmd_usbclose, 0 },
     { "USBSTAT",  cmd_usbstat,  0 },
     { "USBDBG",   cmd_usbdbg,   1 },
-    { "DEMO",     cmd_demo,     0 },   /* 用户层 demo：运行时动态创建任务 */
     { "IOXFER",   cmd_ioxfer,   0 },
     { "UARTDMA",  cmd_uartdma,  0 },
     { "TIMERDMA", cmd_timerdma, 0 },

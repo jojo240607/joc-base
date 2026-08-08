@@ -23,7 +23,6 @@ typedef struct app_ctx {
     selftest *st;        /* BIST 句柄（由 bist 任务填充，BIST 命令读取重跑） */
 #endif
     volatile uint32_t *heartbeat;  /* 指向 app_shared.c 的 g_heartbeat（RTOS 命令读取） */
-    volatile int      *demo_ready; /* 指向 app_shared.c 的 g_rtos_demo_ready（blink 等待） */
 } app_ctx_t;
 
 /* 命令 handler：c = 应用上下文，line = 整条命令（含参数，handler 自行解析）。 */

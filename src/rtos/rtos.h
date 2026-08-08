@@ -58,6 +58,10 @@ struct task {
     /* ---- 硬实时扩展（见 docs/rtos-hard-realtime-plan.md 阶段1）----
      * 全部默认 0 = 非实时任务，语义不变、零回归。仅 rt_class!=0 的任务参与违约检测。 */
     uint8_t        rt_class;     /* 0=非实时(默认) 1=硬实时 2=软实时 */
+/* 硬实时类别常量（与 tools/abi/rtos_abi.h 契约对齐，供应用层语义化使用） */
+#define RTOS_RT_NONE  0
+#define RTOS_RT_HARD  1
+#define RTOS_RT_SOFT  2
     uint8_t        npls_hold;    /* 持有非抢占临界区(锁调度)标记（阶段2用） */
     uint32_t       deadline_ticks; /* 相对释放时间的截止期(0=无截止期) */
     uint32_t       release_tick;   /* 最近一次被释放/唤醒的 tick（WCRT/违约计算基准） */

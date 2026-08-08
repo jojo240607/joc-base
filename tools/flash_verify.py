@@ -18,14 +18,18 @@
   - 若本机 COM8 未真正接到板子（或线材/驱动问题），串口段会报“无输出”，
     此时可用 GDB 读 g_tick 确认内核在跑（见 gdb_alive 方式）。
 """
+import os
 import serial
 import subprocess
 import sys
 import time
 
+# 脚本位于 <root>/tools/，据此推出项目根目录，保证相对路径 "build/..." 始终可用
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OCD = r"D:\soft\openocd\openocd-4e78563-i686-w64-mingw32\bin\openocd.exe"
 SCR = r"D:\soft\openocd\openocd-4e78563-i686-w64-mingw32\share\openocd\scripts"
-BIN = "build/stm32f407_minimal.bin"   # 干净默认配置构建产物
+BIN = os.path.join(ROOT, "build", "stm32f407_minimal.bin").replace("\\", "/")   # OpenOCD 不认 Windows 反斜杠，需转 /
+# 干净默认配置构建产物
 
 
 def flash():
