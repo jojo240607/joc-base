@@ -192,8 +192,8 @@ int app_slot_irq_attach(const app_irq_reg_t *reg) {
   直接引用 `rust_app.h` 里声明的裸 RTOS 符号。中断注册位 `irq_reg[]` 经
   `app_slot_irq_attach` 生效，C 侧 TIM 驱动改为查 `g_app_slot` 注册表而非
   硬编码 `rust_att_isr_give`。
-- **阶段 2（真分区）**：把 `libapp.a` 烧到独立 Flash 区（修改链接脚本 `APP`
-  内存块 + 烧录脚本），`g_app_slot` 地址固定不变，App 镜像无需重编即可换区。
+- **阶段 2（真分区，已实现并硬件验证）**：把 App 烧到独立 Flash 区，系统启动后
+  经固定头部发现并挂载，App 镜像无需与系统同编。落地要点见 §7。
 
 ---
 
@@ -205,3 +205,118 @@ int app_slot_irq_attach(const app_irq_reg_t *reg) {
    若不够，调 `APP_IRQ_REG_MAX` 并 +版本号。
 4. App 的 `isr_cb` 必须遵循 ISR 约束（只做 ISR-safe 操作：sem_give / 写内存 /
    置 flag；不调 `rtos_task_create` / `rtos_mq_init` 等调度器变更 API）。
+
+---
+
+## 7. 阶段 2 落地规格（真·双分区，已硬件验证 PASS）
+
+### 7.1 内存布局
+
+```
+Flash 0x0800_0000 ┌─────────────────────────────┐
+   (系统区)        │ RTOS 内核 + 驱动 + 控制台     │  ← 烧一次，之后不动
+                  │ 向量表 @0x08000000            │
+                  ├─────────────────────────────┤ 0x0806_0000
+   (APP_FLASH)     │ app_header_t(16B) + App 镜像  │  ← 单独烧录/反复烧
+                  │ rust_app_start() 入口          │
+                  └─────────────────────────────┘ 0x080B_FFFF (sector 7/8/9)
+
+SRAM 0x2000_0000 ┌─────────────────────────────┐
+   (系统区)        │ RTOS 内核 + 驱动 + 堆        │
+                  ├─────────────────────────────┤ 0x2001_DC00
+   (APP_SLOT_RAM) │ g_app_slot 服务表(188B,固定)  │  ← PROVIDE 固定地址
+                  ├─────────────────────────────┤ 0x2001_E000
+   (APP_RAM)       │ App 运行期 .bss (8KB)        │  ← 挂载前由加载器清零
+                  └─────────────────────────────┘ 0x2001_FFFF
+```
+
+链接脚本（`linker/STM32F407VGTX_FLASH.ld`）新增内存块：
+- `APP_FLASH (rx): ORIGIN=0x08060000 LENGTH=384K`
+- `APP_RAM   (xrw): ORIGIN=0x2001E000 LENGTH=8K`
+- `APP_SLOT_RAM (xrw): ORIGIN=0x2001DC00 LENGTH=1K`（**固定地址**，Rust `app.ld`
+  的 `PROVIDE(g_app_slot=0x2001DC00)` 与系统 ld 的 `APP_SLOT_RAM` ORIGIN 必须一致）
+
+### 7.2 头部发现机制（app_header_t）
+
+固定地址 `APP_HEADER_ADDR = 0x08060000` 放 16 字节头部：
+
+```c
+#define APP_HEADER_MAGIC 0x41504800u   /* "APH\0" */
+typedef struct app_header {
+    uint32_t magic;        /* 必须 == APP_HEADER_MAGIC，否则视为空分区 */
+    uint32_t abi_version;  /* 必须等于 RTOS_ABI_VERSION，错配拒绝挂载 */
+    uint32_t entry;       /* App 入口绝对地址（裸地址，bit0=0） */
+    uint32_t app_size;    /* 镜像字节数（用于 range 校验/未来完整性） */
+    uint32_t reserved[4];
+} app_header_t;
+```
+
+Rust `app.ld` 在 `.app_header` 段以 `LONG()` 写入同样的 16 字节（magic / abi=1 /
+`LONG(ABSOLUTE(rust_app_start))` / 0）。`build_app.py` 链接产出 `app.bin`，
+头部已验证：magic=0x41504800, abi=1, entry=0x08060080。
+
+### 7.3 挂载流程（src/app_slot/app_slot_boot.c）
+
+`app_main_task`（main 任务，priv=1）在 `console_run()` 之前调
+`app_slot_load_app()`：
+1. 读 `APP_HEADER_ADDR`，magic 不符 → 返回 0（纯 C 固件行为，无 App）；
+2. abi_version 不符 → 拒绝挂载（防契约漂移导致诡异崩溃）；
+3. entry 必须落在 `[APP_FLASH_BASE, +0x60000)`（sector 7/8/9 范围）；
+4. 清零整个 APP_RAM（`.bss`，App 无 `.data`，故无 LMA 拷贝）；
+5. `g_app_slot.app_start = (int(*)(void))(hdr->entry | 1u)` 并调用。
+
+**关键坑（硬件实测踩过）**：Cortex-M 间接跳转目标必须带 **Thumb 位(bit0=1)**。
+裸 entry 地址 bit0=0，直接经函数指针 `BLX` 会触发 **INVSTATE UsageFault**
+（`cfsr=0x00020000`，非 MemFault）。修复：挂载时 `OR 1` 补 Thumb 位。
+（直接改 GDB `$pc=0x08060080` 能跑、但经函数指针调用崩，正是此因的判据。）
+
+### 7.4 MPU / BIST 扇区避让
+
+App 分区占 sector 7/8/9（0x08060000）。原 BIST 备用扇区也在 sector 7，其 MPU
+Region 3（`memmap.h` 的 `MEMMAP_FLASH_BIST_*`）为「仅特权 RW + XN(不可执行)」，
+编号高于 Region 0（全 Flash RO+可执行）故重叠处 XN 优先 → App 取指
+**IACCVIOL**（cfsr=0x00000001）。
+
+修复：BIST 备用扇区由 sector 7 移到 **sector 11（0x080E0000）**，Region 3 随之
+改 `MEMMAP_FLASH_BIST_BASE=0x080E0000`。App 分区只受 Region 0（全 Flash
+RO+可执行）覆盖，得以正常执行。板级 `g_flash0` 改为 `{ "flash0", 11 }`，
+`flash.h` / `flash_hal.h` / `selftest.c` 注释同步。
+
+> 验证对比：Region 3 留 sector 7 时 App 入口 `cfsr=0x00000001`（IACCVIOL）；
+> 移到 sector 11 后 Region 0 覆盖 App → 取指正常。
+
+### 7.5 烧录 / 验证脚本（仓库内）
+
+- `flash_sys.bat`：仅烧系统镜像到 `0x08000000`（RTOS 升级时）。
+- `flash_app.bat`：仅烧 `app.bin` 到 `0x08060000`（**日常应用调试只跑这条**）。
+- `_flash_stage2.py`：经 OpenOCD + GDB `monitor flash write_image erase` 一次烧双分区，
+  路径转正斜杠避开 Windows 转义。
+- `_verify_stage2.py`：硬件验证 —— 断 `app_slot_load_app` 看头部、断 App 入口
+  确认到达且无 fault、断 `app_main_task` 的 `console_run` 确认 App 体执行后返回、
+  系统恢复命令循环。`RESULT: STAGE-2 PASS` 为通过判据。
+
+### 7.6 开发工作流（用户诉求：烧一次 RTOS，专注 App）
+
+```
+# 首次 / RTOS 升级时（偶尔）：
+flash_sys.bat                 # 烧 stm32f407_minimal.bin -> 0x08000000
+
+# 日常应用层迭代（只动 App 分区）：
+cd joc-app-rust
+python build_app.py           # cargo build -> app.elf -> app.bin (含头部)
+flash_app.bat                 # 烧 app.bin -> 0x08060000
+# 或一条龙：python _flash_stage2.py
+```
+
+系统区与 App 区编译期解耦：改 App 不重编 RTOS，改 RTOS（ABI 不变）不重编 App。
+`RTOS_ABI_VERSION` 变 → 运行期 `app_slot_load_app` 拒绝挂载并打印 ABI mismatch，
+不会总线故障。
+
+### 7.7 已验证行为（真硬件 JTAG 捕获）
+
+- `app_slot_load_app CALLED`：header magic=0x41504800, abi=1, entry=0x08060080 ✓
+- App 入口 `0x08060080` 到达，单步 `pc` 推进（push 后 0x08060082）✓
+- App 体执行后返回，`app_main_task` 恢复 `console_run` → 系统活 ✓
+- 无 fault（cfsr 干净），PING→PONG 等系统命令照常 ✓
+- 结论：`RESULT: STAGE-2 PASS`
+
