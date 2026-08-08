@@ -1303,8 +1303,9 @@ static int selftest_vwwdg(selftest *self)
 }
 
 /* Verify the internal FLASH driver WITHOUT risking the running firmware: flash0
- * manages SPARE sector 7 (0x08060000, 128 KB), far above the ~57 KB image, so
- * erasing/programming it can never corrupt the code. We prove the full data
+ * manages SPARE sector 11 (0x080E0000, 128 KB), far above the ~57 KB image AND
+ * above the APP_FLASH app partition (sectors 7/8/9), so erasing/programming it
+ * can never corrupt the code or the app. We prove the full data
  * path:
  *   (1) capacity report: block_size=4, block_count=sector_size/4;
  *   (2) erase the sector -> reads back as 0xFFFFFFFF (erased state);

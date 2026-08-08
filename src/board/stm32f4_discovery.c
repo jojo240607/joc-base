@@ -78,7 +78,7 @@ void board_tick_init(void)
     c.name    = "systick";
     /* 用 HAL 提供的设计常量（= CLOCK_SYSCLK_HZ = 168 MHz），不再依赖可变全局
      * SystemCoreClock（其 .data 初值为 16M，需被 clock_hal_configure 改写才对）。
-     * 板子“知道”的真实核心时钟就是 168M，直接取显式值，不随全局改动而失准。 */
+     * 板子"知道"的真实核心时钟就是 168M，直接取显式值，不随全局改动而失准。 */
     c.cpu_hz  = clock_hal_sysclk_hz();
     c.tick_hz = 1000;              /* 1 ms tick */
     device *d = systick_create(&c);
@@ -153,7 +153,7 @@ static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM8, 168000000, 0, 1,
 static const exti_config_t g_exti0 = { "exti0", "GPIOE_5", EXTI_EDGE_RISING, 2 };
 static const exti_config_t g_exti1 = { "exti1", "GPIOE_6", EXTI_EDGE_RISING, 2 };
 static const exti_config_t g_exti2 = { "exti2", "GPIOE_1", EXTI_EDGE_RISING, 2 }; /* 注意：须避开 line0(PA0 USER 按钮=btn)，故放 line1 */
-/* 按键示例设备：供 src/task/task_button.c 演示“上半部 ISR -> 下半部 BH 任务”。
+/* 按键示例设备：供 src/task/task_button.c 演示"上半部 ISR -> 下半部 BH 任务"。
  * 注：板载真实 USER 按钮在 PA0，但 PA0 已被 adc0 的 ADC1_IN0 占用（pinmux 冲突），
  * 故此处改用一个空闲引脚 PA2（EXTI line2 / IRQ8，不与 exti0/1/2 的 line 冲突）。
  * 若要用真实 USER 按钮，需先把 adc0 通道 0 改到别的脚（见 README / companion_test）。
@@ -211,10 +211,12 @@ static const iwdg_config_t g_iwdg0 = { "iwdg0", (void *)IWDG };
  * base (WWDG). Unlike the IWDG it is NOT in the backup domain, so it does not
  * survive a reset. */
 static const wwdg_config_t g_wwdg0 = { "wwdg0", (void *)WWDG };
-/* FLASH: flash0 manages SECTOR 7 (0x08060000, 128 KB) — a SPARE sector that
- * sits well above the ~57 KB firmware image (sectors 0-3), so the BIST can
- * safely erase/program it without any risk of corrupting the running code. */
-static const flash_config_t g_flash0 = { "flash0", 7 };
+/* FLASH: flash0 manages SECTOR 11 (0x080E0000, 128 KB) — a SPARE sector that
+ * sits well above the ~57 KB firmware image (sectors 0-3) AND above the
+ * APP_FLASH app partition (sectors 7/8/9 @0x08060000), so the BIST can safely
+ * erase/program it without any risk of corrupting the running code or the app.
+ * (Previously sector 7, but that now hosts the stage-2 app partition.) */
+static const flash_config_t g_flash0 = { "flash0", 11 };
 /* I2S: i2s0 is the I2S2 block (hosted inside SPI2, APB1), configured as a 48 kHz
  * master transmitter (Philips standard, 16-bit). The three signals map to the
  * SPI2 AF5 pads WS=PB12, CK=PB13, SD=PB15 — none of which the Discovery board

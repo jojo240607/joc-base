@@ -16,12 +16,24 @@ MEMORY
   FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 1024K
   RAM    (xrw) : ORIGIN = 0x20000000, LENGTH = 128K        /* 主 SRAM：.data/.bss/堆 + 所有 DMA 缓冲 */
   CCMRAM (xrw) : ORIGIN = 0x10000000, LENGTH = 63K         /* 内核对象(任务栈/TCB池)；顶部 1K 留给 MSP */
+  /* 阶段 2 应用分区（方案 Y 轻量版独立 App 烧录区）：
+   * - APP_FLASH：App 的 .text/.rodata 烧录区，从 sector 7 (0x08060000) 起。
+   *   F407 1MB Flash = sector0~11；系统固件(sector0~6 = 64+64+128+128+128=512KB)
+   *   之后留 512KB(sector7~11) 给 App，足够独立应用镜像。
+   * - APP_RAM：App 运行期 .data/.bss 专用 RAM（固定 8KB，在系统堆之上、SRAM 顶端之下）。
+   *   与系统 RAM 布局物理隔离，系统升级不波及 App 内存，App 重烧不波及系统堆。 */
+  APP_FLASH (rx) : ORIGIN = 0x08060000, LENGTH = 384K      /* sector 7(128K)+8(128K)+9(128K)，留 sector10/11 冗余 */
+  APP_RAM   (xrw): ORIGIN = 0x2001E000, LENGTH = 8K        /* 主 SRAM 顶 8KB：0x2001E000..0x20020000 */
+  /* App 服务表 g_app_slot 固定 RAM 地址（方案 Y 解耦关键）：App 独立镜像经
+   * PROVIDE(g_app_slot=固定地址) 引用同一地址，故系统升级/App 重烧都不改变该地址。
+   * 放在 APP_RAM 之下、系统堆之上，紧邻不重叠。 */
+  APP_SLOT_RAM (xrw): ORIGIN = 0x2001DC00, LENGTH = 1K     /* g_app_slot 实例固定落此，约 100B 足够 */
 }
 
-/* 堆上界：主 SRAM 顶端(0x20020000)下方留 1K 安全余量，避免 _sbrk 越界写到
- * 未映射区(0x20020000 起)造成总线错误。主栈在 CCM，故主 SRAM 除 .data/.bss
- * 外全部可作堆，无需再为主栈预留。 */
-__HeapLimit = ORIGIN(RAM) + LENGTH(RAM) - 0x400;
+/* 堆上界：系统堆止于 APP_SLOT_RAM 起点(0x2001DC00)。主栈在 CCM，故主
+ * SRAM[0x20000000..0x2001DC00) 除 .data/.bss 外全部可作堆。APP_SLOT_RAM 与
+ * APP_RAM 由 App 加载器/服务表使用，系统不碰、不挪动（地址固定契约）。 */
+__HeapLimit = ORIGIN(APP_SLOT_RAM);
 
 SECTIONS
 {
@@ -121,6 +133,34 @@ SECTIONS
     PROVIDE_HIDDEN (__rtos_bh_end = .);
   } >FLASH
 
+  /* ===========================================================================
+   * 阶段 2 应用分区（方案 Y 轻量版：独立 App 烧录区）。
+   * 这些段仅当构建"双分区部署镜像"时才被填充（Rust 侧用独立 app.ld 把
+   * libapp.a 的段收集进 app_header/app_code；常态单 ELF 构建里这些输入段
+   * 为空，KEEP 为空、布局不占空间，与开发期单 ELF 完全兼容）。
+   * 固定地址契约（RTOS 启动加载器 app_slot_boot.c 按此地址寻址）：
+   *   - app_header  MUST 位于 APP_FLASH 起点 (0x08060000)
+   *   - app_code    紧跟 header 之后（LMA 连续，运行时直接在 XIP Flash 执行）
+   * App 的 .data/.bss 进下方 APP_RAM（见 app_bss 段），由加载器清零。
+   * =========================================================================== */
+  .app_header :
+  {
+    . = ALIGN(4);
+    KEEP(*(.app_header))
+    KEEP(*(.app_header.*))
+    . = ALIGN(16);
+  } >APP_FLASH
+
+  .app_code :
+  {
+    . = ALIGN(4);
+    KEEP(*(.app_text))
+    KEEP(*(.app_text.*))
+    KEEP(*(.app_rodata))
+    KEEP(*(.app_rodata.*))
+    . = ALIGN(4);
+  } >APP_FLASH
+
   /* Pad total FLASH footprint to 16-byte boundary (ART prefetch requires
    * 128-bit row alignment — without this, non-16-byte-aligned firmware
    * sizes hang at boot due to prefetch fetching partial rows). */
@@ -165,10 +205,10 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM
 
-  /* App 服务表（方案 Y 轻量版）：g_app_slot 实例落 RAM（可写），系统在
-   * app_slot_init() 里运行时填充函数指针 + 头部版本。App 经 extern 引用
-   * 同地址、只填 irq_reg[] 注册位，不碰裸寄存器/NVIC/VTOR。阶段 1（同 ELF）
-   * 符号地址由链接器固定；阶段 2 真分区时本段地址固定不变，App 镜像无需重编。
+  /* App 服务表（方案 Y 轻量版）：g_app_slot 实例落固定 RAM（APP_SLOT_RAM）。
+   * 系统在 app_slot_init() 里运行时填充函数指针 + 头部版本。App 独立镜像经
+   * PROVIDE(g_app_slot=0x2001DC00) 引用同一地址，只填 irq_reg[] 注册位，
+   * 不碰裸寄存器/NVIC/VTOR。该地址固定不变，系统升级/App 重烧都无需重编 App。
    * KEEP 防止被 GC（g_app_slot 仅由 App 入口 + irq_manager 引用，属跨镜像符号）。 */
   .app_slot (NOLOAD) :
   {
@@ -176,7 +216,7 @@ SECTIONS
     KEEP(*(.app_slot))
     KEEP(*(.app_slot.*))
     . = ALIGN(4);
-  } >RAM
+  } >APP_SLOT_RAM
 
   ._user_heap_stack :
   {

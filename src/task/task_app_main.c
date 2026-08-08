@@ -86,15 +86,20 @@ void app_main_task(void *arg)
 #endif
 
 #ifdef RUST_APP_LIB
-    log_printf(app_log(), LOG_INFO, "main", "[boot] starting Rust app layer...\n");
-    /* 1) 先填充系统侧服务表 g_app_slot（函数指针 + 头部版本）
-     * 2) 把 App 入口挂到 g_app_slot.app_start
-     * 3) 经服务表契约调用 App（App 内部只引用 g_app_slot，不碰裸 RTOS 符号）*/
+    log_printf(app_log(), LOG_INFO, "main", "[boot] starting Rust app layer (linked in build)...\n");
+    /* 开发期轨 A：libapp.a 已链进本 ELF，rust_app_start 由链接器解析，
+     * JTAG 可直接断点。仍经服务表契约调用，保证运行时路径与部署期一致。 */
     app_slot_init();
     g_app_slot.app_start = (int (*)(void))rust_app_start;
     g_app_slot.app_start();
 #else
-    log_printf(app_log(), LOG_INFO, "main", "[boot] no Rust app layer linked.\n");
+    /* 部署期轨 B（阶段 2 应用分区）：系统不包含 App 代码。
+     * app_slot_load_app() 按固定地址读 APP_FLASH 头部，校验 magic/abi_version，
+     * 清零 App RAM 并跳 entry。未烧 App 或版本不符则打日志跳过（纯 C 固件行为）。
+     * 烧完 RTOS 后，应用层迭代只需 flash_app.bat 重烧 APP_FLASH 块即可。 */
+    log_printf(app_log(), LOG_INFO, "main", "[boot] app partition discovery (stage-2)...\n");
+    app_slot_init();
+    app_slot_load_app();
 #endif
 
     console_run(c);   /* 永不返回：读命令 -> 查表派发 */

@@ -92,4 +92,33 @@ int app_slot_irq_attach(const app_irq_reg_t *reg);
 int app_slot_irq_enable(uint8_t irq_id);   /* 按 irq_id 查 irq_reg[] 做 NVIC 掩码 */
 int app_slot_irq_disable(uint8_t irq_id);
 
+/* ===========================================================================
+ * 阶段 2 应用分区发现（方案 Y 轻量版：独立 App 烧录区自举）。
+ * RTOS 启动后不去链接器解析 App 符号，而是按固定地址读 App 头部，
+ * 校验 magic/abi_version，取 entry 作为 App 入口。这样 App 镜像与系统镜像
+ * 完全解耦：系统区烧一次，之后只烧 APP_FLASH 块（见 flash_app.bat）。
+ * 地址契约（必须与链接脚本 APP_FLASH ORIGIN 一致）： */
+#define APP_FLASH_BASE   0x08060000u   /* 应用分区 Flash 起点（sector 7） */
+#define APP_HEADER_ADDR  APP_FLASH_BASE
+#define APP_HEADER_MAGIC 0x41504800u   /* "APH\0" */
+/* App 头部（烧录在 APP_FLASH 起点，由 Rust 侧 app.ld 生成并填充）。
+ * 注意：entry 是 App 入口的【绝对地址】，Rust 独立链接时已定位到 APP_FLASH
+ * 区，RTOS 加载器直接跳入即可（App XIP 运行，无需重定位）。 */
+typedef struct app_header {
+    uint32_t magic;        /* APP_HEADER_MAGIC */
+    uint32_t abi_version;  /* 须 == RTOS_ABI_VERSION，否则拒绝挂载 */
+    uint32_t entry;        /* App 入口绝对地址（rust_app_start） */
+    uint32_t app_size;     /* App 镜像总字节数（header+code），用于校验 */
+    uint32_t reserved[4];  /* 对齐到 32 字节 */
+} app_header_t;
+
+/* 系统侧：应用分区自举。
+ *  1) 读 APP_HEADER_ADDR，校验 magic + abi_version；
+ *  2) 清零 App 专用 RAM（_sappbss.._eappbss，见链接脚本 app_bss 段）；
+ *  3) 设 g_app_slot.app_start = header->entry，调之。
+ * 若 header 无效（未烧 App / 版本不符），打日志返回、不挂载（纯 C 固件行为）。
+ * 开发期单 ELF 构建：若 RUST_APP_LIB 且 rust_app_start 由链接器解析，
+ * 由调用方(task_app_main.c)优先走链接器符号，故本函数仅用于阶段 2 部署镜像。 */
+int app_slot_load_app(void);
+
 #endif /* APP_SLOT_H */

@@ -17,9 +17,10 @@
  * lba/count arguments.
  *
  * SAFETY: the board must point this driver at a SPARE sector the firmware
- * never occupies — sector 7 (0x08060000, 128 KB) on the STM32F407 sits well
- * above the ~57 KB image (sectors 0-3), so erasing/programming it can never
- * corrupt the running code. The flash controller has no interrupt enabled, so
+ * never occupies — sector 11 (0x080E0000, 128 KB) on the STM32F407 sits well
+ * above the ~57 KB image (sectors 0-3) AND above the APP_FLASH app partition
+ * (sectors 7/8/9), so erasing/programming it can never corrupt the running code
+ * or the app. The flash controller has no interrupt enabled, so
  * the BSY busy-waits in flash_hal cannot deadlock (matching the IRQ/busy-wait
  * rule in this codebase). The driver never starts any watchdog, so it can
  * never brick the board.

@@ -10,10 +10,11 @@
  * register-free. Implements erase / program / read of the on-chip flash so the
  * application can store data that survives power-down.
  *
- * SAFETY: the BIST erases and reprogrammes a SPARE sector (sector 7,
- * 0x08060000) that sits well above the firmware image (~57 KB, entirely within
- * sectors 0-3). Erasing/programming it can therefore never corrupt the running
- * code. The flash controller has no interrupt enabled, so the BSY busy-waits
+ * SAFETY: the BIST erases and reprogrammes a SPARE sector (sector 11,
+ * 0x080E0000) that sits well above the firmware image (~57 KB, entirely within
+ * sectors 0-3) AND above the APP_FLASH app partition (sectors 7/8/9).
+ * Erasing/programming it can therefore never corrupt the running code or the
+ * app. The flash controller has no interrupt enabled, so the BSY busy-waits
  * here cannot deadlock (matching the IRQ/busy-wait rule in this codebase).
  */
 

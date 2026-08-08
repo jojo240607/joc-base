@@ -93,6 +93,7 @@ add_executable(${PROJECT_NAME}.elf
     # App 服务表（方案 Y 轻量版）：RTOS 暴露给独立 App 层的函数指针表 + 中断注册位。
     # App 经 extern g_app_slot 引用，只填函数指针/irq_reg[]，不碰裸寄存器/NVIC/VTOR。
     src/app_slot/app_slot.c
+    src/app_slot/app_slot_boot.c   # 阶段 2 应用分区自举（从 APP_FLASH 头部发现 App 入口）
     # device manager (generic name -> device* registry — platform-independent)
     src/devmgr/device_manager.c
     # board layer (per-board: the only place that knows the real peripherals)

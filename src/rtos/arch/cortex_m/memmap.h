@@ -40,9 +40,14 @@
 
 /* --- Region 3: Flash BIST 备用扇区（仅特权 RW，不可执行） ---
  * 编号高于 Region0，重叠时高编号优先，使 flash 烧录自检的“写闪存”不被 RO 拦截，
- * 其余 Flash 仍为只读（代码保护）。位置随芯片而异（此处为 STM32F4 的 sector 7）。 */
-#define MEMMAP_FLASH_BIST_BASE       0x08060000u
-#define MEMMAP_FLASH_BIST_SIZE_LOG2  17u  /* 128 KB */
+ * 其余 Flash 仍为只读（代码保护）。位置随芯片而异。
+ *
+ * 注意：阶段 2 起 APP_FLASH 应用分区占用 sector 7/8/9（0x08060000 起 384KB），
+ * 故 BIST 备用扇区必须移到【应用分区之上】的 sector 11（0x080E0000），否则 Region3
+ * 的 XN=1 会覆盖应用分区导致 App 取指触发 IACCVIOL。应用分区只受 Region0（全 Flash
+ * RO+可执行）覆盖，得以正常执行。 */
+#define MEMMAP_FLASH_BIST_BASE       0x080E0000u
+#define MEMMAP_FLASH_BIST_SIZE_LOG2  17u  /* 128 KB (sector 11) */
 #define MEMMAP_FLASH_BIST_AP         0b001u /* AP[2:0] = 仅特权 RW */
 #define MEMMAP_FLASH_BIST_XN         1     /* 不可执行 */
 

@@ -6,6 +6,7 @@ build_rel/
 build_cov/
 build_p2/
 build_p3/
+build*/
 build_ostest.log
 build_rel.log
 build.log
