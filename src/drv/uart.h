@@ -32,6 +32,10 @@
  * engine and never appears as a STREAM_MODE_* value. */
 #define UART_IOCTL_SET_FRAMING  0x05   /* arg: const uart_frame_t* */
 #define UART_IOCTL_GET_FRAMING  0x06   /* arg: uart_frame_t* */
+/* Logic-level inversion (SBUS / inverted peripherals). arg: const uint32_t*
+ * bitmask — bit0 = RXINV (receive inverted), bit1 = TXINV (transmit inverted);
+ * set a bit to enable that direction's inversion. See uart_hal_set_inverted(). */
+#define UART_IOCTL_SET_INVERTED 0x07   /* arg: const uint32_t* (bitmask) */
 
 /* framing (RX frame-end detection) axis — see the comment above. */
 typedef enum {

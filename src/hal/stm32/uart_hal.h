@@ -54,6 +54,14 @@ void uart_hal_clear_errors(uart_hal_handle_t *h);      /* read SR then DR (clear
 uint32_t uart_hal_get_brr(uart_hal_handle_t *h);   /* read back BRR for self-test */
 uint32_t uart_hal_get_cr1(uart_hal_handle_t *h);   /* read back CR1 for self-test */
 
+/* --- logic-level inversion (SBUS / inverted peripherals) ---
+ * STM32 USART_CR1 has RXINV (bit15) and TXINV (bit16): when set, the
+ * corresponding line is interpreted/driven with the polarity INVERTED
+ * (idle high, inverted NRZI). SBUS receivers output inverted levels, so a
+ * normal UART RX sees garbage unless RXINV is set. Pass non-zero to enable
+ * each direction; zero disables. Safe to call at any time (does not touch UE). */
+void uart_hal_set_inverted(uart_hal_handle_t *h, int rx_inv, int tx_inv);
+
 /* --- DMA support (used by the driver's STREAM_MODE_DMA engine) ---
  * The driver acquires a DMA stream (via the dma device + dma_hal_route) and
  * programs PAR = uart_hal_get_dr_addr(). These bits gate the USART's request

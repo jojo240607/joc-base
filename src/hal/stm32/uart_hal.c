@@ -50,6 +50,29 @@ void uart_hal_set_baudrate(uart_hal_handle_t *h, uint32_t baud)
     h->usart->BRR = (uint32_t)(UART_HAL_PCLK2_HZ / baud);
 }
 
+/* Line-protocol parameters beyond baud (SBUS needs 100000/8E2). These bits
+ * live in CR1 (parity) and CR2 (stop bits) and can be changed live while UE=1
+ * per RM0090. parity: 0=none, 1=odd, 2=even. stop: 1 or 2 stop bits. */
+void uart_hal_set_parity(uart_hal_handle_t *h, int parity)
+{
+    if (!h) return;
+    uint32_t cr1 = h->usart->CR1;
+    cr1 &= ~(USART_CR1_PCE | USART_CR1_PS);
+    if (parity == 1)      cr1 |= USART_CR1_PCE | USART_CR1_PS; /* odd  */
+    else if (parity == 2) cr1 |= USART_CR1_PCE;               /* even */
+    h->usart->CR1 = cr1;
+}
+
+void uart_hal_set_stopbits(uart_hal_handle_t *h, int stop)
+{
+    if (!h) return;
+    uint32_t cr2 = h->usart->CR2;
+    cr2 &= ~(USART_CR2_STOP_1 | USART_CR2_STOP_0); /* clear STOP[13:12] */
+    if (stop == 2) cr2 |= (USART_CR2_STOP_1);      /* 0b10 = 2 stop bits */
+    /* stop==1 (or any other) leaves 0b00 = 1 stop bit */
+    h->usart->CR2 = cr2;
+}
+
 void uart_hal_putc(uart_hal_handle_t *h, char c)
 {
     if (!h) return;
@@ -171,6 +194,20 @@ uint32_t uart_hal_get_brr(uart_hal_handle_t *h)
 uint32_t uart_hal_get_cr1(uart_hal_handle_t *h)
 {
     return h ? h->usart->CR1 : 0UL;
+}
+
+/* Logic-level inversion for SBUS / inverted peripherals. RXINV (bit15) and
+ * TXINV (bit16) in USART_CR1 invert the RX/TX line polarity. We mask out the
+ * two bits first then OR in the requested ones so a re-call cleanly toggles
+ * either direction without disturbing the rest of CR1 (TE/RE/UE stay intact). */
+void uart_hal_set_inverted(uart_hal_handle_t *h, int rx_inv, int tx_inv)
+{
+    if (!h) return;
+    uint32_t cr1 = h->usart->CR1;
+    cr1 &= ~(USART_CR1_RXINV | USART_CR1_TXINV);
+    if (rx_inv) cr1 |= USART_CR1_RXINV;
+    if (tx_inv) cr1 |= USART_CR1_TXINV;
+    h->usart->CR1 = cr1;
 }
 
 void *uart_hal_get_dr_addr(uart_hal_handle_t *h)

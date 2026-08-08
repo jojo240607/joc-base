@@ -863,6 +863,18 @@ static int uart_dev_ioctl(device *self, int cmd, void *arg)
         if (!arg) return -1;
         *(uint32_t *)arg = uart_hal_get_cr1(u->hal);
         return 0;
+    case UART_IOCTL_SET_INVERTED: {
+        /* SBUS / inverted-peripheral logic-level inversion. arg is a const
+         * uint32_t* bitmask: bit0 = RXINV (receive inverted),
+         * bit1 = TXINV (transmit inverted). uart_hal_set_inverted() sets
+         * USART_CR1.RXINV/TXINV without disturbing TE/RE/UE. */
+        if (!arg) return -1;
+        const uint32_t *p = (const uint32_t *)arg;
+        int rx_inv = (int)((*p) & 0x1U);
+        int tx_inv = (int)((*p) & 0x2U);
+        uart_hal_set_inverted(u->hal, rx_inv, tx_inv);
+        return 0;
+    }
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
