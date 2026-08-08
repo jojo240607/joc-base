@@ -4,6 +4,7 @@
 #include "rtos.h"
 #include "iface/device.h"
 #include "devmgr/device_manager.h"
+#include "app_slot/app_slot.h"
 #include "log/log.h"
 #include "log/app_log.h"
 
@@ -13,9 +14,10 @@
 
 /* Rust 应用层挂载点：由 joc-app-rust/libapp.a 提供。
  * 仅当 Rust 应用层被链接进固件时声明，RTOS 侧只负责调用；
- * 用户层 demo / 飞控示例任务全部在 Rust 层内经 ABI 契约自行创建。 */
+ * 用户层 demo / 飞控示例任务全部在 Rust 层内经 ABI 契约自行创建。
+ * App 入口无参、经 g_app_slot 服务表拿到所有能力（方案 Y 解耦）。 */
 #ifdef RUST_APP_LIB
-extern void rust_app_start(app_ctx_t *ctx);
+#include "rust_app.h"   /* int rust_app_start(void); app/rust 已在 RUST_APP_LIB include 路径 */
 #endif
 
 /* 主栈统一 8K：BIST/命令循环的深层调用需要。覆盖率构建曾为腾 CCM 砍到 2K，导致栈溢出、
@@ -85,7 +87,12 @@ void app_main_task(void *arg)
 
 #ifdef RUST_APP_LIB
     log_printf(app_log(), LOG_INFO, "main", "[boot] starting Rust app layer...\n");
-    rust_app_start(c);
+    /* 1) 先填充系统侧服务表 g_app_slot（函数指针 + 头部版本）
+     * 2) 把 App 入口挂到 g_app_slot.app_start
+     * 3) 经服务表契约调用 App（App 内部只引用 g_app_slot，不碰裸 RTOS 符号）*/
+    app_slot_init();
+    g_app_slot.app_start = (int (*)(void))rust_app_start;
+    g_app_slot.app_start();
 #else
     log_printf(app_log(), LOG_INFO, "main", "[boot] no Rust app layer linked.\n");
 #endif

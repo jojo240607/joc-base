@@ -165,6 +165,19 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM
 
+  /* App 服务表（方案 Y 轻量版）：g_app_slot 实例落 RAM（可写），系统在
+   * app_slot_init() 里运行时填充函数指针 + 头部版本。App 经 extern 引用
+   * 同地址、只填 irq_reg[] 注册位，不碰裸寄存器/NVIC/VTOR。阶段 1（同 ELF）
+   * 符号地址由链接器固定；阶段 2 真分区时本段地址固定不变，App 镜像无需重编。
+   * KEEP 防止被 GC（g_app_slot 仅由 App 入口 + irq_manager 引用，属跨镜像符号）。 */
+  .app_slot (NOLOAD) :
+  {
+    . = ALIGN(4);
+    KEEP(*(.app_slot))
+    KEEP(*(.app_slot.*))
+    . = ALIGN(4);
+  } >RAM
+
   ._user_heap_stack :
   {
     . = ALIGN(8);

@@ -25,8 +25,11 @@ int rust_wait_once(void);
 /* ---- 飞控示例符号（joc-app-rust/src/lib.rs）---- */
 /* 飞控姿态环任务入口（硬实时，prio=3 <= RTOS_PRIO_BH_HIGH）。 */
 void rust_attitude_loop(void *arg);
-/* 由板级 TIM ISR 在 1kHz 溢出时调用（ISR 安全），唤醒姿态环。 */
-void rust_att_isr_give(void);
+
+/* App 统一挂载入口：无参，由 RTOS 经 g_app_slot.app_start 调用。
+ * 内部只引用 g_app_slot 服务表（方案 Y 解耦），不再直接引用裸 RTOS 符号。
+ * 旧版经裸 ctx 注入 app_ctx_t 的签名已废弃；App 经服务表拿到一切能力。 */
+int rust_app_start(void);
 
 #ifdef __cplusplus
 }

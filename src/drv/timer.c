@@ -154,6 +154,15 @@ static int timer_dev_ioctl(device *self, int cmd, void *arg)
     case TIMER_IOCTL_GET_REPETITION:
         if (arg) *(uint32_t *)arg = tim_hal_get_repetition(t->hal);
         return 0;
+    case TIMER_IOCTL_ENABLE:
+        /* start counting + arm NVIC (callback already attached at open). */
+        tim_hal_start(t->hal);
+        irq_manager_enable(t->irq, timer_isr, t);
+        return 0;
+    case TIMER_IOCTL_DISABLE:
+        irq_manager_disable(t->irq, timer_isr, t);
+        tim_hal_stop(t->hal);
+        return 0;
     default:
         return -1;
     }

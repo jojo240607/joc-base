@@ -72,5 +72,13 @@ uint32_t timer_get_ccr(timer *t, int ch);
 #define TIMER_IOCTL_GET_COUNTER    0x02   /* arg = uint32_t* : current CNT */
 #define TIMER_IOCTL_SET_REPETITION 0x03   /* arg = uint32_t* : RCR 0..255 (adv TIM) */
 #define TIMER_IOCTL_GET_REPETITION 0x04   /* arg = uint32_t* : current RCR */
+/* ENABLE/DISABLE start/stop the counter + arm/mask the NVIC update IRQ. These
+ * let an application drive the timer through the plain dev_* interface (open +
+ * ioctl) without needing the event_device vtable's enable() method — required
+ * by the App service-table (app_slot_t) path where only dev_open/dev_ioctl are
+ * exported. The driver's ISR clears UIF; sibling callbacks on the same IRQ line
+ * (e.g. an App-registered att_isr_give) just observe the tick. */
+#define TIMER_IOCTL_ENABLE         0x05   /* arg = NULL : start counting + arm IRQ */
+#define TIMER_IOCTL_DISABLE        0x06   /* arg = NULL : stop counting + mask IRQ */
 
 #endif /* TIMER_H */

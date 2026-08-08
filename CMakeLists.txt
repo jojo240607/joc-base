@@ -90,6 +90,9 @@ add_executable(${PROJECT_NAME}.elf
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
     src/irq/irq_manager.c   # centralized interrupt manager (registry + dump)
+    # App 服务表（方案 Y 轻量版）：RTOS 暴露给独立 App 层的函数指针表 + 中断注册位。
+    # App 经 extern g_app_slot 引用，只填函数指针/irq_reg[]，不碰裸寄存器/NVIC/VTOR。
+    src/app_slot/app_slot.c
     # device manager (generic name -> device* registry — platform-independent)
     src/devmgr/device_manager.c
     # board layer (per-board: the only place that knows the real peripherals)
@@ -215,6 +218,7 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/hal/stm32
     src/hal/stm32/st_usb
     src/irq
+    tools/abi                # RTOS<->App ABI 契约头（rtos_abi.h），系统侧 App 服务表引用
 )
 
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
