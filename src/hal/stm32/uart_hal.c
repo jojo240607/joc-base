@@ -73,17 +73,29 @@ void uart_hal_set_stopbits(uart_hal_handle_t *h, int stop)
     h->usart->CR2 = cr2;
 }
 
+/* 固定超时预算：168MHz HCLK 下约 100k 周期 >> 一字节发送时间（115200 时约
+ * 1500 周期）。仅作防御性兜底——正常 TXE/RXNE 会迅速置位，不会触及预算；
+ * 若 UART 被异常 deinit（如共享控制台被误关）导致标志永不置位，循环在预算
+ * 耗尽后退出，丢弃该字节而非死循环冻结系统。 */
+#define UART_HAL_WAIT_BUDGET 100000u
+
 void uart_hal_putc(uart_hal_handle_t *h, char c)
 {
     if (!h) return;
-    while ((h->usart->SR & USART_SR_TXE) == 0) { }
+    uint32_t budget = UART_HAL_WAIT_BUDGET;
+    while ((h->usart->SR & USART_SR_TXE) == 0) {
+        if (--budget == 0) return;  /* 超时：丢弃字节，不冻结 */
+    }
     h->usart->DR = (uint8_t)c;
 }
 
 char uart_hal_getc(uart_hal_handle_t *h)
 {
     if (!h) return 0;
-    while ((h->usart->SR & USART_SR_RXNE) == 0) { }
+    uint32_t budget = UART_HAL_WAIT_BUDGET;
+    while ((h->usart->SR & USART_SR_RXNE) == 0) {
+        if (--budget == 0) return 0;  /* 超时：返回 0，不冻结 */
+    }
     return (char)(h->usart->DR & 0xFFU);
 }
 
