@@ -1,6 +1,13 @@
 /* STM32F407VGTX Flash memory layout (STM32F4 Discovery: STM32F407VGT6)
  * Flash: 1024 KB @ 0x08000000
  * SRAM : 128 KB @ 0x20000000 (SRAM1 112K + SRAM2 16K)
+ *
+ * 注意：本文件是模板，由 CMake 的 configure_file 注入 @APP_RAM_ORIGIN@ /
+ * @APP_RAM_LENGTH@ 生成最终 linker/STM32F407VGTX_FLASH.ld。App RAM 起点/尺寸
+ * 在开发版(SELFTEST=ON，系统 .bss 约 109KB)与发布版(SELFTEST=OFF，.bss 约
+ * 14KB)之间分流：发布版把 App RAM 下沉到系统堆之下、g_app_slot(0x2001DC00)
+ * 之上，腾出约 100KB 给 App 层；开发版系统 .bss 太大，仅留 8KB 保证链接通过
+ * (开发版不挂载真 App)。详见 docs/app-slot-design.md §内存规划。
  */
 ENTRY(Reset_Handler)
 
@@ -20,20 +27,23 @@ MEMORY
    * - APP_FLASH：App 的 .text/.rodata 烧录区，从 sector 7 (0x08060000) 起。
    *   F407 1MB Flash = sector0~11；系统固件(sector0~6 = 64+64+128+128+128=512KB)
    *   之后留 512KB(sector7~11) 给 App，足够独立应用镜像。
-   * - APP_RAM：App 运行期 .data/.bss 专用 RAM（固定 8KB，在系统堆之上、SRAM 顶端之下）。
-   *   与系统 RAM 布局物理隔离，系统升级不波及 App 内存，App 重烧不波及系统堆。 */
+   * - APP_RAM：App 运行期 .data/.bss 专用 RAM。起点/尺寸由 CMake 注入，
+   *   发布版下沉到系统堆之下、g_app_slot(0x2001DC00) 之上，约 100KB；开发版
+   *   仅 8KB。与系统 RAM 布局物理隔离，系统升级不波及 App 内存。 */
   APP_FLASH (rx) : ORIGIN = 0x08060000, LENGTH = 384K      /* sector 7(128K)+8(128K)+9(128K)，留 sector10/11 冗余 */
-  APP_RAM   (xrw): ORIGIN = 0x2001E000, LENGTH = 8K        /* 主 SRAM 顶 8KB：0x2001E000..0x20020000 */
+  APP_RAM   (xrw): ORIGIN = @APP_RAM_ORIGIN@, LENGTH = @APP_RAM_LENGTH@
   /* App 服务表 g_app_slot 固定 RAM 地址（方案 Y 解耦关键）：App 独立镜像经
    * PROVIDE(g_app_slot=固定地址) 引用同一地址，故系统升级/App 重烧都不改变该地址。
-   * 放在 APP_RAM 之下、系统堆之上，紧邻不重叠。 */
+   * 置于主 SRAM 顶端 1K，紧邻 App RAM 之上、不重叠。该地址是跨镜像契约，
+   * 与 Rust app.ld 的 PROVIDE(g_app_slot=0x2001DC00) 必须一致。 */
   APP_SLOT_RAM (xrw): ORIGIN = 0x2001DC00, LENGTH = 1K     /* g_app_slot 实例固定落此，约 100B 足够 */
 }
 
-/* 堆上界：系统堆止于 APP_SLOT_RAM 起点(0x2001DC00)。主栈在 CCM，故主
- * SRAM[0x20000000..0x2001DC00) 除 .data/.bss 外全部可作堆。APP_SLOT_RAM 与
- * APP_RAM 由 App 加载器/服务表使用，系统不碰、不挪动（地址固定契约）。 */
-__HeapLimit = ORIGIN(APP_SLOT_RAM);
+/* 堆上界：系统堆止于 APP_RAM 起点（App RAM 之下、系统区之上）。主栈在 CCM，
+ * 故主 SRAM[0x20000000..APP_RAM_ORIGIN) 除 .data/.bss 外全部可作堆。
+ * APP_SLOT_RAM 与 APP_RAM 由 App 加载器/服务表使用，系统不碰、不挪动
+ * （g_app_slot 地址固定契约；APP_RAM 起点由 CMake 注入，与 Rust app.ld 一致）。 */
+__HeapLimit = ORIGIN(APP_RAM);
 
 SECTIONS
 {
@@ -218,10 +228,10 @@ SECTIONS
     . = ALIGN(4);
   } >APP_SLOT_RAM
 
-  /* 系统堆 + 栈底标记：落在 APP_RAM(0x2001E000 起 8K)，避免与上面固定在
-   * 0x2001DC00 的 .app_slot 重叠。主栈在 CCM(_estack=0x10010000)，故主
-   * SRAM 此处仅需 _Min_Heap_Size 堆空间，无需预留栈。APP_RAM 常态单 ELF
-   * 构建里为系统堆/App 共用，足以容纳。 */
+  /* 系统堆 + 栈底标记：落在 .bss 之后、APP_RAM 起点之前（>RAM）。主栈在
+   * CCM(_estack=0x10010000)，故主 SRAM 此处仅需 _Min_Heap_Size 堆空间，无需
+   * 预留栈。堆上界由 __HeapLimit(=ORIGIN(APP_RAM)) 界定，系统 malloc 不会越界
+   * 进 App RAM。APP_RAM 段(NOLOAD)紧跟其下，由 App 加载器清零后交 App 使用。 */
   ._user_heap_stack :
   {
     . = ALIGN(8);
@@ -229,6 +239,20 @@ SECTIONS
     PROVIDE ( _end = . );
     . = . + _Min_Heap_Size;
     . = ALIGN(8);
+  } >RAM
+
+  /* App 运行期 .bss 专用 RAM 块（方案 Y 轻量版）。App 独立镜像的 .bss 经 Rust
+   * 侧 app.ld 收集进此段（>APP_RAM，NOLOAD）。系统加载器 app_slot_boot.c 在
+   * 挂载前按 APP_RAM_BASE/SIZE（由 CMake 注入，与下方 ORIGIN 一致）清零。
+   * 常态单 ELF 构建该输入段为空，不占空间。 */
+  .app_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __app_ram_start = .;
+    *(.app_bss)
+    *(.app_bss.*)
+    . = ALIGN(4);
+    __app_ram_end = .;
   } >APP_RAM
 
   /* CCM BSS：RTOS 任务栈 + TCB 池等“仅 CPU 访问、永不被 DMA 触碰”的对象。

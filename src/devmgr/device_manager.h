@@ -21,9 +21,12 @@
  * + dac + rtc + rng + crc = 33 on this board; size with headroom for more.
  * 现板上节点共 57（14 定时器 + 2 原有 uart + 新增 uart2/3 + 4 gpio + spi0/1/2 +
  * i2c0/1/2 + pwm0/1/2/3/4 + 其余基础节点）。DEVICE_MANAGER_MAX 须 ≥ 节点数，
- * 且又不能过大——g_node_store/g_hnode_store 是 BSS 静态数组，F407 仅 128K 主 SRAM，
- * 设 64 会让 .bss 越界覆盖固定 App 服务表区(0x2001DC00)。取 60（57+3 余量）恰好落界内。
- * 见记忆 36069048：超过上限的节点会被静默丢弃，新增板级设备后务必回头核对本值。 */
+ * 且又不能过大——g_node_store/g_hnode_store 是 BSS 静态数组，F407 仅 128K 主 SRAM。
+ * 发布版(SELFTEST=OFF)系统 .bss 仅约 14KB，开发版(SELFTEST=ON)约 109KB；新布局下
+ * App RAM 下沉到系统堆之下(0x20004800 起)，g_app_slot 固定钉在 0x2001DC00，故 .bss
+ * 是否越界取决于开发版 .bss 终点(约 0x2001B657)是否超过 App RAM 起点——取 60
+ * （57+3 余量）在开发版仍落界内。见记忆 36069048：超过上限的节点会被静默丢弃，
+ * 新增板级设备后务必回头核对本值（尤其开发版 RAM 占用）。 */
 #define DEVICE_MANAGER_MAX 60
 
 /* Register a device under `name` (overwrites if the name already exists). */

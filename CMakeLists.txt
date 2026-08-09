@@ -24,6 +24,35 @@ option(RTOS_SELFTEST "Build with jOS RTOS self-tests + board BIST (OFF for relea
 # 供 RTOSTRACE 命令导出。默认 OFF（零开销、零 RAM）；开发/诊断构建设为 ON。
 option(RTOS_SCHED_TRACE "Build with scheduler-switch trace ring buffer (RTOSTRACE cmd)" OFF)
 
+# ---- App RAM 分区规划（方案 B：开发/发布分流，详见 docs/app-slot-design.md）----
+# 主 SRAM 128KB：系统 .data/.bss + 堆放在低端，App 运行期 .bss 下沉到系统堆之下、
+# g_app_slot(0x2001DC00, 固定契约) 之上。App RAM 起点/尺寸随构建分流：
+#   - 发布版(RTOS_SELFTEST=OFF)：系统 .bss 仅约 14KB，堆留 4KB 后 App RAM 从
+#     0x20004800 起到 0x2001DC00，约 101KB（"~105KB" 目标）。
+#   - 开发版(RTOS_SELFTEST=ON)：系统 .bss 含大量自测任务栈约 109KB，App RAM 仅留
+#     8KB(0x2001C000..0x2001DC00) 保证链接通过；开发版不挂载真 App，空间够用。
+# g_app_slot 地址 0x2001DC00 固定不变（跨镜像契约，与 Rust app.ld 一致）。
+# CMake 把同一组值经 configure_file 注入链接脚本，并经编译宏注入 app_slot_boot.c，
+# 保证系统链接器、系统加载器、Rust app.ld 三处 App RAM 边界严格一致。
+if(RTOS_SELFTEST)
+  # 开发版系统 .bss 约 118KB(含大量自测任务栈)，终点约 0x2001CE48。
+  # App RAM 起点须在其之上，留余量至 0x2001D000，长 0xC00(3KB) 到
+  # g_app_slot(0x2001DC00)。开发版不挂载真 App，仅保证链接不重叠。
+  set(APP_RAM_ORIGIN "0x2001D000")
+  set(APP_RAM_LENGTH "0xC00")   # 3KB，开发版仅保链接、不重叠
+else()
+  # 发布版系统 .bss 约 35KB(实测 data+bss 合计，终点约 0x20005018) + 系统堆 4KB。
+  # App RAM 起点须在其之上，留余量至 0x20006000，长 0x17C00(约 95KB) 到
+  # g_app_slot(0x2001DC00)。比原 32KB 提升约 3 倍，给 App 层充足空间。
+  set(APP_RAM_ORIGIN "0x20006000")
+  set(APP_RAM_LENGTH "0x17C00")  # 0x2001DC00 - 0x20006000 = 95KB
+endif()
+configure_file(
+  ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTX_FLASH.ld.in
+  ${CMAKE_BINARY_DIR}/linker/STM32F407VGTX_FLASH.ld
+  @ONLY
+)
+
 add_executable(${PROJECT_NAME}.elf
     # startup MUST come early so its sections are at the base of .text.
     # When placed last, any growth in .o files before it shifts startup
@@ -225,6 +254,8 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
     ${MCU_DEFINE}
     HSE_VALUE=${HSE_VALUE}UL
+    APP_RAM_BASE=${APP_RAM_ORIGIN}
+    APP_RAM_SIZE=${APP_RAM_LENGTH}
 )
 
 target_compile_options(${PROJECT_NAME}.elf PRIVATE
@@ -237,7 +268,7 @@ target_compile_options(${PROJECT_NAME}.elf PRIVATE
 
 target_link_options(${PROJECT_NAME}.elf PRIVATE
     ${CPU_FLAGS}
-    -T${CMAKE_SOURCE_DIR}/linker/STM32F407VGTX_FLASH.ld
+    -T${CMAKE_BINARY_DIR}/linker/STM32F407VGTX_FLASH.ld
     -specs=nano.specs
     -Wl,-Map=${PROJECT_NAME}.map,--cref
     -Wl,--gc-sections

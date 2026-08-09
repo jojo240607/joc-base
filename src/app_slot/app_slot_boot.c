@@ -13,11 +13,17 @@
  * 改契约（app_slot_t 字段/签名）时必须同步 +1 本值。 */
 #define RTOS_ABI_VERSION 1
 
-/* App 运行期 .bss 专用 RAM 块（链接脚本 APP_RAM：0x2001E000，8K）。
+/* App 运行期 .bss 专用 RAM 块（链接脚本 APP_RAM 段）。起点/尺寸由 CMake 经
+ * APP_RAM_BASE / APP_RAM_SIZE 宏注入（与 linker 的 APP_RAM ORIGIN/LENGTH 一致，
+ * 开发版 8KB、发布版约 101KB，详见 CMakeLists.txt 的 App RAM 分流）。
  * 整个块在挂载前清零——App 独立镜像没有自己的 C 启动 pre-init，其 .bss
  * 必须由系统加载器清零（App 不使用 .data，故无需 LMA 拷贝）。 */
-#define APP_RAM_BASE   0x2001E000u
-#define APP_RAM_SIZE   0x2000u   /* 8K */
+#ifndef APP_RAM_BASE
+#define APP_RAM_BASE   0x20006000u
+#endif
+#ifndef APP_RAM_SIZE
+#define APP_RAM_SIZE   0x17C00u
+#endif
 
 int app_slot_load_app(void)
 {
