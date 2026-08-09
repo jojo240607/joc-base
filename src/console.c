@@ -33,6 +33,7 @@
 #include "rtos.h"
 #include "rtos/rtos_mpu.h"
 #include "common/gcov_dump.h"   /* §6.6 RTOSCOV：导出 gcov .gcda 帧（覆盖率构建） */
+#include "app_slot/app_slot.h"  /* APP_LOAD 命令：app_slot_load_app() 异步重拉起 */
 #include "console.h"
 
 /* IOXFER 异步演示完成回调：仅置标志，保持 ISR 安全。 */
@@ -159,6 +160,18 @@ void cmd_rust(app_ctx_t *c, const char *line)
     c->console->vtable->write(c->console, out, (size_t)n);
 }
 #endif
+
+/* APP_LOAD: 手动重新拉起 App 应用层（debug 用）。
+ * 允许在不复位板子的情况下重挂载 App —— App 拉起是异步的（独立 app_host
+ * 任务），故本命令立即返回，挂载进度看后续 [app_slot] 日志。 */
+static void cmd_appload(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    char out[64];
+    app_slot_load_app();
+    int n = snprintf(out, sizeof(out), "APP: reload requested (async host task)\r\n");
+    c->console->vtable->write(c->console, out, (size_t)n);
+}
 
 static void cmd_rtos(app_ctx_t *c, const char *line)
 {
@@ -570,6 +583,7 @@ static const cmd_entry_t g_cmds[] = {
 #ifdef RUST_APP_LIB
     { "RUST",     cmd_rust,     0 },
 #endif
+    { "APP_LOAD", cmd_appload,  0 },   /* 手动重新拉起 App（异步 app_host 任务） */
 };
 
 static void dispatch(app_ctx_t *c, const char *line)

@@ -57,13 +57,17 @@ if(RTOS_SELFTEST)
   set(SYS_HEAP_SIZE "0x1C00u")        # 7KB，开发版放 CCM .ccm_heap，覆盖 6124B 设备需求
   set(SYS_HEAP_SECTION ".ccm_heap")
 else()
-  # 发布版系统 .bss 约 35KB(实测 data+bss 合计)，App RAM 起点 0x20006000、长
-  # 0x17C00(约 95KB) 到 g_app_slot(0x2001DC00)。比原 32KB 提升约 3 倍。
-  # 静态堆置于主 SRAM .bss(0x20006000 之下仍有余量)，32KB 容纳全部设备 malloc。
-  # g_app_slot 保持 0x2001DC00 固定契约(与 Rust app.ld 一致，发布版经分区加载 App)。
+  # 发布版系统 .bss 实际延伸约到 0x2000CE08(__bss_end__,见 elf 符号表)。注意：
+  # irq_manager 的 g_irq[] 注册表是大数组，落在 .bss 中段(实测 VMA=0x20008374)，
+  # 早已越过 0x20006000。若 APP_RAM_ORIGIN 取 0x20006000,加载器清零 APP_RAM
+  # 会把 g_irq[] 及 g_app_loaded/g_app_entry 一并清零 -> 任何外设中断来时
+  # IRQ_CommonHandler 找不到 handler -> IRQ 风暴死循环(PC 卡 IRQ_CommonHandler)。
+  # 故发布版 APP_RAM 必须紧跟 __bss_end__ 之上,与系统 .bss 物理隔离。
+  # 取 0x2000D000(0x2000CE08 之上留 ~0x300 余量)到 g_app_slot(0x2001DC00),
+  # 长 0x10C00(约 67KB),飞控 App 仍充裕。
   set(APP_SLOT_ORIGIN "0x2001DC00")
-  set(APP_RAM_ORIGIN "0x20006000")
-  set(APP_RAM_LENGTH "0x17C00")  # 0x2001DC00 - 0x20006000 = 95KB
+  set(APP_RAM_ORIGIN "0x2000D000")
+  set(APP_RAM_LENGTH "0x10C00")  # 0x2001DC00 - 0x2000D000 = 67KB
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
   set(SYS_HEAP_SIZE "0x8000u")   # 32KB，发布版容纳全部设备 malloc
   set(SYS_HEAP_SECTION ".bss")

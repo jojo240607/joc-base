@@ -1,13 +1,16 @@
 /* Application composition glue: bind the generic `log` object to the board's
- * console UART so any module can emit level-filtered debug output. */
+ * console UART (direct write, serialized by the UART console path). */
 #include "log/app_log.h"
-#include "drv/uart.h"   /* uart_console_putc — the board debug-UART sink */
+#include "drv/uart.h"
 
-/* Sink: write the finished line to the console UART (same destination the
- * toolchain _write() uses for printf), adding CR before LF for terminals. */
+/* Sink: write the finished line straight to the console UART. The UART console
+ * path (uart_console_putc) owns the serial wire, so concurrent log_printf
+ * callers (any task, incl. the Rust app via dev_write) are serialized there
+ * and never interleave on the wire. */
 static void uart_log_sink(void *ctx, log_level_t level, const char *data, size_t len)
 {
-    (void)ctx; (void)level;
+    (void)ctx;
+    (void)level;
     for (size_t i = 0; i < len; i++) {
         if (data[i] == '\n') uart_console_putc('\r');
         uart_console_putc(data[i]);

@@ -103,6 +103,12 @@ static const uart_config_t g_uart0 = {
     .is_console = 1,
     .tx_signal  = "USART1_TX_PA9",        /* TX = PA9, AF7 */
     .rx_signal  = "USART1_RX_PA10",       /* RX = PA10, AF7 */
+    /* 控制台 TX 走 DMA(DMA2_Stream7 CH4),RX 走 DMA(DMA2_Stream5)。
+     * 注意：USART1_TX 与 USART6_TX 在 F4 上共享 DMA2_Stream7(仅 channel 不同),
+     * 但 DMA 流物理独享 —— 故 uart3(USART6) 放弃 TX DMA(改 IRQ TX),把
+     * DMA2_Stream7 让给本 uart0 控制台。Rust App 经 dev_write(uart0) 走
+     * uart_dma_write,必须依赖此 TX DMA 通道,否则 App 日志会全部静默丢弃。
+     * uart0 RX 用 DMA2_Stream5,无冲突。 */
     .dma_tx_req = DMA_REQ_USART1_TX,      /* TX -> DMA2_Stream7 CH4 */
     .dma_rx_req = DMA_REQ_USART1_RX,      /* RX -> DMA2_Stream5 CH4 */
     .engine     = STREAM_MODE_DMA,        /* RX engine: circular DMA */
@@ -136,21 +142,24 @@ static const uart_config_t g_uart2 = {
     .engine     = STREAM_MODE_DMA,
     .framing    = UART_FRAME_IDLE,
 };
-/* uart3: USART6 @ PC6(TX)/PC7(RX)，AF8，非控制台（飞控遥测下行）。TX->DMA2_Stream7 CH5，
- * RX->DMA2_Stream2 CH5。pwm1 已改用 TIM1_CH2_PA9，不再占用 PC6，与本 uart3 无冲突。 */
+/* uart3: USART6 @ PC6(TX)/PC7(RX)，AF8，非控制台（飞控遥测下行）。
+ * TX 放弃 DMA2_Stream7 CH5 —— 该流已被 uart0(USART1_TX CH4) 占用(F4 上
+ * USART1/USART6 的 TX 硬件都绑在 DMA2_Stream7,物理独享),故 uart3 TX 改走
+ * IRQ( uart_tx_blocking )。RX 也随 engine=IRQ 走每字节中断(RX 原 DMA2_Stream2
+ * 不再申请,无冲突)。pwm1 已改用 TIM1_CH2_PA9,不再占用 PC6,与本 uart3 无冲突。 */
 static const uart_config_t g_uart3 = {
     .name       = "uart3",
     .periph     = (void *)USART6,
     .baud       = 115200,
     .is_console = 0,
-    .tx_signal  = "USART6_TX_PC6",        /* TX = PC6, AF8 */
-    .rx_signal  = "USART6_RX_PC7",        /* RX = PC7, AF8 */
-    .dma_tx_req = DMA_REQ_USART6_TX,      /* TX -> DMA2_Stream7 CH5 */
-    .dma_rx_req = DMA_REQ_USART6_RX,      /* RX -> DMA2_Stream2 CH5 */
-    .engine     = STREAM_MODE_DMA,
-    .framing    = UART_FRAME_IDLE,
+    .tx_signal  = "USART6_TX",            /* TX = PC6, AF8 (USART6 has a single TX pad, no _PC6 suffix) */
+    .rx_signal  = "USART6_RX",            /* RX = PC7, AF8 */
+    .dma_tx_req = DMA_REQ_NONE,           /* TX -> IRQ (DMA2_Stream7 让给 uart0) */
+    .dma_rx_req = DMA_REQ_NONE,           /* RX -> IRQ (每字节中断) */
+    .engine     = STREAM_MODE_IRQ,
+    .framing    = UART_FRAME_NONE,        /* TX/RX 均 IRQ,无需 IDLE 帧判定 */
 };
-static const gpio_config_t g_led   = { "led",   "GPIOD_12", 1 }; /* D12, output */
+static const gpio_config_t g_led   = { "led",   "GPIOD_14", 1 }; /* D14 (Discovery LD5), output — PD12 让给 pwm3(TIM4_CH1) */
 /* 通用 GPIO 引脚，对外暴露给 Rust 应用层做任意数字 IO（经 device vtable 的
  * open/read/write/ioctl）。均为 Discovery 上空闲脚，避免与已占用脚冲突：
  *   PB0  -> 输出，默认 0
@@ -190,12 +199,13 @@ static const timer_config_t g_timer13 = { "timer13", (void *)TIM5, 84000000, 20 
 /* pwm0: CH1 of TIM3 (GP TIM, 84 MHz APB1). Output pin PA6 (AF2). */
 static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 400, 1,
                                       "TIM3_CH1_PA6", NULL, 0, 0, 0, 0 };
-/* pwm1: CH2 of TIM1 (ADVANCED TIM, 168 MHz APB2). Output pin PA9 (AF1).
- * 注意：原 TIM8_CH1_PC6 与 uart3(USART6_TX_PC6) 复用同一脚冲突，故改到 PA9。
- * pwm1 与 pwm2 共享 TIM1、同频 400 Hz，各自独立设 CCR，互不干扰（驱动对同 TIM
- * 重复 set_period/start 幂等）。TIM1 为高级定时器，需 BDTR.MOE=1，驱动已设置。 */
-static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM1, 168000000, 400, 2,
-                                      "TIM1_CH2_PA9", NULL, 0, 0, 0, 0 };
+/* pwm1: CH1 of TIM2 (GP TIM, 84 MHz APB1), 400 Hz INDEPENDENT.
+ * Output pin PA15 (AF1)。PA15 在 Discovery 上空闲（spi0 未配 NSS 脚，无其他
+ * 驱动占用），与 pwm0(TIM3)/pwm2(TIM1)/pwm3(TIM4) 分属四个独立 TIM，无同 TIM
+ * 频率耦合、无引脚冲突。注意：原方案 TIM1_CH2_PA9 与 uart0 控制台(USART1_TX_PA9)
+ * 冲突被 pinmux 拒绝，故改到 PA15。 */
+static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM2, 84000000, 400, 1,
+                                      "TIM2_CH1_PA15", NULL, 0, 0, 0, 0 };
 /* pwm2: CH1 of TIM1 (ADVANCED TIM, 168 MHz APB2), 400 Hz INDEPENDENT.
  * Output pin PA8 (AF1)。PA8 亦为 i2c2 SCL，二者不会同时 open。 */
 static const pwm_config_t g_pwm2 = { "pwm2", (void *)TIM1, 168000000, 400, 1,

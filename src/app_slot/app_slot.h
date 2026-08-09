@@ -113,12 +113,24 @@ typedef struct app_header {
 } app_header_t;
 
 /* 系统侧：应用分区自举。
- *  1) 读 APP_HEADER_ADDR，校验 magic + abi_version；
- *  2) 清零 App 专用 RAM（_sappbss.._eappbss，见链接脚本 app_bss 段）；
- *  3) 设 g_app_slot.app_start = header->entry，调之。
+ *  1) 读 APP_HEADER_ADDR，校验 magic + abi_version（轨 B）；轨 A 直接用
+ *     rust_app_start 链接器符号；
+ *  2) 清零 App 专用 RAM（_sappbss.._eappbss，见链接脚本 app_bss 段），清零期间
+ *     关中断（irq_lock）防止 IRQ 改写正在清零的内存；
+ *  3) 创建一个【独立的 app_host RTOS 任务】，在其中调用 App 入口；本函数立即
+ *     返回，console 主线程不被 App 初始化阻塞（架构关键解耦）。
  * 若 header 无效（未烧 App / 版本不符），打日志返回、不挂载（纯 C 固件行为）。
  * 开发期单 ELF 构建：若 RUST_APP_LIB 且 rust_app_start 由链接器解析，
- * 由调用方(task_app_main.c)优先走链接器符号，故本函数仅用于阶段 2 部署镜像。 */
+ * 由调用方(task_app_main.c)优先走链接器符号，故本函数仅用于阶段 2 部署镜像。
+ *
+ * 重构要点（轨 A/B 统一）：App 入口绝不在 RTOS 主线程里同步调用，而是交给独立
+ * 任务 app_host_task_entry 跑，这样即便 App 初始化耗时/卡顿，console 仍响应；
+ * App 内部的业务任务（flyctrl 等）再经 g_app_slot 在自己的 RTOS 任务里跑。 */
 int app_slot_load_app(void);
+
+/* 系统侧：app_host 任务——独立承载 App 入口的运行体（不直接同步调用 app_start）。 */
+void app_host_task_entry(void *arg);
+/* 重入保护：非 0 表示 app_host 已拉起，避免重复 app_slot_load_app 创建多实例。 */
+extern volatile int g_app_loaded;
 
 #endif /* APP_SLOT_H */

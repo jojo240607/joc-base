@@ -24,6 +24,10 @@ static int app_slot_dev_read(device *self, void *buf, size_t len) {
     return self ? self->vtable->read(self, buf, len) : -1;
 }
 static int app_slot_dev_write(device *self, const void *buf, size_t len) {
+    /* The Rust app emits its logs / telemetry through dev_write(uart0). Route
+     * it to the UART vtable write (stream path). The UART console path owns the
+     * serial wire, so output is serialized there; the DMA-TX contention that
+     * once garbled interleaved blocks is fixed by the tx_idle lock in uart.c. */
     return self ? self->vtable->write(self, buf, len) : -1;
 }
 static int app_slot_dev_ioctl(device *self, int cmd, void *arg) {

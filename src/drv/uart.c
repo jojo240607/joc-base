@@ -564,6 +564,15 @@ static int uart_dma_write(uart *u, const char *s, size_t len)
     if (!u->dma_dev || !u->dma_tx) return -1;
     uart_dma_t *e = (uart_dma_t *)u->eng;
     if (!e) return -1;
+    /* Serialize the whole "copy-into-bounce -> program DMA -> wait TC" sequence
+     * on the shared line mutex. uart0 (the console) is shared by the system
+     * printf path AND the Rust app layer (dev_write -> uart_stream_write ->
+     * uart_dma_write). Without this guard, two tasks memcpy into the single
+     * e->dma_bounce while a prior DMA is still in flight, so the DMA engine
+     * keeps streaming the overwritten bytes -> on-wire repeats (e.g. "RRRR").
+     * IRQ TX already serializes via the same ctl.tx_idle semaphore, so DMA TX
+     * must share it to stay mutually exclusive with the IRQ path too. */
+    osal_sem_wait(&e->ctl.tx_idle);
     void *dr = uart_hal_get_dr_addr(u->hal);
     const uint8_t *src = (const uint8_t *)s;
     uint8_t *tmp = NULL;
@@ -574,7 +583,7 @@ static int uart_dma_write(uart *u, const char *s, size_t len)
         /* oversize: heap is in main SRAM, so a malloc'd temp is DMA-accessible.
          * uart_dma_write runs from thread context (never an ISR), so malloc is OK. */
         tmp = (uint8_t *)malloc(len);
-        if (!tmp) return -1;
+        if (!tmp) { osal_sem_give(&e->ctl.tx_idle); return -1; }
         memcpy(tmp, s, len);
         src = tmp;
     }
@@ -585,6 +594,7 @@ static int uart_dma_write(uart *u, const char *s, size_t len)
     u->dma_dev->fun->wait_done(u->dma_dev, u->dma_tx, 0);
     uart_hal_disable_tx_dma(u->hal);
     if (tmp) free(tmp);
+    osal_sem_give(&e->ctl.tx_idle);
     return (int)len;
 }
 
