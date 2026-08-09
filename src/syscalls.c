@@ -76,7 +76,7 @@ int _fstat(int file, struct stat *st) { (void)file; st->st_mode = S_IFCHR; retur
  * SYS_HEAP_SIZE / SYS_HEAP_SECTION 由 CMake 注入。 */
 #ifdef SYS_STATIC_HEAP
 #ifndef SYS_HEAP_SIZE
-#define SYS_HEAP_SIZE 0x8000u
+#define SYS_HEAP_SIZE 0x2000u
 #endif
 #ifndef SYS_HEAP_SECTION
 #define SYS_HEAP_SECTION .bss

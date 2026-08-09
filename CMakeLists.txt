@@ -69,7 +69,7 @@ else()
   set(APP_RAM_ORIGIN "0x2000D000")
   set(APP_RAM_LENGTH "0x10C00")  # 0x2001DC00 - 0x2000D000 = 67KB
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
-  set(SYS_HEAP_SIZE "0x8000u")   # 32KB，发布版容纳全部设备 malloc
+  set(SYS_HEAP_SIZE "0x2000u")   # 8KB：发布版容纳全部设备 malloc（实测峰测 57 设备累计 6124B，留 ~2KB 余量）
   set(SYS_HEAP_SECTION ".bss")
 endif()
 
