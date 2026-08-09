@@ -35,38 +35,47 @@ option(RTOS_SCHED_TRACE "Build with scheduler-switch trace ring buffer (RTOSTRAC
 # CMake 把同一组值经 configure_file 注入链接脚本，并经编译宏注入 app_slot_boot.c，
 # 保证系统链接器、系统加载器、Rust app.ld 三处 App RAM 边界严格一致。
 if(RTOS_SELFTEST)
-  # 开发版系统 .bss 约 118KB(含大量自测任务栈)，终点约 0x2001CE48。
-  # App RAM 起点须在其之上，留余量至 0x2001D000，长 0xC00(3KB) 到
-  # g_app_slot(0x2001DC00)。开发版不挂载真 App，仅保证链接不重叠。
-  set(APP_RAM_ORIGIN "0x2001D000")
-  set(APP_RAM_LENGTH "0xC00")   # 3KB，开发版仅保链接、不重叠
+  # 开发版系统 .bss 含大量自测任务栈约 118KB，已占满近全部主 SRAM(到 ~0x2001ed1f)，
+  # 无任何空间再放静态堆。故开发版静态堆置于 CCMRAM(.ccm_bss, SYS_HEAP_SECTION)：
+  # CCM 仅被 RTOS 任务栈/TCB 占 ~56KB/63KB，尚余 ~7KB；驱动对象(usb/usb_hal 等)
+  # 为纯软件结构体、不含 DMA 目标缓冲(USB OTG 用外设内部 FIFO)，放 CCM 安全。
+  # App RAM 仅作链接占位(开发版不挂载真 App)，须置于 .bss 末端(0x2001ed1f)之上。
+  # 主 SRAM 顶部仅余 ~4.7KB，故在此区间依次排布(均需高于 .bss 以避免 VMA 重叠)：
+  #   APP_SLOT_RAM @0x2001F000(1KB)  -> g_app_slot(开发版单 ELF 内解析，无需与
+  #     独立 app.ld 的 0x2001DC00 契约一致，故可抬离 .bss)
+  #   APP_RAM       @0x2001F400(3KB)  -> 开发版不加载真 App，仅占位
+  set(APP_SLOT_ORIGIN "0x2001F000")
+  set(APP_RAM_ORIGIN "0x2001F400")
+  set(APP_RAM_LENGTH "0xC00")   # 3KB 桩，开发版不加载真 App
+  set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
+  set(SYS_HEAP_SIZE "0x1800u")        # 6KB，开发版放 CCM，容纳全部设备 malloc
+  set(SYS_HEAP_SECTION ".ccm_bss")
 else()
-  # 发布版系统 .bss 约 35KB(实测 data+bss 合计，终点约 0x20005018) + 系统堆 4KB。
-  # App RAM 起点须在其之上，留余量至 0x20006000，长 0x17C00(约 95KB) 到
-  # g_app_slot(0x2001DC00)。比原 32KB 提升约 3 倍，给 App 层充足空间。
+  # 发布版系统 .bss 约 35KB(实测 data+bss 合计)，App RAM 起点 0x20006000、长
+  # 0x17C00(约 95KB) 到 g_app_slot(0x2001DC00)。比原 32KB 提升约 3 倍。
+  # 静态堆置于主 SRAM .bss(0x20006000 之下仍有余量)，32KB 容纳全部设备 malloc。
+  # g_app_slot 保持 0x2001DC00 固定契约(与 Rust app.ld 一致，发布版经分区加载 App)。
+  set(APP_SLOT_ORIGIN "0x2001DC00")
   set(APP_RAM_ORIGIN "0x20006000")
   set(APP_RAM_LENGTH "0x17C00")  # 0x2001DC00 - 0x20006000 = 95KB
-endif()
-
-# 独立静态系统堆（仅发布版启用 SYS_STATIC_HEAP）：
-#   - 发布版 32KB 静态堆(g_sys_heap)：容纳 board_init 全部 57 设备 malloc，
-#     根治原链接器堆(仅 4.6KB)耗尽导致靠后设备(如 usb0)注册失败。
-#   - 开发版不定义 SYS_STATIC_HEAP，保持原链接器堆(_end..__HeapLimit)，且不引入
-#     g_sys_heap(否则 .bss 会越过 g_app_slot 固定地址 0x2001DC00)。开发版不挂载
-#     真 App、设备注册不全可接受。
-if(RTOS_SELFTEST)
-  set(SYS_STATIC_HEAP_DEF "")
-  set(SYS_HEAP_SIZE "0x8000u")   # 占位，开发版不启用静态堆
-else()
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
   set(SYS_HEAP_SIZE "0x8000u")   # 32KB，发布版容纳全部设备 malloc
+  set(SYS_HEAP_SECTION ".bss")
 endif()
+
+# 独立静态系统堆(SYS_STATIC_HEAP，开发版/发布版均启用)：根治原链接器堆
+# (开发版 ~440B、发布版 ~4.6KB) 耗尽导致靠后设备(如 usb0 第 54 个)注册失败
+# (usb0: NOT REGISTERED)。g_sys_heap 段由 SYS_HEAP_SECTION 决定：
+#   - 发布版 .bss(主 SRAM)：落 0x20004e08..0x2000CE08(低于 APP_RAM 0x20006000)
+#   - 开发版 .ccm_bss(CCM) ：落 0x1000xxxx，避开已满的主 SRAM
+# 原链接器堆路径(_end..__HeapLimit)仅在 SYS_STATIC_HEAP 未定义时作为回退。
 
 configure_file(
   ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTX_FLASH.ld.in
   ${CMAKE_BINARY_DIR}/linker/STM32F407VGTX_FLASH.ld
   @ONLY
 )
+# 注：链接脚本模板经 @APP_RAM_ORIGIN@ / @APP_RAM_LENGTH@ / @APP_SLOT_ORIGIN@ 注入。
 
 add_executable(${PROJECT_NAME}.elf
     # startup MUST come early so its sections are at the base of .text.
@@ -272,6 +281,7 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
     APP_RAM_BASE=${APP_RAM_ORIGIN}
     APP_RAM_SIZE=${APP_RAM_LENGTH}
     SYS_HEAP_SIZE=${SYS_HEAP_SIZE}
+    SYS_HEAP_SECTION=\"${SYS_HEAP_SECTION}\"
     ${SYS_STATIC_HEAP_DEF}
 )
 

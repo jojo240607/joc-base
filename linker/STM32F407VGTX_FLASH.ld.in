@@ -36,7 +36,15 @@ MEMORY
    * PROVIDE(g_app_slot=固定地址) 引用同一地址，故系统升级/App 重烧都不改变该地址。
    * 置于主 SRAM 顶端 1K，紧邻 App RAM 之上、不重叠。该地址是跨镜像契约，
    * 与 Rust app.ld 的 PROVIDE(g_app_slot=0x2001DC00) 必须一致。 */
-  APP_SLOT_RAM (xrw): ORIGIN = 0x2001DC00, LENGTH = 1K     /* g_app_slot 实例固定落此，约 100B 足够 */
+  /* App 服务表 g_app_slot 固定 RAM 地址（方案 Y 解耦关键）：App 独立镜像经
+   * PROVIDE(g_app_slot=固定地址) 引用同一地址，故系统升级/App 重烧都不改变该地址。
+   * 与 Rust app.ld 的 PROVIDE(g_app_slot=0x2001DC00) 必须一致(发布版)。
+   * 开发版(RTOS_SELFTEST=ON)系统 .bss 已占满近全部主 SRAM(到 ~0x2001ed1f)，会与
+   * 0x2001DC00 固定地址的 APP_SLOT_RAM 段 VMA 重叠(ld 报致命 overlap)。开发版是
+   * 单 ELF 把 Rust 链入、不经分区加载，g_app_slot 地址在 ELF 内解析即可(无需与
+   * 独立 app.ld 的 0x2001DC00 一致)，故开发版把 APP_SLOT_RAM 抬到主 SRAM 顶部
+   * (0x2001F000) 避开 .bss；发布版保持 0x2001DC00 契约。 */
+  APP_SLOT_RAM (xrw): ORIGIN = @APP_SLOT_ORIGIN@, LENGTH = 1K
 }
 
 /* 堆上界：系统堆止于 APP_RAM 起点（App RAM 之下、系统区之上）。主栈在 CCM，

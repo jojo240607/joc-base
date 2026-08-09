@@ -18,6 +18,11 @@
  * App 入口无参、经 g_app_slot 服务表拿到所有能力（方案 Y 解耦）。 */
 #ifdef RUST_APP_LIB
 #include "rust_app.h"   /* int rust_app_start(void); app/rust 已在 RUST_APP_LIB include 路径 */
+
+/* 兜底实现：正常情况下 rust_ticks() 由链入的 libapp.a(Rust 应用层) 提供。
+ * 当前 joc-app-rust 尚未落地该符号时，此处提供定义以保链接/烧录/启动；
+ * Rust 侧补齐后本兜底应删去，避免重复符号。它不改变设备注册等启动行为。 */
+uint32_t rust_ticks(void) { return 0u; }
 #endif
 
 /* 主栈统一 8K：BIST/命令循环的深层调用需要。覆盖率构建曾为腾 CCM 砍到 2K，导致栈溢出、

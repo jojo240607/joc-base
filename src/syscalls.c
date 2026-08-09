@@ -60,22 +60,28 @@ int _close(int file)        { (void)file; return -1; }
 int _fstat(int file, struct stat *st) { (void)file; st->st_mode = S_IFCHR; return 0; }
 #endif
 
-/* 独立静态系统堆（仅发布版 SYS_STATIC_HEAP 定义时启用）：
+/* 独立静态系统堆(SYS_STATIC_HEAP 定义时启用，开发版与发布版均启用)：
  * board_init() 要为全部板级设备(当前 57 个)逐一 malloc 驱动结构体 + HAL 句柄 +
- * ring 缓冲，累计远超默认链接器堆(_end..__HeapLimit, 发布版仅约 4.6KB)。
- * 堆耗尽会让靠后设备(如第 54 个 usb0)的 malloc 返回 NULL、device_manager 静默
- * 跳过注册，表现为 "usb0: NOT REGISTERED"。
- * 把系统堆搬进本静态数组(置于 .bss，发布版 .bss 区到 0x20006000 仍有余量)，
- * 与 App RAM(0x20006000 起)物理隔离，既保住 App 层大块内存，又根治堆耗尽。
- * 开发版(SELFTEST=ON)系统 .bss 已近 0x2001DC00(g_app_slot 固定地址)，无空间放
- * 静态堆，故保持原链接器堆(_end..__HeapLimit, 约 3.4KB)——开发版不挂载真 App、
- * 设备注册不全可接受，且不引入 g_sys_heap 避免 .bss 越过 g_app_slot。
- * SYS_HEAP_SIZE 由 CMake 注入(发布版 32KB)。 */
+ * ring 缓冲，累计远超默认链接器堆(_end..__HeapLimit)。堆耗尽会让靠后设备
+ * (如第 54 个 usb0)的 malloc 返回 NULL、device_manager 静默跳过注册，表现为
+ * "usb0: NOT REGISTERED"。把系统堆搬进本静态数组，根治堆耗尽。
+ *
+ * 放置位置按构建分流(由 CMake 经 SYS_HEAP_SECTION 注入段名)：
+ *   - 发布版(RTOS_SELFTEST=OFF)：主 SRAM .bss(到 0x20006000 仍有余量)，32KB。
+ *   - 开发版(RTOS_SELFTEST=ON)：系统 .bss 已占满近全部主 SRAM(约 124KB/128KB)，
+ *     无空间再放静态堆；而 CCMRAM(0x10000000)仅被 RTOS 任务栈/TCB 占用约 56KB/
+ *     63KB，尚余 ~7KB。驱动对象(usb/usb_hal 等)为纯软件结构体、不含 DMA 目标缓冲
+ *     (USB OTG 用外设内部 FIFO，不搬系统 RAM)，放 CCM 安全。故开发版静态堆置于
+ *     CCM(.ccm_bss)，与 App RAM(0x20006000 起)及主 SRAM .bss 均物理隔离。
+ * SYS_HEAP_SIZE / SYS_HEAP_SECTION 由 CMake 注入。 */
 #ifdef SYS_STATIC_HEAP
 #ifndef SYS_HEAP_SIZE
 #define SYS_HEAP_SIZE 0x8000u
 #endif
-static uint8_t g_sys_heap[SYS_HEAP_SIZE] __attribute__((aligned(8)));
+#ifndef SYS_HEAP_SECTION
+#define SYS_HEAP_SECTION .bss
+#endif
+static uint8_t g_sys_heap[SYS_HEAP_SIZE] __attribute__((section(SYS_HEAP_SECTION))) __attribute__((aligned(8)));
 
 void *_sbrk(ptrdiff_t incr)
 {
