@@ -277,6 +277,20 @@ SECTIONS
     __ccm_bss_end = .;
   } >CCMRAM
 
+  /* 系统静态堆(g_sys_heap，SYS_STATIC_HEAP 定义时)：开发版放 CCM 专用段，
+   * 紧邻 .ccm_bss(RTOS 任务栈/TCB)之后连续排布，与 MSP 主栈(CCM 顶部)物理隔离。
+   * 尺寸由 @SYS_HEAP_SIZE_LD@ 注入(开发版 16KB 充裕容纳 57 设备累计 malloc；
+   * 发布版不经此段，g_sys_heap 落在主 SRAM .bss)。 */
+  .ccm_heap (NOLOAD) :
+  {
+    . = ALIGN(8);
+    __ccm_heap_start = .;
+    KEEP(*(.ccm_heap))
+    KEEP(*(.ccm_heap.*))
+    . = ALIGN(8);
+    __ccm_heap_end = .;
+  } >CCMRAM
+
   /DISCARD/ :
   {
     *(.note .note.*)

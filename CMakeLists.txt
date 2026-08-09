@@ -48,8 +48,14 @@ if(RTOS_SELFTEST)
   set(APP_RAM_ORIGIN "0x2001F400")
   set(APP_RAM_LENGTH "0xC00")   # 3KB 桩，开发版不加载真 App
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
-  set(SYS_HEAP_SIZE "0x1800u")        # 6KB，开发版放 CCM，容纳全部设备 malloc
-  set(SYS_HEAP_SECTION ".ccm_bss")
+  # 开发版 57 个板级设备累计 malloc 远超 6KB（实测 6KB 仍不够，usb0 第 54 个
+  # 注册失败 NOT REGISTERED）。CCM 实际仅被 RTOS 任务栈/TCB 占 ~23KB/63KB，
+  # 余 ~37KB；故开发版静态堆放 CCM 高址专用段 .ccm_heap(锚定 CCM 顶部，紧邻
+  # MSP 栈之下，绝不侵占低址 RTOS 对象)，尺寸 32KB 充裕容纳全部设备 malloc。
+  # 实测启动期 _sbrk 峰测 peak=6124 B(57 设备累计 malloc)；CCM 仅余 ~7KB
+  # (RTOS .ccm_bss 占 56KB/63KB)，故取最大可容纳 0x1C00(7168B)，留 ~1KB 运行期余量。
+  set(SYS_HEAP_SIZE "0x1C00u")        # 7KB，开发版放 CCM .ccm_heap，覆盖 6124B 设备需求
+  set(SYS_HEAP_SECTION ".ccm_heap")
 else()
   # 发布版系统 .bss 约 35KB(实测 data+bss 合计)，App RAM 起点 0x20006000、长
   # 0x17C00(约 95KB) 到 g_app_slot(0x2001DC00)。比原 32KB 提升约 3 倍。
@@ -70,12 +76,15 @@ endif()
 #   - 开发版 .ccm_bss(CCM) ：落 0x1000xxxx，避开已满的主 SRAM
 # 原链接器堆路径(_end..__HeapLimit)仅在 SYS_STATIC_HEAP 未定义时作为回退。
 
+# 去掉 SYS_HEAP_SIZE 末尾的 'u'（C 字面量后缀），生成 linker 可用的纯十六进制数值，
+# 供链接脚本 .ccm_heap 段尺寸 @SYS_HEAP_SIZE_LD@ 注入使用。必须在 configure_file 之前。
+string(REGEX REPLACE "u$" "" SYS_HEAP_SIZE_LD "${SYS_HEAP_SIZE}")
+
 configure_file(
   ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTX_FLASH.ld.in
   ${CMAKE_BINARY_DIR}/linker/STM32F407VGTX_FLASH.ld
   @ONLY
 )
-# 注：链接脚本模板经 @APP_RAM_ORIGIN@ / @APP_RAM_LENGTH@ / @APP_SLOT_ORIGIN@ 注入。
 
 add_executable(${PROJECT_NAME}.elf
     # startup MUST come early so its sections are at the base of .text.
