@@ -60,6 +60,38 @@ int _close(int file)        { (void)file; return -1; }
 int _fstat(int file, struct stat *st) { (void)file; st->st_mode = S_IFCHR; return 0; }
 #endif
 
+/* 独立静态系统堆（仅发布版 SYS_STATIC_HEAP 定义时启用）：
+ * board_init() 要为全部板级设备(当前 57 个)逐一 malloc 驱动结构体 + HAL 句柄 +
+ * ring 缓冲，累计远超默认链接器堆(_end..__HeapLimit, 发布版仅约 4.6KB)。
+ * 堆耗尽会让靠后设备(如第 54 个 usb0)的 malloc 返回 NULL、device_manager 静默
+ * 跳过注册，表现为 "usb0: NOT REGISTERED"。
+ * 把系统堆搬进本静态数组(置于 .bss，发布版 .bss 区到 0x20006000 仍有余量)，
+ * 与 App RAM(0x20006000 起)物理隔离，既保住 App 层大块内存，又根治堆耗尽。
+ * 开发版(SELFTEST=ON)系统 .bss 已近 0x2001DC00(g_app_slot 固定地址)，无空间放
+ * 静态堆，故保持原链接器堆(_end..__HeapLimit, 约 3.4KB)——开发版不挂载真 App、
+ * 设备注册不全可接受，且不引入 g_sys_heap 避免 .bss 越过 g_app_slot。
+ * SYS_HEAP_SIZE 由 CMake 注入(发布版 32KB)。 */
+#ifdef SYS_STATIC_HEAP
+#ifndef SYS_HEAP_SIZE
+#define SYS_HEAP_SIZE 0x8000u
+#endif
+static uint8_t g_sys_heap[SYS_HEAP_SIZE] __attribute__((aligned(8)));
+
+void *_sbrk(ptrdiff_t incr)
+{
+    static char *heap = (char *)g_sys_heap;
+    char *prev = heap;
+    char *limit = (char *)g_sys_heap + sizeof(g_sys_heap);
+    /* 越界保护：堆不得超过 g_sys_heap 上界，否则返回 (void *)-1
+     * 让 malloc 失败而非吐出未映射区的野指针(曾导致 coverage 构建启动总线错误)。 */
+    if (incr > 0 && (heap + incr) > limit) {
+        errno = ENOMEM;
+        return (void *)-1;
+    }
+    heap += incr;
+    return (void *)prev;
+}
+#else
 void *_sbrk(ptrdiff_t incr)
 {
     extern char _end;
@@ -75,6 +107,7 @@ void *_sbrk(ptrdiff_t incr)
     heap += incr;
     return (void *)prev;
 }
+#endif
 
 int _isatty(int file)       { (void)file; return (file < 3) ? 1 : 0; }
 int _lseek(int file, int ptr, int dir) { (void)file; (void)ptr; (void)dir; return 0; }

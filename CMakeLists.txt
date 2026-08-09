@@ -47,6 +47,21 @@ else()
   set(APP_RAM_ORIGIN "0x20006000")
   set(APP_RAM_LENGTH "0x17C00")  # 0x2001DC00 - 0x20006000 = 95KB
 endif()
+
+# 独立静态系统堆（仅发布版启用 SYS_STATIC_HEAP）：
+#   - 发布版 32KB 静态堆(g_sys_heap)：容纳 board_init 全部 57 设备 malloc，
+#     根治原链接器堆(仅 4.6KB)耗尽导致靠后设备(如 usb0)注册失败。
+#   - 开发版不定义 SYS_STATIC_HEAP，保持原链接器堆(_end..__HeapLimit)，且不引入
+#     g_sys_heap(否则 .bss 会越过 g_app_slot 固定地址 0x2001DC00)。开发版不挂载
+#     真 App、设备注册不全可接受。
+if(RTOS_SELFTEST)
+  set(SYS_STATIC_HEAP_DEF "")
+  set(SYS_HEAP_SIZE "0x8000u")   # 占位，开发版不启用静态堆
+else()
+  set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
+  set(SYS_HEAP_SIZE "0x8000u")   # 32KB，发布版容纳全部设备 malloc
+endif()
+
 configure_file(
   ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTX_FLASH.ld.in
   ${CMAKE_BINARY_DIR}/linker/STM32F407VGTX_FLASH.ld
@@ -256,6 +271,8 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
     HSE_VALUE=${HSE_VALUE}UL
     APP_RAM_BASE=${APP_RAM_ORIGIN}
     APP_RAM_SIZE=${APP_RAM_LENGTH}
+    SYS_HEAP_SIZE=${SYS_HEAP_SIZE}
+    ${SYS_STATIC_HEAP_DEF}
 )
 
 target_compile_options(${PROJECT_NAME}.elf PRIVATE
