@@ -223,6 +223,20 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM
 
+  /* App 运行期 .bss 专用 RAM 块（方案 Y 轻量版）。App 独立镜像的 .bss 经 Rust
+   * 侧 app.ld 收集进此段（>APP_RAM，NOLOAD）。系统加载器 app_slot_boot.c 在
+   * 挂载前按 APP_RAM_BASE/SIZE（由 CMake 注入，与下方 ORIGIN 一致）清零。
+   * 常态单 ELF 构建该输入段为空，不占空间。 */
+  .app_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __app_ram_start = .;
+    *(.app_bss)
+    *(.app_bss.*)
+    . = ALIGN(4);
+    __app_ram_end = .;
+  } >APP_RAM
+
   /* App 服务表（方案 Y 轻量版）：g_app_slot 实例落固定 RAM（APP_SLOT_RAM）。
    * 系统在 app_slot_init() 里运行时填充函数指针 + 头部版本。App 独立镜像经
    * PROVIDE(g_app_slot=0x2001DC00) 引用同一地址，只填 irq_reg[] 注册位，
@@ -248,20 +262,6 @@ SECTIONS
     . = . + _Min_Heap_Size;
     . = ALIGN(8);
   } >RAM
-
-  /* App 运行期 .bss 专用 RAM 块（方案 Y 轻量版）。App 独立镜像的 .bss 经 Rust
-   * 侧 app.ld 收集进此段（>APP_RAM，NOLOAD）。系统加载器 app_slot_boot.c 在
-   * 挂载前按 APP_RAM_BASE/SIZE（由 CMake 注入，与下方 ORIGIN 一致）清零。
-   * 常态单 ELF 构建该输入段为空，不占空间。 */
-  .app_bss (NOLOAD) :
-  {
-    . = ALIGN(4);
-    __app_ram_start = .;
-    *(.app_bss)
-    *(.app_bss.*)
-    . = ALIGN(4);
-    __app_ram_end = .;
-  } >APP_RAM
 
   /* CCM BSS：RTOS 任务栈 + TCB 池等“仅 CPU 访问、永不被 DMA 触碰”的对象。
    * 这些 static 数组本在 .bss，显式搬进 CCM 释放主 SRAM 给 DMA 缓冲。
