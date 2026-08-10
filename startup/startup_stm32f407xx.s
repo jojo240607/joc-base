@@ -94,6 +94,37 @@ LoopFillZerobss:
   cmp r2, r4
   bcc FillZerobss
 
+/* Copy the App (.rust_data) LMA to VMA (APP_RAM, same mechanism as .data). */
+  ldr r0, =__rust_data_start
+  ldr r1, =__rust_data_end
+  ldr r2, =__rust_data_lma
+  movs r3, #0
+  b LoopCopyRustDataInit
+
+CopyRustDataInit:
+  ldr r4, [r2, r3]
+  str r4, [r0, r3]
+  adds r3, r3, #4
+
+LoopCopyRustDataInit:
+  adds r4, r0, r3
+  cmp r4, r1
+  bcc CopyRustDataInit
+
+/* Zero fill the App (.rust_bss) segment (APP_RAM). */
+  ldr r2, =__rust_bss_start
+  ldr r4, =__rust_bss_end
+  movs r3, #0
+  b LoopFillRustBss
+
+FillRustBss:
+  str  r3, [r2]
+  adds r2, r2, #4
+
+LoopFillRustBss:
+  cmp r2, r4
+  bcc FillRustBss
+
 /* Zero fill the CCM bss segment (RTOS task stacks + TCB pool, in CCMRAM). */
   ldr r2, =__ccm_bss_start
   ldr r4, =__ccm_bss_end

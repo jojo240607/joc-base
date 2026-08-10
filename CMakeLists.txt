@@ -43,20 +43,21 @@ if(RTOS_SELFTEST)
   # 主 SRAM 顶部仅余 ~4.7KB，故在此区间依次排布(均需高于 .bss 以避免 VMA 重叠)：
   #   APP_SLOT_RAM @0x2001F000(1KB)  -> g_app_slot(开发版单 ELF 内解析，无需与
   #     独立 app.ld 的 0x2001DC00 契约一致，故可抬离 .bss)
-  #   APP_RAM       @0x2001F400(3KB)  -> 开发版不加载真 App，仅占位
+  #   APP_RAM       @0x2001F400(3KB)  -> 开发版主 SRAM 已被 RTOS 自测占满，APP_RAM
+  #     区与 .bss 重叠，故 Rust 全局经 .app_data/.app_bss 回归主 SRAM(.bss 后续段，
+  #     APP_RAM_MEM=RAM)，APP_RAM 区保持空桩（仅 g_app_loaded 等系统变量占位）
   set(APP_SLOT_ORIGIN "0x2001F000")
   set(APP_RAM_ORIGIN "0x2001F400")
-  set(APP_RAM_LENGTH "0xC00")   # 3KB 桩，开发版不加载真 App
+  set(APP_RAM_LENGTH "0xC00")   # 3KB 桩，开发版不加载真 App 到 APP_RAM
+  set(APP_RAM_MEM "RAM")        # 开发版 Rust 全局回归主 SRAM（避免与 .bss 重叠）
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
-  # 开发版 57 个板级设备累计 malloc 远超 6KB（实测 6KB 仍不够，usb0 第 54 个
-  # 注册失败 NOT REGISTERED）。CCM 实际仅被 RTOS 任务栈/TCB 占 ~23KB/63KB，
-  # 余 ~37KB；故开发版静态堆放 CCM 高址专用段 .ccm_heap(锚定 CCM 顶部，紧邻
-  # MSP 栈之下，绝不侵占低址 RTOS 对象)，尺寸 32KB 充裕容纳全部设备 malloc。
-  # 实测启动期 _sbrk 峰测 peak=6124 B(57 设备累计 malloc)；CCM 仅余 ~7KB
-  # (RTOS .ccm_bss 占 56KB/63KB)，故取最大可容纳 0x1C00(7168B)，留 ~1KB 运行期余量。
-  set(SYS_HEAP_SIZE "0x1C00u")        # 7KB，开发版放 CCM .ccm_heap，覆盖 6124B 设备需求
-  set(SYS_HEAP_SECTION ".ccm_heap")
-  # 开发版 CCM 已 ~56KB(自测任务栈)接近 63KB 上限，故可搬 CCM 的 RTOS 管理表
+  # 开发版 CCM 已被 RTOS 自测任务栈/TCB 占满(~60KB ccm_bss)，静态堆改放主 SRAM .bss
+  # (7KB 覆盖实测峰测 6124B 设备 malloc 需求)。开发版单 ELF 不链 Rust 飞控(主 SRAM
+  # 已 99% 满，含 Rust 8KB 必 region overflow)，飞控验证走轨 B 双分区(app.bin 独立，
+  # 不占系统主 SRAM/CCM)。故开发版主 SRAM 余量充裕容纳 7KB 静态堆。
+  set(SYS_HEAP_SIZE "0x1C00u")        # 7KB，开发版放主 SRAM .bss，覆盖 6124B 设备需求
+  set(SYS_HEAP_SECTION ".bss")
+  # 开发版 CCM 已 ~60KB(自测任务栈)逼近 63KB 上限，故可搬 CCM 的 RTOS 管理表
   # 仍留主 SRAM(.bss)，绝不挤占 CCM（避免链接 region overflow）。
   set(RTOS_CCM_DATA_SECTION ".bss")
 else()
@@ -70,6 +71,7 @@ else()
   set(APP_SLOT_ORIGIN "0x2001DC00")
   set(APP_RAM_ORIGIN "0x20004000")
   set(APP_RAM_LENGTH "0x19C00")  # 0x2001DC00 - 0x20004000 = 103KB（RTOS 管理表搬入 CCM 后主 SRAM .bss 进一步收缩）
+  set(APP_RAM_MEM "APP_RAM")     # 发布版 Rust 全局搬进 APP_RAM，释放主 SRAM 系统堆
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
   set(SYS_HEAP_SIZE "0x2000u")   # 8KB：发布版容纳全部设备 malloc（实测峰测 57 设备累计 6124B，留 ~2KB 余量）
   set(SYS_HEAP_SECTION ".bss")
@@ -330,8 +332,10 @@ target_link_options(${PROJECT_NAME}.elf PRIVATE
 #   cmake -DRUST_APP_LIB=/abs/path/to/joc-app-rust/.../libapp.a ..
 # 不指定 RUST_APP_LIB 则纯 C 固件（无 Rust 任务），保持兼容。
 # 覆盖率(COVERAGE)下不链接 Rust（避免与 --coverage 冲突）。
+# 开发版(RTOS_SELFTEST=ON)主 SRAM 已 99% 满，含 Rust 8KB App 必 region overflow，
+# 故开发版强制跳过 Rust 链接（飞控验证走轨 B 双分区，不占系统主 SRAM/CCM）。
 # Rust 入口符号(rust_task_entry/rust_ticks/rust_wait_once)经 rust_app.h 引用。
-if(RUST_APP_LIB AND NOT COVERAGE)
+if(RUST_APP_LIB AND NOT COVERAGE AND NOT RTOS_SELFTEST)
   if(NOT EXISTS "${RUST_APP_LIB}")
     message(FATAL_ERROR "RUST_APP_LIB 指向的文件不存在: ${RUST_APP_LIB}")
   endif()

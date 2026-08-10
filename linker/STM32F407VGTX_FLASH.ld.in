@@ -223,19 +223,35 @@ SECTIONS
     __bss_end__ = _ebss;
   } >RAM
 
-  /* App 运行期 .bss 专用 RAM 块（方案 Y 轻量版）。App 独立镜像的 .bss 经 Rust
-   * 侧 app.ld 收集进此段（>APP_RAM，NOLOAD）。系统加载器 app_slot_boot.c 在
-   * 挂载前按 APP_RAM_BASE/SIZE（由 CMake 注入，与下方 ORIGIN 一致）清零。
-   * 常态单 ELF 构建该输入段为空，不占空间。 */
+  /* App 运行期 RAM 块（方案 Y 轻量版 / 单 ELF 注入）。
+   * Rust 侧用 #[link_section] 把 App 静态分两类收集：
+   *   - .rust_data：非零初值（如 NAMES/PLAYBACK），需从 Flash LMA 拷贝到 RAM（同 .data 机制）
+   *   - .rust_bss ：全零初值（EST_STATE/SENSOR_FRAME/栈缓冲等），NOLOAD，启动时清零
+   * 输出内存区由 @APP_RAM_MEM@ 决定：
+   *   - 发布版 = APP_RAM（把 ~8KB Rust 全局从主 SRAM 搬出，释放系统堆）
+   *   - 开发版 = RAM（开发版主 SRAM 已被 RTOS 自测占满，APP_RAM 区与 .bss 重叠，
+   *     故 Rust 全局回归主 SRAM .bss 后续段，旧行为；APP_RAM 区保持空桩）
+   * 轨 B 双分区下 Rust 独立 app.ld 也用同段名收集进 APP_RAM，契约一致。 */
+  .app_data :
+  {
+    . = ALIGN(4);
+    __rust_data_start = .;
+    *(.rust_data)
+    *(.rust_data.*)
+    . = ALIGN(4);
+    __rust_data_end = .;
+    __rust_data_lma = LOADADDR(.app_data);
+  } >@APP_RAM_MEM@ AT> FLASH
+
   .app_bss (NOLOAD) :
   {
     . = ALIGN(4);
-    __app_ram_start = .;
-    *(.app_bss)
-    *(.app_bss.*)
+    __rust_bss_start = .;
+    *(.rust_bss)
+    *(.rust_bss.*)
     . = ALIGN(4);
-    __app_ram_end = .;
-  } >APP_RAM
+    __rust_bss_end = .;
+  } >@APP_RAM_MEM@
 
   /* App 服务表（方案 Y 轻量版）：g_app_slot 实例落固定 RAM（APP_SLOT_RAM）。
    * 系统在 app_slot_init() 里运行时填充函数指针 + 头部版本。App 独立镜像经
