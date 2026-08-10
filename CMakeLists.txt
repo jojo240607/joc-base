@@ -57,17 +57,18 @@ if(RTOS_SELFTEST)
   set(SYS_HEAP_SIZE "0x1C00u")        # 7KB，开发版放 CCM .ccm_heap，覆盖 6124B 设备需求
   set(SYS_HEAP_SECTION ".ccm_heap")
 else()
-  # 发布版系统 .bss 实际延伸约到 0x2000CE08(__bss_end__,见 elf 符号表)。注意：
+  # 发布版系统 .bss 实际延伸约到 0x20006e08(__bss_end__,见 elf 符号表；g_sys_heap
+  # 由 32KB 下调 8KB 后 .bss 收缩)。注意：
   # irq_manager 的 g_irq[] 注册表是大数组，落在 .bss 中段(实测 VMA=0x20008374)，
   # 早已越过 0x20006000。若 APP_RAM_ORIGIN 取 0x20006000,加载器清零 APP_RAM
   # 会把 g_irq[] 及 g_app_loaded/g_app_entry 一并清零 -> 任何外设中断来时
   # IRQ_CommonHandler 找不到 handler -> IRQ 风暴死循环(PC 卡 IRQ_CommonHandler)。
-  # 故发布版 APP_RAM 必须紧跟 __bss_end__ 之上,与系统 .bss 物理隔离。
-  # 取 0x2000D000(0x2000CE08 之上留 ~0x300 余量)到 g_app_slot(0x2001DC00),
-  # 长 0x10C00(约 67KB),飞控 App 仍充裕。
+  # 故发布版 APP_RAM 必须紧跟 __bss_end__(0x20006e08) 之上,与系统 .bss 物理隔离。
+  # 取 0x20007000(0x20006e08 之上留 ~0x1F8 余量)到 g_app_slot(0x2001DC00),
+  # 长 0x16C00(约 91KB,较原 67KB 多让出的 24KB 给飞控 App)。
   set(APP_SLOT_ORIGIN "0x2001DC00")
-  set(APP_RAM_ORIGIN "0x2000D000")
-  set(APP_RAM_LENGTH "0x10C00")  # 0x2001DC00 - 0x2000D000 = 67KB
+  set(APP_RAM_ORIGIN "0x20007000")
+  set(APP_RAM_LENGTH "0x16C00")  # 0x2001DC00 - 0x20007000 = 91KB（系统 .bss 收缩 24KB 后让出给 App）
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
   set(SYS_HEAP_SIZE "0x2000u")   # 8KB：发布版容纳全部设备 malloc（实测峰测 57 设备累计 6124B，留 ~2KB 余量）
   set(SYS_HEAP_SECTION ".bss")
