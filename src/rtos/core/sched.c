@@ -1,6 +1,7 @@
 #include "rtos.h"
 #include "rtos_internal.h"
 #include "common/lock.h"
+#include "common/ccm_bss.h"
 #include "irq.h"
 #include "sched_trace.h"
 #include <string.h>
@@ -20,32 +21,35 @@
  * ------------------------------------------------------------------------- */
 
 /* ---- 全局状态 ---- */
-task_t *g_running = (task_t *)0;
-volatile uint32_t g_tick = 0;
-int g_rtos_started = 0;
+/* 以下为纯软件、纯 CPU 访问的调度核心状态（无 DMA 目标缓冲），搬入 CCM 以收缩
+ * 主 SRAM .bss，让出的空间下推给 APP_RAM。它们经 extern 被 arch/ 汇编与 port.c
+ * 引用（符号链接可见），不依赖所在段位置。 */
+task_t *RTOS_CCM_BSS g_running = (task_t *)0;
+volatile uint32_t RTOS_CCM_BSS g_tick = 0;
+int RTOS_CCM_BSS g_rtos_started = 0;
 /* PSP 是否已切到首个任务的栈：在 SVC_Handler 首次启动路径里置 1。
  * 仅当其为 1 时，rtos_schedule_request 才允许置 PENDSVSET——否则（首切之前、
  * 启动线程用 MSP、PSP 仍为 0）置位会用 PSP=0 保存帧、破坏内存并 HardFault。
  * 注意：不能用“ISR 中 CONTROL.SPSEL 恒为 0”来区分，否则会误杀所有 ISR 驱动的
  * 重调度（SysTick 唤醒、ISR 内 sem_give 等），导致内核卡死（见 port.c 注释）。 */
-volatile int g_rtos_psp_ready = 0;
-volatile int g_in_svc = 0;   /* SVC 分发进行中：防止非特权任务路径递归触发 SVC */
+volatile int RTOS_CCM_BSS g_rtos_psp_ready = 0;
+volatile int RTOS_CCM_BSS g_in_svc = 0;   /* SVC 分发进行中：防止非特权任务路径递归触发 SVC */
 
 /* ---- 就绪队列：每优先级 FIFO + 位图 ---- */
-static task_t *g_ready_head[PRIO_LEVELS];
-static task_t *g_ready_tail[PRIO_LEVELS];
-static uint32_t g_ready_bmp;
+static task_t *RTOS_CCM_BSS g_ready_head[PRIO_LEVELS];
+static task_t *RTOS_CCM_BSS g_ready_tail[PRIO_LEVELS];
+static uint32_t RTOS_CCM_BSS g_ready_bmp;
 
 /* ---- 睡眠链表（按 tick 递减） ---- */
-static task_t *g_sleep_head;
+static task_t *RTOS_CCM_BSS g_sleep_head;
 
 /* ---- 任务计数（TCB 池定义在 core/task.c） ---- */
-int g_task_count = 0;
+int RTOS_CCM_BSS g_task_count = 0;
 
 /* ---- 调度器链表完整性断言记录器（见 rtos_internal.h） ---- */
-volatile uint32_t g_sched_invariant_fail = 0;
-volatile task_t  *g_sched_bad_tcb        = (task_t *)0;
-volatile uint32_t g_sched_bad_line       = 0;
+volatile uint32_t RTOS_CCM_BSS g_sched_invariant_fail = 0;
+volatile task_t  *RTOS_CCM_BSS g_sched_bad_tcb        = (task_t *)0;
+volatile uint32_t RTOS_CCM_BSS g_sched_bad_line       = 0;
 void rtos_sched_assert_fail(const char *file, int line) {
     (void)file;
     g_sched_bad_tcb  = g_running;   /* 当前运行任务即最可能双挂的一方 */
@@ -75,18 +79,18 @@ void rtos_sched_assert_fail(const char *file, int line) {
 /* ---- 硬实时违约标志（见 docs/rtos-hard-realtime-plan.md 阶段1，零挂起风险） ----
  * 任一硬实时任务截止期/wcet 被突破，对应粘性计数递增，并把“曾发生过违约”汇总到
  * g_rtos_deadline_violation / g_rtos_wcet_violation，供诊断/看门狗读取，不触发异常。 */
-volatile uint32_t g_rtos_deadline_violation = 0;
-volatile uint32_t g_rtos_wcet_violation     = 0;
+volatile uint32_t RTOS_CCM_BSS g_rtos_deadline_violation = 0;
+volatile uint32_t RTOS_CCM_BSS g_rtos_wcet_violation     = 0;
 
 /* ---- 临界区持锁超长计数（阶段2，零挂起风险） ----
  * 任何内核临界区（rtos_crit_enter/exit、sched_lock 区间）持续超过 RTOS_CRIT_MAX_TICKS
  * 即递增（粘性）。把“低优长临界区阻塞高优”从不可见变为可测量。 */
-volatile uint32_t g_rtos_crit_overflow = 0;
+volatile uint32_t RTOS_CCM_BSS g_rtos_crit_overflow = 0;
 
 /* P0-3 临界区硬上限执行：升级触发计数（粘性，零挂起风险）。 */
-volatile uint32_t g_rtos_crit_kill_count = 0;
+volatile uint32_t RTOS_CCM_BSS g_rtos_crit_kill_count = 0;
 /* P0-3 安全态 panic 标志（RTOS_CRIT_KILL=PANIC 时置位，供调试器/复位原因读取）。 */
-volatile uint32_t g_rtos_crit_kill_panic = 0;
+volatile uint32_t RTOS_CCM_BSS g_rtos_crit_kill_panic = 0;
 
 /* 临界区持锁时长直方图（中断延迟优化定位器，见 docs/rtos-hard-realtime-roadmap.md
  * §中断延迟优化）：每次「最外层」临界区（rtos_crit_enter/exit / sched_lock 区间）退出时，
@@ -96,7 +100,7 @@ volatile uint32_t g_rtos_crit_kill_panic = 0;
  * 构建与 RTOSBENCH 同源，可直接 dump。
  * 桶宏 RTOS_CRIT_HIST_BUCKETS/STEP/OVER 与 extern 声明见 rtos_internal.h（同门控）。 */
 #if RTOS_SCHED_TRACE
-volatile uint32_t g_crit_hist[RTOS_CRIT_HIST_BUCKETS + 1u];  /* +1 溢出桶(>16us) */
+volatile uint32_t RTOS_CCM_BSS g_crit_hist[RTOS_CRIT_HIST_BUCKETS + 1u];  /* +1 溢出桶(>16us) */
 volatile uint32_t g_crit_hist_total;        /* 采样总数 */
 volatile uint32_t g_crit_hist_max;          /* 历史最坏持锁 cycle 数 */
 /* PendSV 切换分段计时（见 rtos_internal.h 注释）：仅存最后一次切换的分段画像。 */

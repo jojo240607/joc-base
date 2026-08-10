@@ -11,13 +11,14 @@
 
 | 存储域 | 总容量 | RTOS/系统占用 | 利用率 | 备注 |
 |---|---|---|---|---|
-| Flash | 1024 KB | ~91.4 KB（text 90976 + data 400） | 8.9% | 余量充裕 |
-| 主 SRAM | 128 KB | ~27.7 KB（.bss 0x6c08） + 内核 .data 392B | 21.7% | 不含 APP_RAM 区；DMA 缓冲在此 |
-| CCM | 64 KB（用 63KB，顶 1KB 给 MSP） | 19.3 KB（.ccm_bss 0x4c00） | 30.5% | 仅 CPU，TCB/任务栈在此 |
-| APP_RAM（给 Rust App） | 91 KB（0x20007000–0x2001DC00） | 0（归 App） | — | 见 §7 |
+| Flash | 1024 KB | ~92.5 KB（text 91340 + data 420） | 9.0% | 余量充裕 |
+| 主 SRAM | 128 KB | ~21.84 KB（RAM 区 21840B） + 内核 .data 420B | 16.7% | 不含 APP_RAM 区；DMA 缓冲在此 |
+| CCM | 64 KB（用 63KB，顶 1KB 给 MSP） | 35.69 KB（CCMRAM 35688B） | 55.3% | 仅 CPU，TCB/任务栈/纯软状态在此 |
+| APP_RAM（给 Rust App） | 103 KB（0x20004000–0x2001DC00） | 0（归 App） | — | 见 §7 |
 
-> 注：`arm-none-eabi-size` 的 `bss` 列 = 主 SRAM `.bss` + CCM `.ccm_bss`，合计约 47.8 KB。
-> 拆分后**主 SRAM 自身 `.bss` = 0x20006e08 − 0x20000200 = 0x6c08 = 27,656 B**。
+> 注：`arm-none-eabi-size` 的 `RAM` 区（链接脚本 `RAM` 段，纯主 SRAM，不含 CCM/APP_RAM）
+> 实测 **21,840 B（16.66%）**。`bss` 列（size 工具汇总）= 主 SRAM `.bss` + CCM `.ccm_bss` ≈ 57,204 B，
+> 拆分看：**主 SRAM 自身 `.bss` ≈ 21.5 KB**，**CCM `.ccm_bss` ≈ 35.7 KB**。（`datasheet` 边界：`_ebss=0x2000534c`）
 
 ## 2. Flash 占用
 
@@ -34,11 +35,9 @@
 | 区域 | 地址范围 | 大小 | 内容 |
 |---|---|---|---|
 | `.data` | 0x20000000–0x20000188 | 392 B | 已初始化全局（含 `g_app_ctx`） |
-| `.bss` | 0x20000200–0x20006e08 | 27,656 B | 未初始化全局/静态（见 §4 拆解） |
-| `_Min_Heap_Size` | 0x20006e08–0x20007008 | 512 B | 静态堆下限（实际堆可延伸到 APP_RAM 前） |
-| 空隙 | 0x20007008–0x20007000… | — | 系统 .bss 收缩后留出的缓冲带（见 §7） |
+| `.bss` | 0x20000200–0x2000534c | ~21.1 KB | 未初始化全局/静态（见 §4 拆解） |
 | `.app_slot` | 0x2001dc00–0x2001dcbc | 188 B | 应用分区契约 `g_app_slot` |
-| APP_RAM（Rust App） | 0x20007000 起 | 91 KB | **归 App，非 RTOS** |
+| APP_RAM（Rust App） | 0x20004000 起 | 103 KB | **归 App，非 RTOS** |
 
 ### 3.1 主 SRAM `.bss` 拆解（27,656 B）
 
@@ -61,14 +60,14 @@
 | `rtos_sched_analysis.c` | 624 B | WCRT/P/T/C 调度分析表 |
 | `kobj.c` `g_kobj` | 1,536 B | 内核对象注册表 |
 | `bh.c` `g_bh` | 320 B | 底半部/BH 任务表 |
-| `sched.c` / `mpu.c` 各 `g_*` | ~1,120 B | 就绪位图/链表/诊断快照 |
+| `sched.c` / `mpu.c` 各 `g_*`（残留） | — | 已搬入 CCM（见 §4）；主 SRAM 仅剩 libc/驱动小量 |
 | libc_nano | ~324 B | `__sf`（stdio FILE 表）、`errno`、`__malloc_*` 锁 |
 | USB/CDC/console/log/app 小量 | ~768 B | `usb_str_buf`、`cdc_rx_buf`、`g_log`、`g_console` 等 |
 | 对齐填充 | ~304 B | 链接器 4/8 字节对齐空隙 |
 
 > **结论**：`.bss` 总量里 8KB 是堆（功能性预留，非内核开销），真正 RTOS 内核+驱动+库
-> 静态占用约 **19.5 KB**。RTOS 是"零堆启动"设计——TCB、任务栈全静态入 CCM，
-> 不依赖链接器堆 `_end..__HeapLimit`。
+> 静态占用约 **13.3 KB**（已从 19.5KB 再降，核心调度/故障诊断状态已搬 CCM）。
+> RTOS 是"零堆启动"设计——TCB、任务栈全静态入 CCM，不依赖链接器堆 `_end..__HeapLimit`。
 
 ## 4. CCM 占用（@0x10000000，仅 CPU）
 
@@ -82,7 +81,10 @@
 | `g_task_pool`（TCB） | task.c | 4,608 B | **48 槽 TCB 池**（RTOS_MAX_TASKS=48 × ~96B/TCB） |
 | `g_timer_stack` | timer.c | 1,024 B | 定时器回调任务 |
 | `g_wq_stack` | bh.c | 1,024 B | 工作队列 worker |
-| **CCM 小计** | | **19,264 B** | 占 CCM 63KB 的 30.5% |
+| `sched.c` 调度核心 | sched.c | ~1,120 B | `g_running`/`g_ready_head/tail[32]`/`g_ready_bmp`/`g_sleep_head`/`g_task_count`/硬实时违约+临界区诊断标志（纯 CPU 访问，无 DMA） |
+| `timer.c` 软定时器 | timer.c | ~48 B | `g_timer_head` 链表头 + `g_timer_sem` 信号量 |
+| `mpu.c` 故障诊断 | mpu.c | ~120 B | `g_fault_*`/`g_mpu_violation`/`g_robust_*`/`g_pendsv_enter_*`/`g_svc_enter_*`（OpenOCD 按符号动态读，搬迁安全） |
+| **CCM 小计** | | **35,688 B** | 占 CCM 63KB 的 55.3% |
 | MSP 主栈 | 顶部 1KB | 1,024 B | 中断/异常栈（独立，不算 ccm_bss） |
 
 > CCM 只放"纯 CPU、永不 DMA"的对象（任务栈 + TCB 池）；UART/USB/SD 等 DMA 缓冲
@@ -107,10 +109,10 @@ RTOS 内核对象全静态，不 malloc。堆消费者：
 
 | 项 | 发布版（build_rel，实测） | 开发版（RTOS_SELFTEST=ON） |
 |---|---|---|
-| CCM `.ccm_bss` | 19.25 KB | ~56 KB（自测任务栈全进 CCM） |
+| CCM `.ccm_bss` | 35.7 KB（含调度/诊断） | ~56 KB（自测任务栈全进 CCM） |
 | 自测任务栈 | 无 | 数十个 512B~1024B 栈 + p4 36 filler |
-| 主 SRAM `.bss` | 27.7 KB | ~124 KB（自测代码/数据） |
-| Flash | 91 KB | ~134 KB |
+| 主 SRAM `.bss` | 21.8 KB | ~124 KB（自测代码/数据） |
+| Flash | 92.5 KB | ~134 KB |
 | 静态堆 | 充裕（8KB 主 SRAM） | 几乎为 0（需 CCM heap 兜底 7KB） |
 | USB0 注册风险 | 无 | 高（堆耗尽），靠 SYS_STATIC_HEAP 解决 |
 
@@ -134,11 +136,28 @@ RTOS 内核对象全静态，不 malloc。堆消费者：
   加载器清零 APP_RAM 不会破坏系统 `.bss`（无 IRQ 风暴）。
 - 重测启动通过：usb0 注册 OK、RUST app mounted、sensor 循环 950+、ctrl 心跳 seq 3500+，无 fault。
 
+### 7.3 核心调度/故障诊断状态搬入 CCM（主 SRAM −5.9KB）
+- 之前 sched.c / timer.c / mpu.c 的纯软件全局（`g_running`、`g_ready_head/tail[32]`、`g_ready_bmp`、
+  `g_sleep_head`、`g_task_count`、硬实时违约与临界区诊断标志、软定时器链表头+信号量、全套 `g_fault_*`
+  故障快照、`g_pendsv_enter_*`/`g_svc_enter_*` 调试变量）仍留在主 SRAM `.bss`。
+- 这些对象**纯 CPU 访问、无任何 DMA 目标缓冲**，经 `extern` 被 `arch/` 汇编与 `port.c` 引用
+  （符号链接可见，不依赖段位置），故可安全搬入 CCM。OpenOCD 翻帧脚本按符号（如 `&g_fault_frame`）
+  动态读取，不依赖固定地址，搬迁不影响事后调试。
+- 用既有 `RTOS_CCM_BSS` 宏（发布版 `.ccm_bss`，开发版 `.bss` 隔离防 CCM 溢出）逐一加属性。
+- 效果：主 SRAM `RAM` 区 27.7KB → **21.84KB（16.66%）**，再降 ~5.9KB；CCM 35.7KB（55.3%）。
+  实测符号地址：`g_running=0x10006040`、`g_ready_head=0x10005fb0`、`g_timer_head=0x1000780c`、
+  `g_fault_cfsr=0x10008b58`（均落 CCM）；`g_app_loaded=0x20002378`（主 SRAM，低于 APP_RAM 起点安全）。
+- `g_marathon_stack_arr`（watchdog，注释禁 CCM）、`g_dbg_sentinel`（OpenOCD 探点留主 SRAM）、
+  libc_nano 仍留主 SRAM，未动。
+
 ## 8. 结论
 
-- **生产固件（当前 build_rel）** RTOS 静态占用 ≈ Flash 91KB + 主 SRAM 27.7KB + CCM 17.4KB（不含 App）。
-  CCM 用 30.5%、主 SRAM 用 21.7%（不含 APP_RAM）、Flash 用 8.9%。
+- **生产固件（当前 build_rel）** RTOS 静态占用 ≈ Flash 92.5KB + 主 SRAM 21.8KB + CCM 35.7KB（不含 App）。
+  CCM 用 55.3%、主 SRAM 用 16.7%（不含 APP_RAM）、Flash 用 9.0%。
 - 运行时堆主要用于板级设备驱动（~6KB 峰值），余量充足。
-- 真正紧张点是 **CCM**：生产版仅 30%，但开发/自测版会飙到 ~89%。加 RTOS 任务时每个
+- 真正紧张点仍是 **CCM**：生产版 55%，但开发/自测版会飙到 ~89%。加 RTOS 任务时每个
   `RTOS_TASK_STACK` 直接吃 CCM；发布版每加 1KB 栈 CCM 占用 +1.6%，开发版基本无余量需先扩策略。
-- 飞控 App 可用内存现 **91 KB**（0x20007000–0x2001DC00）。
+- 飞控 App 可用内存现 **103 KB**（0x20004000–0x2001DC00）。
+- 剩余可优化项（边际收益小、谨慎评估）：`libc_nano`（~0.3KB，建议留主 SRAM）、对齐填充（~0.3KB）。
+  主 SRAM 进一步让出的空间已受 Rust App 全局占位（落 0x20004000–0x2000534c）限制，
+  再下移 APP_RAM 起点会与系统 `.bss` 重叠，需先理顺 Rust 全局的链接布局方能继续扩大 App 内存。

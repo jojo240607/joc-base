@@ -1,5 +1,6 @@
 #include "rtos.h"
 #include "core/rtos_internal.h"
+#include "common/ccm_bss.h"
 #include "log/log.h"
 #include "log/app_log.h"
 #include <stdint.h>
@@ -22,9 +23,10 @@
  *    ISR 懒建任务——与 workqueue 同款约束（见 docs/rtos-design.md §4.6 / 记忆 77847432）。
  * ------------------------------------------------------------------------- */
 
-/* 活动定时器单链表（head 在本文件内部） */
-static rtos_timer_t *g_timer_head;
-static rtos_sem_t    g_timer_sem;          /* 定时器任务等待的信号量 */
+/* 活动定时器单链表（head 在本文件内部）。
+ * 纯软件链表头 + 信号量（无 DMA 目标缓冲），搬入 CCM 收缩主 SRAM .bss。 */
+static rtos_timer_t *RTOS_CCM_BSS g_timer_head;
+static rtos_sem_t    RTOS_CCM_BSS g_timer_sem;          /* 定时器任务等待的信号量 */
 RTOS_TASK_STACK(g_timer_stack, 1024);      /* 定时器任务栈（回调运行于此） */
 
 /* 把 t 从活动链表摘除（调用方持锁） */

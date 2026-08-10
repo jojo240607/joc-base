@@ -1,6 +1,7 @@
 #include "rtos_mpu.h"
 #include "log/log.h"
 #include "log/app_log.h"
+#include "common/ccm_bss.h"
 #include <stdint.h>
 
 /* ---------------------------------------------------------------------------
@@ -21,33 +22,35 @@
 #include "core_cm4.h"   /* CMSIS ISA 头：SCB / NVIC / FPU / SysTick_IRQn */
 #include "mpu_armv7.h"  /* CMSIS ISA 头：MPU_Type / MPU / MPU_CTRL_*（MPU 是 ISA 特性） */
 
-volatile int      g_mpu_violation  = 0;
-volatile int      g_mpu_test_active = 0;
-volatile int      g_stack_overflow  = 0;
-volatile uint32_t g_fault_cfsr     = 0;
-volatile int      g_robust_fault_active = 0;
-volatile uint32_t g_robust_fault_cfsr   = 0;
-volatile uint32_t g_fault_pc       = 0;
-volatile uint32_t g_fault_mmfar    = 0;
-volatile uint32_t g_fault_lr       = 0;
-volatile uint32_t g_fault_frame    = 0;   /* 故障异常帧基址（事后用 OpenOCD 翻帧定位 PC） */
-volatile uint32_t g_fault_pc_raw   = 0;   /* frame[6] 原始值（不做 FP 帧跳过，便于交叉核对） */
-volatile uint32_t g_fault_psp      = 0;   /* 故障时的 PSP（事后定位“被切出任务”的栈） */
-volatile uint32_t g_fault_msp      = 0;   /* 故障时的 MSP */
-volatile uint32_t g_fault_control  = 0;   /* 故障时的 CONTROL（nPRIV+XN/FPCA 位） */
-volatile uint32_t g_fault_icsr     = 0;   /* 故障时的 ICSR（VECTACTIVE 等） */
-volatile uint32_t g_fault_running_sp = 0; /* g_running->sp（保存时的旧 sp，若已写入） */
-volatile uint32_t g_fault_count    = 0;   /* 故障次数（捕获是否被重复触发） */
-char            g_fault_task_name[24] = {0}; /* 最近一次故障的任务名（仅拷贝，绝不在此处 log） */
+/* 以下为纯软件故障诊断快照（无 DMA 目标缓冲），搬入 CCM 收缩主 SRAM .bss。
+ * OpenOCD 事后翻帧脚本按符号（&g_fault_*）动态读取，不依赖固定地址，搬迁安全。 */
+volatile int      RTOS_CCM_BSS g_mpu_violation  = 0;
+volatile int      RTOS_CCM_BSS g_mpu_test_active = 0;
+volatile int      RTOS_CCM_BSS g_stack_overflow  = 0;
+volatile uint32_t RTOS_CCM_BSS g_fault_cfsr     = 0;
+volatile int      RTOS_CCM_BSS g_robust_fault_active = 0;
+volatile uint32_t RTOS_CCM_BSS g_robust_fault_cfsr   = 0;
+volatile uint32_t RTOS_CCM_BSS g_fault_pc       = 0;
+volatile uint32_t RTOS_CCM_BSS g_fault_mmfar    = 0;
+volatile uint32_t RTOS_CCM_BSS g_fault_lr       = 0;
+volatile uint32_t RTOS_CCM_BSS g_fault_frame    = 0;   /* 故障异常帧基址（事后用 OpenOCD 翻帧定位 PC） */
+volatile uint32_t RTOS_CCM_BSS g_fault_pc_raw   = 0;   /* frame[6] 原始值（不做 FP 帧跳过，便于交叉核对） */
+volatile uint32_t RTOS_CCM_BSS g_fault_psp      = 0;   /* 故障时的 PSP（事后定位“被切出任务”的栈） */
+volatile uint32_t RTOS_CCM_BSS g_fault_msp      = 0;   /* 故障时的 MSP */
+volatile uint32_t RTOS_CCM_BSS g_fault_control  = 0;   /* 故障时的 CONTROL（nPRIV+XN/FPCA 位） */
+volatile uint32_t RTOS_CCM_BSS g_fault_icsr     = 0;   /* 故障时的 ICSR（VECTACTIVE 等） */
+volatile uint32_t RTOS_CCM_BSS g_fault_running_sp = 0; /* g_running->sp（保存时的旧 sp，若已写入） */
+volatile uint32_t RTOS_CCM_BSS g_fault_count    = 0;   /* 故障次数（捕获是否被重复触发） */
+char            RTOS_CCM_BSS g_fault_task_name[24] = {0}; /* 最近一次故障的任务名（仅拷贝，绝不在此处 log） */
 
 /* 调试：记录 PendSV / SVC 进入时的 EXC_RETURN 与 CONTROL，判定是否从 Handler
  * 模式进入、被切出任务的 FPU 帧类型（用于定位 boot HardFault 根因）。 */
-volatile uint32_t g_pendsv_enter_lr    = 0;
-volatile uint32_t g_pendsv_enter_ctrl  = 0;
-volatile uint32_t g_pendsv_enter_icsr  = 0;
-volatile uint32_t g_svc_enter_lr       = 0;
-volatile uint32_t g_svc_enter_ctrl     = 0;
-volatile uint32_t g_svc_syscall_path    = 0;   /* 非 0 = 走了 SVC 系统调用分支 */
+volatile uint32_t RTOS_CCM_BSS g_pendsv_enter_lr    = 0;
+volatile uint32_t RTOS_CCM_BSS g_pendsv_enter_ctrl  = 0;
+volatile uint32_t RTOS_CCM_BSS g_pendsv_enter_icsr  = 0;
+volatile uint32_t RTOS_CCM_BSS g_svc_enter_lr       = 0;
+volatile uint32_t RTOS_CCM_BSS g_svc_enter_ctrl     = 0;
+volatile uint32_t RTOS_CCM_BSS g_svc_syscall_path    = 0;   /* 非 0 = 走了 SVC 系统调用分支 */
 
 /* 一个区域：base 必须对齐到 size；ap 见 Cortex-M RASR AP 位；xn=1 禁止执行 */
 static void mpu_set_region(uint32_t idx, uint32_t base,
