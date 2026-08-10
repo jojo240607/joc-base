@@ -68,9 +68,9 @@ else()
   # (实测 VMA=0x2000343c 附近)，仍需高于 __bss_end__(0x20003608) 隔离。
   # 取 0x20004000(0x20003608 之上留 ~0x9F8 余量,0x1000 对齐)到 g_app_slot(0x2001DC00),
   # 长 0x19C00(约 103KB,较原 67KB 多让出的 ~36KB 给飞控 App)。
-  set(APP_SLOT_ORIGIN "0x2001DC00")
+  set(APP_SLOT_ORIGIN "0x2001FC00")  # g_app_slot 抬到主 SRAM 顶端 1KB，回收其下死区给 App
   set(APP_RAM_ORIGIN "0x20004000")
-  set(APP_RAM_LENGTH "0x19C00")  # 0x2001DC00 - 0x20004000 = 103KB（RTOS 管理表搬入 CCM 后主 SRAM .bss 进一步收缩）
+  set(APP_RAM_LENGTH "0x1BC00")  # 0x2001FC00 - 0x20004000 = 111KB（回收 g_app_slot 上方 ~9KB 死区；g_app_slot 占顶端 1KB）
   set(APP_RAM_MEM "APP_RAM")     # 发布版 Rust 全局搬进 APP_RAM，释放主 SRAM 系统堆
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
   set(SYS_HEAP_SIZE "0x2000u")   # 8KB：发布版容纳全部设备 malloc（实测峰测 57 设备累计 6124B，留 ~2KB 余量）
@@ -327,7 +327,7 @@ target_link_options(${PROJECT_NAME}.elf PRIVATE
 )
 
 # ---- Rust 应用层（解耦独立工程：joc-app-rust 独立 cargo build 出 libapp.a）----
-# 设计：RTOS 只“链接”外部 libapp.a，不内联 cargo build，不与 Rust 工程耦合源码。
+# 设计：RTOS 只"链接"外部 libapp.a，不内联 cargo build，不与 Rust 工程耦合源码。
 # 使用：
 #   cmake -DRUST_APP_LIB=/abs/path/to/joc-app-rust/.../libapp.a ..
 # 不指定 RUST_APP_LIB 则纯 C 固件（无 Rust 任务），保持兼容。
@@ -367,20 +367,20 @@ if(COVERAGE AND RTOS)
   # 仅插桩内核核心（调度 + IPC + 任务/定时器/对象/系统调用/BH）。
   # arch 层(port/mpu)、osal、rtos_sched_analysis、rtos_watchdog 暂不在默认覆盖集内——
   # 单文件 gcov 计数数组较大，F407 主 RAM 128KB 装不下全量；如需可加 -DCOVERAGE_SELFTEST
-  # 或单独扩展。验收套件 rtos_accept.c 覆盖的正是这些核心路径，已足以量化“测试对内核的覆盖度”。
+  # 或单独扩展。验收套件 rtos_accept.c 覆盖的正是这些核心路径，已足以量化"测试对内核的覆盖度"。
   set(_cov_srcs
     src/rtos/core/sched.c)
   if(RTOS_SELFTEST)
     # 常态只插桩验收套件 rtos_accept.c（覆盖核心调度/IPC/MPU/故障恢复路径足矣）。
     # 其余纯自测源码默认不插桩（单文件 gcov 计数数组较大，全开 F407 192K SRAM 装不下）；
-    # 如需量化“自测代码自身”的覆盖，另开 -DCOVERAGE_SELFTEST=ON（见下方 _cov_st_srcs）。
+    # 如需量化"自测代码自身"的覆盖，另开 -DCOVERAGE_SELFTEST=ON（见下方 _cov_st_srcs）。
     list(APPEND _cov_srcs
       src/rtos/rtos_accept.c)
   endif()
   set_source_files_properties(${_cov_srcs} PROPERTIES COMPILE_FLAGS --coverage)
   # 选择性插桩纯自测文件（默认关：单文件 gcov 计数数组较大，全开 F407 192K SRAM 装不下）。
-  # 开 -DCOVERAGE_SELFTEST=ON 才额外插桩 rtos_selftest/stress/p4/...，用于量化“自测代码自身”
-  # 的覆盖；常态只插桩内核 core + rtos_accept.c（验收套件），足以量化“测试对内核的覆盖度”。
+  # 开 -DCOVERAGE_SELFTEST=ON 才额外插桩 rtos_selftest/stress/p4/...，用于量化"自测代码自身"
+  # 的覆盖；常态只插桩内核 core + rtos_accept.c（验收套件），足以量化"测试对内核的覆盖度"。
   option(COVERAGE_SELFTEST "Also instrument RTOS arch/osal/analysis/watchdog + pure-selftest sources (needs more RAM)" OFF)
   if(COVERAGE_SELFTEST)
     set(_cov_st_srcs

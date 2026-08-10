@@ -230,11 +230,11 @@ SRAM 0x2000_0000 ┌────────────────────
                   └─────────────────────────────┘ 0x2001_FFFF
 ```
 
-链接脚本（`linker/STM32F407VGTX_FLASH.ld`）新增内存块：
+链接脚本（`linker/STM32F407VGTX_FLASH.ld.in`，由 CMake 注入 `@APP_RAM_ORIGIN@`/`@APP_RAM_LENGTH@`/`@APP_SLOT_ORIGIN@`）内存块：
 - `APP_FLASH (rx): ORIGIN=0x08060000 LENGTH=384K`
-- `APP_RAM   (xrw): ORIGIN=0x2001E000 LENGTH=8K`
-- `APP_SLOT_RAM (xrw): ORIGIN=0x2001DC00 LENGTH=1K`（**固定地址**，Rust `app.ld`
-  的 `PROVIDE(g_app_slot=0x2001DC00)` 与系统 ld 的 `APP_SLOT_RAM` ORIGIN 必须一致）
+- `APP_RAM   (xrw): ORIGIN=0x20004000 LENGTH=0x1BC00`（发布版 111KB；开发版仅 3KB 桩）
+- `APP_SLOT_RAM (xrw): ORIGIN=0x2001FC00 LENGTH=1K`（**固定地址**，Rust `app.ld`
+  的 `PROVIDE(g_app_slot=0x2001FC00)` 与系统 ld 的 `APP_SLOT_RAM` ORIGIN 必须一致）
 
 ### 7.2 头部发现机制（app_header_t）
 

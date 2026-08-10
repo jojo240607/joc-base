@@ -5,8 +5,8 @@
  * 注意：本文件是模板，由 CMake 的 configure_file 注入 @APP_RAM_ORIGIN@ /
  * @APP_RAM_LENGTH@ 生成最终 linker/STM32F407VGTX_FLASH.ld。App RAM 起点/尺寸
  * 在开发版(SELFTEST=ON，系统 .bss 约 109KB)与发布版(SELFTEST=OFF，.bss 约
- * 14KB)之间分流：发布版把 App RAM 下沉到系统堆之下、g_app_slot(0x2001DC00)
- * 之上，腾出约 100KB 给 App 层；开发版系统 .bss 太大，仅留 8KB 保证链接通过
+ * 14KB)之间分流：发布版把 App RAM 下沉到系统堆之下、g_app_slot(0x2001FC00)
+ * 之下，腾出约 111KB 给 App 层；开发版系统 .bss 太大，仅留 8KB 保证链接通过
  * (开发版不挂载真 App)。详见 docs/app-slot-design.md §内存规划。
  */
 ENTRY(Reset_Handler)
@@ -34,16 +34,16 @@ MEMORY
   APP_RAM   (xrw): ORIGIN = @APP_RAM_ORIGIN@, LENGTH = @APP_RAM_LENGTH@
   /* App 服务表 g_app_slot 固定 RAM 地址（方案 Y 解耦关键）：App 独立镜像经
    * PROVIDE(g_app_slot=固定地址) 引用同一地址，故系统升级/App 重烧都不改变该地址。
-   * 置于主 SRAM 顶端 1K，紧邻 App RAM 之上、不重叠。该地址是跨镜像契约，
-   * 与 Rust app.ld 的 PROVIDE(g_app_slot=0x2001DC00) 必须一致。 */
+   * 置于主 SRAM 顶端 1K（0x2001FC00..0x20020000），紧邻 App RAM 之上、不重叠。
+   * 该地址是跨镜像契约，与 Rust app.ld 的 PROVIDE(g_app_slot=0x2001FC00) 必须一致。 */
   /* App 服务表 g_app_slot 固定 RAM 地址（方案 Y 解耦关键）：App 独立镜像经
    * PROVIDE(g_app_slot=固定地址) 引用同一地址，故系统升级/App 重烧都不改变该地址。
-   * 与 Rust app.ld 的 PROVIDE(g_app_slot=0x2001DC00) 必须一致(发布版)。
+   * 与 Rust app.ld 的 PROVIDE(g_app_slot=0x2001FC00) 必须一致(发布版)。
    * 开发版(RTOS_SELFTEST=ON)系统 .bss 已占满近全部主 SRAM(到 ~0x2001ed1f)，会与
-   * 0x2001DC00 固定地址的 APP_SLOT_RAM 段 VMA 重叠(ld 报致命 overlap)。开发版是
+   * 发布版 0x2001FC00 固定地址的 APP_SLOT_RAM 段 VMA 重叠(ld 报致命 overlap)。开发版是
    * 单 ELF 把 Rust 链入、不经分区加载，g_app_slot 地址在 ELF 内解析即可(无需与
-   * 独立 app.ld 的 0x2001DC00 一致)，故开发版把 APP_SLOT_RAM 抬到主 SRAM 顶部
-   * (0x2001F000) 避开 .bss；发布版保持 0x2001DC00 契约。 */
+   * 独立 app.ld 的 0x2001FC00 一致)，故开发版把 APP_SLOT_RAM 抬到主 SRAM 顶部
+   * (0x2001F000) 避开 .bss；发布版保持 0x2001FC00 契约。 */
   APP_SLOT_RAM (xrw): ORIGIN = @APP_SLOT_ORIGIN@, LENGTH = 1K
 }
 
@@ -255,7 +255,7 @@ SECTIONS
 
   /* App 服务表（方案 Y 轻量版）：g_app_slot 实例落固定 RAM（APP_SLOT_RAM）。
    * 系统在 app_slot_init() 里运行时填充函数指针 + 头部版本。App 独立镜像经
-   * PROVIDE(g_app_slot=0x2001DC00) 引用同一地址，只填 irq_reg[] 注册位，
+   * PROVIDE(g_app_slot=0x2001FC00) 引用同一地址，只填 irq_reg[] 注册位，
    * 不碰裸寄存器/NVIC/VTOR。该地址固定不变，系统升级/App 重烧都无需重编 App。
    * KEEP 防止被 GC（g_app_slot 仅由 App 入口 + irq_manager 引用，属跨镜像符号）。 */
   .app_slot (NOLOAD) :
