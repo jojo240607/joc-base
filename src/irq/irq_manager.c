@@ -1,6 +1,7 @@
 #include "irq_manager.h"
 #include "irq.h"
 #include "irq_hal.h"   /* irq_hal_index() + IRQ_HAL_TABLE_SIZE (HAL index mapping) */
+#include "common/ccm_bss.h"
 #include <stdio.h>
 #include "log/log.h"
 #include "log/app_log.h"
@@ -26,7 +27,8 @@
 /* Flat pool of attached handlers, bounded by the realistic number of
  * concurrently-attached interrupt sources (well under IRQ_HAL_TABLE_SIZE even
  * with shared lines). IRQ_MGR_POOL is defined in irq_manager.h. */
-static irq_mgr_entry_t g_mgr[IRQ_MGR_POOL];
+/* 纯管理表，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
+static irq_mgr_entry_t RTOS_CCM_BSS g_mgr[IRQ_MGR_POOL];
 
 /* Count the enabled handlers on a given irq line. */
 static int mgr_enabled_on_line(irq_id_t id)

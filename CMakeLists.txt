@@ -56,22 +56,28 @@ if(RTOS_SELFTEST)
   # (RTOS .ccm_bss 占 56KB/63KB)，故取最大可容纳 0x1C00(7168B)，留 ~1KB 运行期余量。
   set(SYS_HEAP_SIZE "0x1C00u")        # 7KB，开发版放 CCM .ccm_heap，覆盖 6124B 设备需求
   set(SYS_HEAP_SECTION ".ccm_heap")
+  # 开发版 CCM 已 ~56KB(自测任务栈)接近 63KB 上限，故可搬 CCM 的 RTOS 管理表
+  # 仍留主 SRAM(.bss)，绝不挤占 CCM（避免链接 region overflow）。
+  set(RTOS_CCM_DATA_SECTION ".bss")
 else()
-  # 发布版系统 .bss 实际延伸约到 0x20006e08(__bss_end__,见 elf 符号表；g_sys_heap
-  # 由 32KB 下调 8KB 后 .bss 收缩)。注意：
-  # irq_manager 的 g_irq[] 注册表是大数组，落在 .bss 中段(实测 VMA=0x20008374)，
-  # 早已越过 0x20006000。若 APP_RAM_ORIGIN 取 0x20006000,加载器清零 APP_RAM
-  # 会把 g_irq[] 及 g_app_loaded/g_app_entry 一并清零 -> 任何外设中断来时
-  # IRQ_CommonHandler 找不到 handler -> IRQ 风暴死循环(PC 卡 IRQ_CommonHandler)。
-  # 故发布版 APP_RAM 必须紧跟 __bss_end__(0x20006e08) 之上,与系统 .bss 物理隔离。
-  # 取 0x20007000(0x20006e08 之上留 ~0x1F8 余量)到 g_app_slot(0x2001DC00),
-  # 长 0x16C00(约 91KB,较原 67KB 多让出的 24KB 给飞控 App)。
+  # 发布版系统 .bss 实际延伸约到 0x20003608(__bss_end__,见 elf 符号表；g_sys_heap
+  # 由 32KB 下调 8KB、且 device_manager/irq/irq_manager/usb_hal/kobj/bh/sched_analysis
+  # 等纯软件管理表搬入 CCM 后，主 SRAM .bss 进一步收缩)。
+  # 注意：这些管理表现已在 CCM，但 g_app_loaded/g_app_entry 等系统 .bss 仍在主 SRAM
+  # (实测 VMA=0x2000343c 附近)，仍需高于 __bss_end__(0x20003608) 隔离。
+  # 取 0x20004000(0x20003608 之上留 ~0x9F8 余量,0x1000 对齐)到 g_app_slot(0x2001DC00),
+  # 长 0x19C00(约 103KB,较原 67KB 多让出的 ~36KB 给飞控 App)。
   set(APP_SLOT_ORIGIN "0x2001DC00")
-  set(APP_RAM_ORIGIN "0x20007000")
-  set(APP_RAM_LENGTH "0x16C00")  # 0x2001DC00 - 0x20007000 = 91KB（系统 .bss 收缩 24KB 后让出给 App）
+  set(APP_RAM_ORIGIN "0x20004000")
+  set(APP_RAM_LENGTH "0x19C00")  # 0x2001DC00 - 0x20004000 = 103KB（RTOS 管理表搬入 CCM 后主 SRAM .bss 进一步收缩）
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
   set(SYS_HEAP_SIZE "0x2000u")   # 8KB：发布版容纳全部设备 malloc（实测峰测 57 设备累计 6124B，留 ~2KB 余量）
   set(SYS_HEAP_SECTION ".bss")
+  # 发布版 CCM 仅用 ~19KB(30%)，余量充足，故把纯软件的 RTOS 管理表/池/注册表
+  # (device_manager 节点池/irq 表/kobj/TCB 之外对象/watchdog 栈快照等) 搬入 CCM，
+  # 收缩主 SRAM .bss，从而把让出的空间进一步下推给 APP_RAM(飞控 App)。
+  # 这些对象均不含 DMA 目标缓冲(CCM 不可 DMA 访问)，放 CCM 安全。
+  set(RTOS_CCM_DATA_SECTION ".ccm_bss")
 endif()
 
 # 独立静态系统堆(SYS_STATIC_HEAP，开发版/发布版均启用)：根治原链接器堆
@@ -296,6 +302,7 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
     APP_RAM_SIZE=${APP_RAM_LENGTH}
     SYS_HEAP_SIZE=${SYS_HEAP_SIZE}
     SYS_HEAP_SECTION=\"${SYS_HEAP_SECTION}\"
+    RTOS_CCM_DATA_SECTION=\"${RTOS_CCM_DATA_SECTION}\"
     ${SYS_STATIC_HEAP_DEF}
 )
 

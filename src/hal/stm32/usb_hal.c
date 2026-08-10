@@ -6,9 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include "stm32f4xx.h"
+#include "common/ccm_bss.h"
 
-/* Single OTG FS core instance (ST's stack expects a stable handle). */
-static USB_OTG_CORE_HANDLE g_pdev;
+/* Single OTG FS core instance (ST's stack expects a stable handle).
+ * 纯软件核心句柄：OTG FS 用外设内部 FIFO + 内部 DMA 引擎(数据不经过系统 RAM)，
+ * 不含 DMA 目标缓冲，搬入 CCM(发布版)安全(开发版已验证 USB CDC PASS)。 */
+static USB_OTG_CORE_HANDLE RTOS_CCM_BSS g_pdev;
 
 /* OTG internal-DMA default ON (see usb_hal.h). The driver may clear it from
  * its board config; ST's USB_OTG_SelectCore reads it when building the core

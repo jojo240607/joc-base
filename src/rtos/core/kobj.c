@@ -2,6 +2,7 @@
 #include <string.h>
 #include "log/log.h"
 #include "log/app_log.h"
+#include "common/ccm_bss.h"
 
 /* ---------------------------------------------------------------------------
  * 内核对象注册表（core/kobj.c）：调试/按名查找 + SVC 门指针校验。
@@ -20,8 +21,10 @@
  * 32 个 filler 任务瞬时共存)留足余量，避免注册表在 RTOSALL 中途溢出、导致
  * 后续模块(尤其唯一走 SVC 门校验的 RTOSUSR)的 IPC 对象登记失败而误判。 */
 #define KOBJ_MAX 128
-static struct { const char *name; rtos_kobj_type_t type; void *ptr; } g_kobj[KOBJ_MAX];
-static int g_kobj_n = 0;
+/* 纯软件对象注册表，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。
+ * 注意：匿名 struct 数组的 section 属性须置于数组声明符之后才被 GCC 接受。 */
+static struct { const char *name; rtos_kobj_type_t type; void *ptr; } g_kobj[KOBJ_MAX] RTOS_CCM_BSS;
+static int RTOS_CCM_BSS g_kobj_n = 0;
 
 int rtos_kobj_register(const char *name, rtos_kobj_type_t type, void *ptr) {
     if (!ptr || g_kobj_n >= KOBJ_MAX) return 0;

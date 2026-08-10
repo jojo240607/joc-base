@@ -1,6 +1,7 @@
 #include "rtos.h"
 #include "bh.h"
 #include "common/lock.h"
+#include "common/ccm_bss.h"
 #include "log/log.h"
 #include "log/app_log.h"
 #include <string.h>
@@ -35,7 +36,8 @@ struct bh {
     int           used;
 };
 
-static bh_t g_bh[RTOS_BH_MAX];
+/* 纯软件 BH 任务表，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
+static bh_t RTOS_CCM_BSS g_bh[RTOS_BH_MAX];
 
 /* 下半部任务体：被触发即调用用户 fn；fn 返回后继续等下一次触发。 */
 static void rtos_bh_trampoline(void *p) {
@@ -91,10 +93,11 @@ void rtos_bh_wait(bh_t *bh) {
  * ========================================================================= */
 #define RTOS_WORKQ_STACK_WORDS 256    /* 256 字 = 1 KB 栈（worker 仅出队执行 fn） */
 RTOS_TASK_STACK(g_wq_stack, RTOS_WORKQ_STACK_WORDS * 4);
-static rtos_work_t *g_wq_head;
-static rtos_work_t *g_wq_tail;
-static rtos_sem_t   g_wq_sem;
-static int          g_wq_inited;
+/* 纯软件，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
+static rtos_work_t *RTOS_CCM_BSS g_wq_head;
+static rtos_work_t *RTOS_CCM_BSS g_wq_tail;
+static rtos_sem_t   RTOS_CCM_BSS g_wq_sem;
+static int          RTOS_CCM_BSS g_wq_inited;
 
 /* 共享 worker：被唤醒后【排空】整条队列（一次唤醒处理所有已提交工作，
  * 避免“二进制信号量把多次 submit 折叠成一次唤醒、剩余工作饿死”的缺陷）。 */

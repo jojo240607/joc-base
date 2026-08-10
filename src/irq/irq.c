@@ -1,5 +1,6 @@
 #include "irq.h"
 #include "irq_hal.h"   /* platform backing: IRQ_HAL_TABLE_SIZE + irq_hal_index() */
+#include "common/ccm_bss.h"
 
 /*
  * Platform-independent interrupt registry.
@@ -21,7 +22,8 @@ typedef struct {
     void *ctx;
 } irq_handler_t;
 
-static irq_handler_t g_irq[IRQ_HAL_TABLE_SIZE][IRQ_MAX_HANDLERS_PER_LINE];
+/* 纯回调注册表，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
+static irq_handler_t RTOS_CCM_BSS g_irq[IRQ_HAL_TABLE_SIZE][IRQ_MAX_HANDLERS_PER_LINE];
 
 int irq_register(irq_id_t id, irq_callback_t cb, void *ctx)
 {

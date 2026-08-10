@@ -20,6 +20,7 @@
 #include "common/hash.h"
 #include "common/list.h"
 #include "common/pool.h"
+#include "common/ccm_bss.h"
 #include "iface/device.h"
 
 #include <string.h>
@@ -42,18 +43,19 @@ typedef struct dm_node {
     list_node_t type_node;       /* link in g_type_lists[type] */
 } dm_node_t;
 
-/* Static storage — zero heap (mirrors devtree_init's static path). */
-static dm_node_t      g_node_store[DEVICE_MANAGER_MAX];
-static hash_node_t    g_hnode_store[DEVICE_MANAGER_MAX];
-static hash_node_t   *g_buckets[DM_HASH_BUCKETS];
+/* Static storage — zero heap (mirrors devtree_init's static path).
+ * 纯软件管理表，不含 DMA 目标缓冲，搬入 CCM(发布版)以收缩主 SRAM .bss。 */
+static dm_node_t      RTOS_CCM_BSS g_node_store[DEVICE_MANAGER_MAX];
+static hash_node_t    RTOS_CCM_BSS g_hnode_store[DEVICE_MANAGER_MAX];
+static hash_node_t   *RTOS_CCM_BSS g_buckets[DM_HASH_BUCKETS];
 
-static pool   g_node_pool;       /* allocates dm_node_t */
-static pool   g_hnode_pool;      /* allocates hash_node_t (key/value chain) */
-static hash   g_by_name;         /* name -> dm_node_t* */
-static list   g_all;             /* all registered devices, in order */
-static list   g_type_lists[DEVICE_TYPE_COUNT];  /* per-class lists (stats) */
+static pool   RTOS_CCM_BSS g_node_pool;       /* allocates dm_node_t */
+static pool   RTOS_CCM_BSS g_hnode_pool;      /* allocates hash_node_t (key/value chain) */
+static hash   RTOS_CCM_BSS g_by_name;         /* name -> dm_node_t* */
+static list   RTOS_CCM_BSS g_all;             /* all registered devices, in order */
+static list   RTOS_CCM_BSS g_type_lists[DEVICE_TYPE_COUNT];  /* per-class lists (stats) */
 
-static bool   g_inited = false;
+static bool   RTOS_CCM_BSS g_inited = false;
 
 static void dm_ensure_init(void)
 {

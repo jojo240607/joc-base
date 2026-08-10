@@ -25,6 +25,7 @@
 
 #include "rtos.h"
 #include "rtos/core/rtos_internal.h"
+#include "common/ccm_bss.h"
 #include "log/log.h"
 #include "log/app_log.h"
 #include <string.h>
@@ -36,8 +37,9 @@ volatile uint32_t g_dbg_sentinel = 0;
 static void dbg_mark(uint32_t v) { g_dbg_sentinel = v; }
 
 /* 不可调度粘性标志：>0 表示存在截止期内不可调度的硬实时任务（存违约任务数）。
- * RTOSALL / 看门狗读取，零挂起风险：不触发异常、不停机。 */
-volatile uint32_t g_rtos_sched_invalid = 0;
+ * RTOSALL / 看门狗读取，零挂起风险：不触发异常、不停机。
+ * 纯诊断状态，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
+volatile uint32_t RTOS_CCM_BSS g_rtos_sched_invalid = 0;
 
 /* 单次固定优先级 RTA（Joseph & Pandya 响应时间分析）。
  * 入参：C[i]=最坏执行, T[i]=周期/截止期(必须 >0), P[i]=优先级(0=最高), n=任务数。
@@ -99,14 +101,16 @@ static uint32_t rtos_sched_utilization_x1000(void) {
  * 返回不可调度任务数。 */
 /* 调试实验：把分析数组从栈搬到 static，规避 CCM 主栈膨胀；并把日志改为一次性
  * 计算 + 裸 UART 输出（避免 newlib vfprintf 深栈嵌套破坏异常帧）。 */
-static uint32_t g_dbg_infeasible = 0;
+/* 纯诊断状态，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
+static uint32_t RTOS_CCM_BSS g_dbg_infeasible = 0;
 int rtos_sched_validate(void) {
     dbg_mark(0x2002u);
     int n = rtos_task_count();
-    /* 最坏情况：全部任务都是硬实时（RTOS_MAX_TASKS）。用 static 定长数组，不占栈。 */
-    static uint32_t C[RTOS_MAX_TASKS];
-    static uint32_t T[RTOS_MAX_TASKS];
-    static uint8_t  P[RTOS_MAX_TASKS];
+    /* 最坏情况：全部任务都是硬实时（RTOS_MAX_TASKS）。用 static 定长数组，不占栈。
+     * 纯计算缓存，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
+    static uint32_t RTOS_CCM_BSS C[RTOS_MAX_TASKS];
+    static uint32_t RTOS_CCM_BSS T[RTOS_MAX_TASKS];
+    static uint8_t  RTOS_CCM_BSS P[RTOS_MAX_TASKS];
     int m = 0;   /* 实际参与分析的硬实时任务数 */
     for (int i = 0; i < n && m < RTOS_MAX_TASKS; i++) {
         uint32_t c = rtos_task_wcet(i);
