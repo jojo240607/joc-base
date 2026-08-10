@@ -1,0 +1,24 @@
+# 统一行尾为 LF（跨平台协作标准；C/汇编/GDB/链接脚本对 CRLF 敏感）
+* text=auto eol=lf
+
+# 明确文本源类型
+*.c      text
+*.h      text
+*.s      text
+*.ld     text
+*.ld.in  text
+*.py     text
+*.cmake  text
+*.md     text
+*.gdb    text
+*.bat    text
+*.toml   text
+*.txt    text
+*.json   text
+
+# 二进制/生成物：不转换行尾
+*.bin    binary
+*.elf    binary
+*.o      binary
+*.gcda   binary
+*.gcno   binary
