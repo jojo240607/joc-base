@@ -7,6 +7,7 @@
 #include "hal/stm32/usb_hal.h"
 #include "irq_manager.h"
 #include "common/ringbuffer.h"
+#include "rtos.h"              /* rtos_msleep: soft re-enum needs a host-visible disconnect pulse */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -376,6 +377,20 @@ static int usb_stream_read(stream_device *self, void *buf, size_t len)
         rb->fun->get(rb, &p[done]);
         done++;
     }
+    /* SELF-HEAL the bulk-OUT back-pressure latch.
+     * cdc_DataOut() only re-arms the OUT endpoint when rx_room() >= 64; if the
+     * RX ring was full it leaves g_out_nak=1 (endpoint NAK'd, host retries).
+     * Previously the only re-arm trigger was an ioctl (USB_IOCTL_RX_REARM)
+     * polled solely by console_run's idle branch — so any consumer that drained
+     * the ring WITHOUT going through that branch (e.g. the uplink task, or
+     * console_run taking the "got a byte" branch) left g_out_nak stuck at 1,
+     * permanently NAK'ing OUT. The host could then never push more bytes, so
+     * usb_stream_read returned 0 forever — the "usb0.read hangs" symptom.
+     * Re-arming right here (after draining) makes every consumer a re-arm
+     * point: once >=64 free slots exist again the OUT endpoint is restored,
+     * with no dependency on the upper layer remembering to call the ioctl.
+     * usbd_cdc_out_reenarm() is cheap and idempotent (no-op unless g_out_nak). */
+    usbd_cdc_out_reenarm();
     return (int)done;
 }
 
@@ -599,6 +614,21 @@ static int usb_dev_ioctl(device *self, int cmd, void *arg)
          * Called from the main loop after draining RX, restoring flow once space
          * is available (USB back-pressure, no silent drops). */
         usbd_cdc_out_reenarm();
+        return 0;
+    case USB_IOCTL_REENUM:
+        /* Soft USB re-enumeration: pull DP down (host sees disconnect), wait long
+         * enough for the host to tear down the stale CDC instance, then pull DP up
+         * again (host sees connect and re-enumerates a FRESH instance). This is the
+         * device-side equivalent of physically unplugging/replugging the cable, and
+         * is what we use when the host's usbser driver has wedged on a stale port
+         * (Windows error 31) without having to power-cycle the board. Clears the
+         * driver-side connected/config state so the new enumeration rebuilds it. */
+        usb_hal_disconnect(u->hal);
+        rtos_msleep(150);                 /* host disconnect-debounce + instance teardown */
+        u->connected = 0;
+        u->config    = 0;
+        usb_hal_connect(u->hal);          /* pull DP up -> host re-enumerates */
+        rtos_msleep(50);
         return 0;
     case USB_IOCTL_SET_LINE_CODING:
         if (!arg) return -1;

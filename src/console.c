@@ -417,6 +417,16 @@ static void cmd_usbdbg(app_ctx_t *c, const char *line)
     }
 }
 
+static void cmd_usbrst(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    device *usbd = device_manager_get("usb0");
+    if (!usbd) { usb_reply(c, "USBRST: no dev\r\n"); return; }
+    usb_reply(c, "USBRST: soft disconnect -> reconnect (host will re-enumerate)...\r\n");
+    usbd->vtable->ioctl(usbd, USB_IOCTL_REENUM, NULL);
+    usb_reply(c, "USBRST: done (check host for a fresh CDC port)\r\n");
+}
+
 static void cmd_ioxfer(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -577,6 +587,7 @@ static const cmd_entry_t g_cmds[] = {
     { "USBCLOSE", cmd_usbclose, 0 },
     { "USBSTAT",  cmd_usbstat,  0 },
     { "USBDBG",   cmd_usbdbg,   1 },
+    { "USBRST",   cmd_usbrst,   0 },
     { "IOXFER",   cmd_ioxfer,   0 },
     { "UARTDMA",  cmd_uartdma,  0 },
     { "TIMERDMA", cmd_timerdma, 0 },

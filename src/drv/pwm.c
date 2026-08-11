@@ -120,8 +120,8 @@ static int pwm_dev_open(device *self)
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, p->port, p->pin, p->af, p->parent.parent.name) != 0) {
-            log_printf(app_log(), LOG_DEBUG, "pwm", "[pwm] %s: pin P%c%d CONFLICT — refused\n",
-                   p->parent.parent.name, 'A' + (int)p->port, (int)p->pin);
+            log_printf(app_log(), LOG_ERROR, "pwm", "[pwm] %s: pin P%c%d AF%d CONFLICT — refused (rc=-2)\n",
+                   p->parent.parent.name, 'A' + (int)p->port, (int)p->pin, (int)p->af);
             return -2;
         }
         pinmux_pin_cfg_t cfg = {
@@ -161,7 +161,11 @@ static int pwm_dev_open(device *self)
         p->period_ticks = tim_hal_pwm_set_period(p->hal, p->timer_clk_hz, p->freq_hz);
         tim_hal_start(p->hal);     /* begin counting (timer driver owns it in coord) */
     }
-    if (p->period_ticks == 0) return -1;
+    if (p->period_ticks == 0) {
+        log_printf(app_log(), LOG_ERROR, "pwm", "[pwm] %s: period_ticks==0 — refused (rc=-1)\n",
+               p->parent.parent.name);
+        return -1;
+    }
 
     /* Configure the channel as PWM (mode 1, active-high) and start at 0% duty. */
     tim_hal_pwm_config_channel(p->hal, p->channel, 1, 0);

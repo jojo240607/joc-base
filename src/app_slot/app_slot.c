@@ -4,6 +4,8 @@
 #include "devmgr/device_manager.h"
 #include "irq/irq_manager.h"
 #include "irq/irq.h"
+#include "log/log.h"
+#include "log/app_log.h"
 
 /* ===========================================================================
  * g_app_slot：系统侧服务表实例。
@@ -18,7 +20,11 @@ static device *app_slot_dev_get(const char *name) {
     return device_manager_get(name);
 }
 static int app_slot_dev_open(device *self) {
-    return self ? self->vtable->open(self) : -1;
+    if (!self) { log_printf(app_log(), LOG_ERROR, "app_slot", "[app_slot] dev_open: self==NULL\n"); return -1; }
+    int rc = self->vtable->open(self);
+    log_printf(app_log(), LOG_ERROR, "app_slot", "[app_slot] dev_open: name=%s rc=%d\n",
+               self->name ? self->name : "?", rc);
+    return rc;
 }
 static int app_slot_dev_read(device *self, void *buf, size_t len) {
     return self ? self->vtable->read(self, buf, len) : -1;

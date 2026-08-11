@@ -76,6 +76,8 @@
 #define USB_IOCTL_SET_DAD_TEST       0xDA   /* arg: uint8_t* (addr) */
 #define USB_IOCTL_TX_FREE            0xDB   /* arg: size_t*; bytes free in TX ring */
 #define USB_IOCTL_TX_PUMP            0xDC   /* arg: NULL; drain TX ring -> arm bulk-IN */
+#define USB_IOCTL_RX_REARM           0xDD   /* arg: NULL; re-arm bulk-OUT after back-pressure */
+#define USB_IOCTL_REENUM             0xDE   /* arg: NULL; soft USB disconnect+reconnect to force host re-enumeration */
 
 /* ---- Clock (drv/clock.h) ---- */
 #define CLK_IOCTL_GET_SYSCLK_HZ  0x01   /* arg: uint32_t* hz */

@@ -30,3 +30,12 @@ __pycache__/
 
 # os_test host-built binaries (not firmware)
 os_test/*.exe
+
+# ad-hoc debug/diagnostic scripts (GDB/OpenOCD/python/powershell) from debug sessions
+# underscore-prefixed scratch files at repo root and in tools/
+_*.gdb
+_*.py
+_*.ps1
+_*.cfg
+tools/_*.py
+tools/_*.ps1
