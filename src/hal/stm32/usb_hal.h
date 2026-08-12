@@ -65,4 +65,10 @@ uint32_t usb_hal_doepctl(usb_hal_handle_t *h, uint8_t ep);
  * the driver can clear bulk_tx_pending instead of wedging TX forever. */
 int usb_hal_tx_ep_complete(usb_hal_handle_t *h, uint8_t epnum);
 
+/* Returns 1 if the OTG core is in SUSPEND (host not issuing IN tokens). */
+int usb_hal_is_suspended(usb_hal_handle_t *h);
+
+/* Pulse Remote-Wakeup signalling to ask the host to resume (needs REMOTE_WAKEUP). */
+void usb_hal_remote_wakeup(usb_hal_handle_t *h);
+
 #endif /* USB_HAL_H */

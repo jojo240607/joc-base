@@ -78,3 +78,22 @@ int usb_hal_tx_ep_complete(usb_hal_handle_t *h, uint8_t epnum)
         return 0;                                 /* host has NOT read all bytes yet */
     return 1;                                     /* transfer done, XFRC presumably lost */
 }
+
+int usb_hal_is_suspended(usb_hal_handle_t *h)
+{
+    /* 1 if the OTG core is currently in SUSPEND (host stopped signalling) — at
+     * that point the host is NOT issuing IN tokens, so a pending bulk-IN can
+     * never complete (XFRC never fires) and bulk_tx_pending wedges at 1. */
+    USB_OTG_DSTS_TypeDef dsts;
+    dsts.d32 = h->pdev->regs.DREGS->DSTS;
+    return dsts.b.suspsts ? 1 : 0;
+}
+
+void usb_hal_remote_wakeup(usb_hal_handle_t *h)
+{
+    /* Ask the host to resume by pulsing the Remote-Wakeup signalling (only works
+     * if the host enabled the REMOTE_WAKEUP feature — most CDC hosts do). The OTG
+     * core then drives K-state and the host issues a RESUME, after which it
+     * resumes IN-token-ing and the stalled bulk-IN can complete. */
+    USB_OTG_ActiveRemoteWakeup(h->pdev);
+}

@@ -66,14 +66,18 @@ struct _usb {
     uint8_t  rx_storage[USB_RX_BUF_SIZE];
     uint8_t  tx_storage[USB_TX_BUF_SIZE];
 
-    /* DMA-safe staging buffer for the bulk-IN source. usb_tx_pump copies a
-     * chunk from the TX ring into HERE and hands it to DCD_EP_Tx. In OTG-DMA
-     * mode the OTG's built-in DMA reads this buffer directly, so it MUST live
-     * in main SRAM — a stack buffer would sit in CCM (0x10000000), which the
-     * OTG DMA cannot access. The struct is malloc'd from the main-SRAM heap,
-     * so this field is DMA-safe. In slave/FIFO mode the CPU copies it into the
-     * TX FIFO, which is also fine. */
-    uint8_t  tx_dma_buf[64];
+    /* Word-aligned staging buffer for the bulk-IN source. The OTG FS Tx FIFO
+     * is on the AHB bus and ALL FIFO accesses MUST be 32-bit; ST's
+     * USB_OTG_WritePacket reads the source as (len+3)/4 __packed uint32_t words,
+     * so the source MUST be 4-byte aligned or the non-aligned LDR faults/corrupts
+     * on Cortex-M. Declaring this as uint32_t[16] forces natural 4-byte alignment
+     * (the ST library's internal approach). usb_tx_pump copies a chunk from the
+     * TX ring into here (byte view) and hands it to DCD_EP_Tx; in slave/FIFO mode
+     * the CPU copies it into the Tx FIFO, in OTG-DMA mode the OTG reads it
+     * directly. The struct is malloc'd from the main-SRAM heap, so it is both
+     * 4-byte aligned and DMA-safe (must never be CCM, which the OTG DMA can't
+     * reach). 64B = 16 words covers one max FS bulk packet. */
+    uint32_t tx_dma_buf[16];  /* 64 bytes, 4-byte aligned staging buffer */
 
     /* host-free self-test mode */
     int      test_mode;
@@ -353,6 +357,15 @@ static void usb_tx_pump(usb *u)
          * consumer and runs from the main loop, so this is safe here. */
         if (usb_hal_tx_ep_complete(u->hal, 0x81)) {
             u->bulk_tx_pending = 0;
+        } else if (usb_hal_is_suspended(u->hal) && !rb->fun->is_empty(rb)) {
+            /* BREAK THE HOST-SUSPEND DEADLOCK: if the bus went into SUSPEND
+             * (host stopped issuing IN tokens), a pending bulk-IN can never
+             * complete, so bulk_tx_pending stays 1 forever, the pump stops, no
+             * further IN activity happens, and the device stays suspended ->
+             * host gets 0 bytes. Wake the host (Remote-Wakeup) and force-clear
+             * pending so the next pump re-arms the IN once resume lands. */
+            u->bulk_tx_pending = 0;
+            usb_hal_remote_wakeup(u->hal);
         } else {
             return;                               /* IN busy: wait for XFRC */
         }
@@ -387,11 +400,29 @@ static void usb_tx_pump(usb *u)
      * Clearing first makes those padding bytes deterministic zeros. */
     memset(u->tx_dma_buf, 0, sizeof(u->tx_dma_buf));
     size_t n = rb->fun->read(rb, u->tx_dma_buf, sizeof(u->tx_dma_buf));
+    size_t tail_after = rb->tail;                 /* our read advanced tail by n */
     irq_unlock(st);
     if (n == 0) {
         /* Ring drained empty concurrently (another consumer took the last chunk).
          * Clear pending so the next TX_PUMP can start a fresh IN when data arrives. */
         u->bulk_tx_pending = 0;
+        return;
+    }
+    /* TOCTOU guard: DCD_EP_Tx runs AFTER irq_unlock (it must — the slave/FIFO
+     * IN-complete path relies on the Tx-FIFO-Empty ISR, which irq_lock masks).
+     * But between our irq_unlock and this DCD_EP_Tx, a completing IN (XFRC) can
+     * fire, clear bulk_tx_pending, and let another caller (console_run's 1ms
+     * TX_PUMP / the App) re-enter, read ANOTHER chunk into the SAME tx_dma_buf,
+     * and arm it. Then our stale DCD_EP_Tx would re-arm that same chunk -> the
+     * chunk is sent TWICE (the seq-repeat / byte duplication). Detect that race
+     * by re-checking, under irq_lock, whether the ring tail advanced past where
+     * WE left it (i.e. another consumer already consumed a fresh chunk). If so,
+     * tx_dma_buf no longer holds OUR chunk — skip arming and let that caller
+     * drive the IN. bulk_tx_pending is left as the racing caller set it. */
+    irq_state_t st2 = irq_lock();
+    int stole = (rb->tail != tail_after);
+    irq_unlock(st2);
+    if (stole) {
         return;
     }
     /* NOTE: DCD_EP_Tx is deliberately called AFTER irq_unlock(st). Holding
@@ -401,7 +432,7 @@ static void usb_tx_pump(usb *u)
      * to drain tx_dma_buf into the FIFO; arming the EP while that ISR is
      * masked wedges the transfer. irq_lock only wraps the short
      * "check idle -> consume ring -> mark pending" region. */
-    DCD_EP_Tx(u->hal->pdev, 0x81, u->tx_dma_buf, (uint16_t)n);
+    DCD_EP_Tx(u->hal->pdev, 0x81, (uint8_t *)u->tx_dma_buf, (uint16_t)n);
 }
 
 static int usb_stream_write(stream_device *self, const void *buf, size_t len)
@@ -409,11 +440,37 @@ static int usb_stream_write(stream_device *self, const void *buf, size_t len)
     usb *u = (usb *)self;
     ringbuffer *rb = u->tx_rb;
     if (!rb) return -1;
-    /* Stage the bytes (non-blocking). Overwrite is OFF, so if the host is not
-     * draining fast enough this returns fewer than len and the caller applies
-     * back-pressure instead of us silently losing data. */
+    /* Atomic whole-frame staging (no partial frames): USB CDC is a byte stream,
+     * but the App writes discrete MAVLink frames (21/40/43 B etc). rb->write with
+     * overwrite OFF can stop mid-frame when the ring runs out of space, leaving a
+     * TRUNCATED frame in the ring; the host then reassembles garbage -> the
+     * seq-repeat / CRC errors / byte-loss. So: only accept the frame if the ring
+     * has room for ALL of it (free_space >= len); otherwise return 0 so the App
+     * applies back-pressure and retries the WHOLE frame later, never a fragment.
+     * (SPSC: the only consumer is usb_tx_pump, and producers are serialized by
+     * the caller task model, so free_space-check + write is safe enough.) */
+    size_t fs = rb->fun->free_space(rb);
+    if (fs < len) {
+        return 0;                                  /* not enough room: reject whole frame */
+    }
     size_t stored = rb->fun->write(rb, buf, len);
-    usb_tx_pump(u);                               /* arm IN if it is idle */
+    if (stored != len) {
+        /* Shouldn't happen after the free_space check, but guard anyway: a
+         * partial write would corrupt framing. Drop it and let the caller retry. */
+        return 0;
+    }
+    /* NOTE: usb_tx_pump() is deliberately NOT called here. It is the TX ring's
+     * SINGLE consumer and is now driven ONLY from console_run's per-iteration
+     * USB_IOCTL_TX_PUMP (every 1ms). Having the App ALSO call it here made
+     * usb_tx_pump re-entrant across the App task and the console task: two
+     * callers could both pass the pending==0 test (a completing XFRC clears
+     * pending between them), both consume the single-consumer ring (tail
+     * advances twice / same chunk read twice) and both write the shared
+     * tx_dma_buf, so the second DCD_EP_Tx armed a CORRUPTED chunk (frame-mid
+     * slice like "fd 1f 01 01" instead of a clean frame header) -> the byte
+     * duplication / seq-repeat on the wire. Restricting pumping to the 1ms
+     * console loop keeps a strict single consumer (sub-1ms latency is ample
+     * for the 20ms telemetry cadence). */
     return (int)stored;
 }
 
