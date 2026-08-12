@@ -338,11 +338,25 @@ static void usb_isr(void *ctx)
  * stay valid for the whole IN transfer and must not be a stack/CCM buffer. */
 static void usb_tx_pump(usb *u)
 {
-    if (!u || u->bulk_tx_pending)
-        return;                                   /* IN busy: wait for XFRC */
+    if (!u)
+        return;
     ringbuffer *rb = u->tx_rb;
     if (!rb)
         return;
+    if (u->bulk_tx_pending) {
+        /* SELF-HEAL for a LOST XFRC: if the previous IN fully completed at the
+         * silicon (all bytes drained into the TX FIFO and the host read them all)
+         * but the XFRC interrupt was never serviced, bulk_tx_pending stays 1 and
+         * TX permanently wedges (and the device can drop off the USB bus). This
+         * is a known slave/FIFO-mode race. Detect it cheaply and force-clear
+         * pending so the stream resumes. usb_tx_pump is the TX ring's ONLY
+         * consumer and runs from the main loop, so this is safe here. */
+        if (usb_hal_tx_ep_complete(u->hal, 0x81)) {
+            u->bulk_tx_pending = 0;
+        } else {
+            return;                               /* IN busy: wait for XFRC */
+        }
+    }
     /* Atomic section around "check idle -> consume ring -> mark pending".
      * usb_tx_pump is now called from MULTIPLE main-loop contexts (usb_stream_write,
      * the per-iteration USB_IOCTL_TX_PUMP from console_run, and an explicit App
@@ -365,6 +379,13 @@ static void usb_tx_pump(usb *u)
      * the TX FIFO. Either way only ONE IN is armed at a time and bulk_tx_pending
      * guards re-entry, so this single buffer is never overwritten mid-transfer. */
     u->bulk_tx_pending = 1;                       /* set BEFORE arming */
+    /* Zero the whole 64B DMA staging buffer BEFORE reading into it. In slave
+     * mode USB_OTG_WritePacket reads (len+3)/4 32-bit words from the source, so
+     * when the chunk length n is not a multiple of 4 it pulls up to 3 stale
+     * bytes past n into the TX FIFO; those stale bytes come from a previous
+     * pump and shift the downstream byte stream (the seq-repeat / CRC errors).
+     * Clearing first makes those padding bytes deterministic zeros. */
+    memset(u->tx_dma_buf, 0, sizeof(u->tx_dma_buf));
     size_t n = rb->fun->read(rb, u->tx_dma_buf, sizeof(u->tx_dma_buf));
     irq_unlock(st);
     if (n == 0) {
@@ -373,6 +394,13 @@ static void usb_tx_pump(usb *u)
         u->bulk_tx_pending = 0;
         return;
     }
+    /* NOTE: DCD_EP_Tx is deliberately called AFTER irq_unlock(st). Holding
+     * irq_lock across it was tried and made the bulk-IN XFRC stall worse
+     * (bulk_tx_pending stuck at 1 after a single pump) — the slave/FIFO-mode
+     * IN-complete path relies on the Tx-FIFO-Empty ISR (masked by irq_lock)
+     * to drain tx_dma_buf into the FIFO; arming the EP while that ISR is
+     * masked wedges the transfer. irq_lock only wraps the short
+     * "check idle -> consume ring -> mark pending" region. */
     DCD_EP_Tx(u->hal->pdev, 0x81, u->tx_dma_buf, (uint16_t)n);
 }
 

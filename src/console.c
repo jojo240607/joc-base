@@ -417,6 +417,46 @@ static void cmd_usbdbg(app_ctx_t *c, const char *line)
     }
 }
 
+/* USBTX <count>: 自包含 USB 下行诊断。往 usb0 连续写 N 个【33 字节帧】（非 4 的倍数，
+ * 刻意落在 USB_OTG_WritePacket 的 (len+3)/4 字边界上），每帧：
+ *   [0]=0xAA 帧标记, [1..4]=seq(小端 u32), [5]=0xBB, [6]=0xCC,
+ *   [7..32]=26 字节 payload，每字节=(offset+seq)&0xFF。
+ * host 端抓 COM12 原始流即可逐字节校验：seq 单调递增、每帧 33 字节、payload 与 seq 相关。
+ * 若有字节污染/重复/错位，立刻能从 seq 不连续或 payload 模式错看出。用单任务(console)驱动，
+ * 排除 App 多任务并发因素。配合 COM8 `USBDBG 1` 看 usb_tx_pump 每块的 [uTX] trace。 */
+static void cmd_usbtx(app_ctx_t *c, const char *line)
+{
+    int count = 500;
+    if (line[6] == ' ') count = atoi(line + 7);
+    if (count <= 0) count = 500;
+    device *usbd = device_manager_get("usb0");
+    if (!usbd) { usb_reply(c, "USBTX: no dev\r\n"); return; }
+    if (usbd->vtable->open(usbd)) { usb_reply(c, "USBTX: open FAIL\r\n"); return; }
+
+    char out[48];
+    int n = snprintf(out, sizeof(out), "USBTX: sending %d frames (33B each)...\r\n", count);
+    c->console->vtable->write(c->console, out, (size_t)n);
+
+    uint8_t frame[33];
+    for (int f = 0; f < count; f++) {
+        uint32_t seq = (uint32_t)f;
+        frame[0] = 0xAA;
+        frame[1] = (uint8_t)(seq & 0xFF);
+        frame[2] = (uint8_t)((seq >> 8) & 0xFF);
+        frame[3] = (uint8_t)((seq >> 16) & 0xFF);
+        frame[4] = (uint8_t)((seq >> 24) & 0xFF);
+        frame[5] = 0xBB;
+        frame[6] = 0xCC;
+        for (int i = 0; i < 26; i++)
+            frame[7 + i] = (uint8_t)((i + (int)seq) & 0xFF);
+        size_t wr = usbd->vtable->write(usbd, frame, sizeof(frame));
+        /* 轻微背压保护：ring 满时让出，避免无限积压 */
+        if (wr == 0) rtos_msleep(1);
+    }
+    n = snprintf(out, sizeof(out), "USBTX: done %d frames\r\n", count);
+    c->console->vtable->write(c->console, out, (size_t)n);
+}
+
 static void cmd_usbrst(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -587,6 +627,7 @@ static const cmd_entry_t g_cmds[] = {
     { "USBCLOSE", cmd_usbclose, 0 },
     { "USBSTAT",  cmd_usbstat,  0 },
     { "USBDBG",   cmd_usbdbg,   1 },
+    { "USBTX",    cmd_usbtx,    0 },
     { "USBRST",   cmd_usbrst,   0 },
     { "IOXFER",   cmd_ioxfer,   0 },
     { "UARTDMA",  cmd_uartdma,  0 },

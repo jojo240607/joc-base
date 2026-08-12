@@ -60,4 +60,9 @@ uint32_t usb_hal_gusbcfg(usb_hal_handle_t *h);
 uint32_t usb_hal_diepctl(usb_hal_handle_t *h, uint8_t ep);
 uint32_t usb_hal_doepctl(usb_hal_handle_t *h, uint8_t ep);
 
+/* SELF-HEAL: returns 1 if the bulk-IN transfer on `epnum` fully completed at the
+ * silicon (xfer_count==xfer_len and DIEPTSIZ.xfersize==0) yet XFRC was lost, so
+ * the driver can clear bulk_tx_pending instead of wedging TX forever. */
+int usb_hal_tx_ep_complete(usb_hal_handle_t *h, uint8_t epnum);
+
 #endif /* USB_HAL_H */

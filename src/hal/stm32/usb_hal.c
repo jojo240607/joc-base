@@ -59,3 +59,22 @@ uint32_t usb_hal_dctl(usb_hal_handle_t *h)         { return h->pdev->regs.DREGS-
 uint32_t usb_hal_gusbcfg(usb_hal_handle_t *h)      { return h->pdev->regs.GREGS->GUSBCFG; }
 uint32_t usb_hal_diepctl(usb_hal_handle_t *h, uint8_t ep) { return h->pdev->regs.INEP_REGS[ep]->DIEPCTL; }
 uint32_t usb_hal_doepctl(usb_hal_handle_t *h, uint8_t ep) { return h->pdev->regs.OUTEP_REGS[ep]->DOEPCTL; }
+
+int usb_hal_tx_ep_complete(usb_hal_handle_t *h, uint8_t epnum)
+{
+    /* SELF-HEAL support: returns 1 if the bulk-IN transfer on `epnum` has FULLY
+     * completed at the silicon level — all bytes were drained into the TX FIFO
+     * (ST's software xfer_count reached xfer_len) AND the host has read them all
+     * (hardware DIEPTSIZ.xfersize == 0) — yet the XFRC interrupt was not observed.
+     * When that happens bulk_tx_pending stays 1 forever and TX wedges. The driver
+     * uses this to detect a lost-XFRC and safely clear pending. */
+    USB_OTG_EP *ep = &h->pdev->dev.in_ep[epnum & 0x7F];
+    if (ep->xfer_len == 0)
+        return 0;
+    if (ep->xfer_count < ep->xfer_len)
+        return 0;                                 /* data still being drained into FIFO */
+    uint32_t dieptsiz = h->pdev->regs.INEP_REGS[epnum & 0x7F]->DIEPTSIZ;
+    if ((dieptsiz & 0x7FFFFUL) != 0)
+        return 0;                                 /* host has NOT read all bytes yet */
+    return 1;                                     /* transfer done, XFRC presumably lost */
+}
