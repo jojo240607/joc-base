@@ -7,6 +7,7 @@
 #include "hal/stm32/usb_hal.h"
 #include "irq_manager.h"
 #include "common/ringbuffer.h"
+#include "common/lock.h"       /* irq_lock/irq_unlock: make usb_tx_pump atomic vs the IN-complete ISR */
 #include "rtos.h"              /* rtos_msleep: soft re-enum needs a host-visible disconnect pulse */
 #include <stdlib.h>
 #include <string.h>
@@ -340,17 +341,38 @@ static void usb_tx_pump(usb *u)
     if (!u || u->bulk_tx_pending)
         return;                                   /* IN busy: wait for XFRC */
     ringbuffer *rb = u->tx_rb;
-    if (!rb || rb->fun->is_empty(rb))
-        return;                                   /* nothing staged to send */
+    if (!rb)
+        return;
+    /* Atomic section around "check idle -> consume ring -> mark pending".
+     * usb_tx_pump is now called from MULTIPLE main-loop contexts (usb_stream_write,
+     * the per-iteration USB_IOCTL_TX_PUMP from console_run, and an explicit App
+     * TX_PUMP), and bulk_tx_pending is also cleared by the IN-complete ISR
+     * (usbd_cdc_tx_done). Without a lock two callers could both pass the
+     * pending==0 test and both consume the single-consumer ring (tail advances
+     * twice / same chunk read twice) and corrupt the drain. irq_lock masks the
+     * USB ISR too, so bulk_tx_pending+ring access is fully atomic vs usbd_cdc_tx_done.
+     * bulk_tx_pending is set INSIDE the lock BEFORE reading, so a second caller
+     * sees pending==1 and backs off. The section is very short (a few loads + at
+     * most a 64B ring read), so the PRIMASK window is negligible. */
+    irq_state_t st = irq_lock();
+    if (u->bulk_tx_pending || rb->fun->is_empty(rb)) {
+        irq_unlock(st);
+        return;
+    }
     /* Stage into the DMA-safe buffer (main SRAM). In OTG-DMA mode the OTG's
      * built-in DMA reads from this buffer directly; a stack buffer would be in
      * CCM and unreachable by the DMA. In slave/FIFO mode the CPU copies it into
      * the TX FIFO. Either way only ONE IN is armed at a time and bulk_tx_pending
      * guards re-entry, so this single buffer is never overwritten mid-transfer. */
-    size_t n = rb->fun->read(rb, u->tx_dma_buf, sizeof(u->tx_dma_buf));
-    if (n == 0)
-        return;
     u->bulk_tx_pending = 1;                       /* set BEFORE arming */
+    size_t n = rb->fun->read(rb, u->tx_dma_buf, sizeof(u->tx_dma_buf));
+    irq_unlock(st);
+    if (n == 0) {
+        /* Ring drained empty concurrently (another consumer took the last chunk).
+         * Clear pending so the next TX_PUMP can start a fresh IN when data arrives. */
+        u->bulk_tx_pending = 0;
+        return;
+    }
     DCD_EP_Tx(u->hal->pdev, 0x81, u->tx_dma_buf, (uint16_t)n);
 }
 

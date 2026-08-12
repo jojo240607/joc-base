@@ -638,7 +638,17 @@ void console_run(app_ctx_t *c)
             c->console = c->usb;        /* 命令来自 USB CDC -> 响应也走 USB */
             from_usb = 1;
         } else {
-            if (c->usb) c->usb->vtable->ioctl(c->usb, USB_IOCTL_RX_REARM, NULL);
+            if (c->usb) {
+                /* 周期性地从 TX staging ring 泵数据到 bulk-IN 端点。
+                 * 关键：usbd_cdc_tx_done()（IN 完成 ISR）只清 bulk_tx_pending，
+                 * 不消费 TX ring（单消费者不变量，ISR 不得碰 ring）。若这里不
+                 * 周期泵，则"高频写入 + TX ring 满"时，一块 IN 发送完成后剩下的
+                 * 数据要等 App 下次 write / 显式 TX_PUMP 才继续，drain 停顿。
+                 * 每 1ms 调一次是安全 no-op（usb_tx_pump 在 pending 或 ring 空时
+                 * 直接返回），保证 XFRC 后 1ms 内自动发送下一块。 */
+                c->usb->vtable->ioctl(c->usb, USB_IOCTL_TX_PUMP, NULL);
+                c->usb->vtable->ioctl(c->usb, USB_IOCTL_RX_REARM, NULL);
+            }
             rtos_msleep(1);
             continue;
         }
