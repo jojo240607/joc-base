@@ -672,12 +672,13 @@ void console_run(app_ctx_t *c)
     uint32_t idx = 0;
     for (;;) {
         char ch = 0;
-        int from_usb = 0;
+        /* USB CDC（usb0）专供 App 的 MAVLink 上行/下行数据通道，不再作为控制台
+         * 输入探测源——否则 console_run 会与 uplink 任务竞争消费同一个 rx_rb
+         * ring，导致 uplink 的 read() 永远取到 0（字节被控制台抢读走当命令输入）。
+         * 控制台输入只来自 UART（COM8）。usb0 的 TX_PUMP / RX_REARM 仍在此周期
+         * 驱动（见下方 else 分支），保证下行 drain 与 OUT 端点 back-pressure 自愈。 */
         if (c->uart && c->uart->vtable->read(c->uart, &ch, 1) == 1) {
             c->console = c->uart;
-        } else if (c->usb && c->usb->vtable->read(c->usb, &ch, 1) == 1) {
-            c->console = c->usb;        /* 命令来自 USB CDC -> 响应也走 USB */
-            from_usb = 1;
         } else {
             if (c->usb) {
                 /* 周期性地从 TX staging ring 泵数据到 bulk-IN 端点。
@@ -694,9 +695,8 @@ void console_run(app_ctx_t *c)
             continue;
         }
 
-        /* 本地回显到来源端口 */
-        if (from_usb) c->usb->vtable->write(c->usb, &ch, 1);
-        else uart_console_putc(ch);
+        /* 本地回显（仅 UART 控制台） */
+        uart_console_putc(ch);
 
         if (ch == '\r' || ch == '\n') {
             if (idx > 0) {

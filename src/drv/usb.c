@@ -51,6 +51,7 @@ struct _usb {
     uint8_t  address;
     uint8_t  config;
     int      connected;
+    int      opened;                 /* open() latch: second open is idempotent (no re-enum) */
 
     /* CDC line coding / state (7 bytes: 4B baud LE, 1B stop, 1B parity, 1B data) */
     uint8_t  line_coding[7];
@@ -92,6 +93,10 @@ struct _usb {
     uint32_t dbg_enum;
     uint32_t dbg_setup;
     uint32_t dbg_out;
+    uint32_t dbg_out_bytes;   /* 实际 push 进 rx_rb 的字节数（诊断 uplink） */
+    uint32_t dbg_read_calls;  /* usb_stream_read 被调用次数（诊断 uplink） */
+    uint32_t dbg_read_ret;    /* 最近一次 usb_stream_read 返回字节数 */
+    uint32_t dbg_read_total;  /* 累计 usb_stream_read 返回的字节数 */
     uint32_t dbg_in;
     uint32_t dbg_setaddr;
 
@@ -160,9 +165,10 @@ void usbd_cdc_on_line_state(uint8_t s)
 void usbd_cdc_rx_push(const uint8_t *data, uint16_t len)
 {
     ringbuffer *rb = g_usb ? stream_device_get_ringbuffer((stream_device *)g_usb) : 0;
+    size_t pushed = 0;
     for (uint16_t i = 0; i < len && rb; i++)
-        rb->fun->put(rb, data[i]);
-    if (g_usb) g_usb->dbg_out++;   /* count bulk-OUT completions */
+        if (rb->fun->put(rb, data[i]) == 0) pushed++;
+    if (g_usb) { g_usb->dbg_out++; g_usb->dbg_out_bytes += (uint32_t)pushed; }
 }
 
 size_t usbd_cdc_rx_room(void)
@@ -479,11 +485,13 @@ static int usb_stream_read(stream_device *self, void *buf, size_t len)
     ringbuffer *rb = stream_device_get_ringbuffer(self);
     uint8_t *p = (uint8_t *)buf;
     size_t done = 0;
+    if (g_usb) g_usb->dbg_read_calls++;
     while (done < len) {
         if (!rb || rb->fun->is_empty(rb)) break;   /* non-blocking */
         rb->fun->get(rb, &p[done]);
         done++;
     }
+    if (g_usb) { g_usb->dbg_read_ret = (uint32_t)done; g_usb->dbg_read_total += (uint32_t)done; }
     /* SELF-HEAL the bulk-OUT back-pressure latch.
      * cdc_DataOut() only re-arms the OUT endpoint when rx_room() >= 64; if the
      * RX ring was full it leaves g_out_nak=1 (endpoint NAK'd, host retries).
@@ -512,6 +520,18 @@ static int usb_stream_write_frame(stream_device *self, const void *buf, size_t l
 static int usb_dev_open(device *self)
 {
     usb *u = (usb *)self;
+
+    /* Idempotent: a second open (e.g. the uplink task also opens the same
+     * usb0 device already opened by telemetry) must NOT re-run USBD_Init /
+     * usb_hal_connect — that re-enumerates the bus (DP toggles), tearing down
+     * the live bulk-OUT endpoint that the host already configured, so host
+     * writes would be silently NAK'd and usb_stream_read would return 0
+     * forever. Just ensure the RX ring is attached and return success. */
+    if (u->opened) {
+        if (!stream_device_get_ringbuffer((stream_device *)u))
+            stream_device_init_ringbuffer((stream_device *)u, u->rx_storage, USB_RX_BUF_SIZE);
+        return 0;
+    }
 
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
@@ -552,6 +572,7 @@ static int usb_dev_open(device *self)
 
     usb_hal_connect(u->hal);            /* pull DP up -> connect */
     stream_device_init_ringbuffer((stream_device *)u, u->rx_storage, USB_RX_BUF_SIZE);
+    u->opened = 1;
     return 0;
 }
 
@@ -561,6 +582,7 @@ static int usb_dev_close(device *self)
     irq_id_t id = usb_hal_irq_id(u->hal);
     irq_manager_detach(id, usb_isr, u);
     usb_hal_disconnect(u->hal);
+    u->opened = 0;
     return 0;
 }
 
