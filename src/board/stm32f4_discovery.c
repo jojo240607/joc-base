@@ -111,8 +111,16 @@ static const uart_config_t g_uart0 = {
      * uart0 RX 用 DMA2_Stream5,无冲突。 */
     .dma_tx_req = DMA_REQ_USART1_TX,      /* TX -> DMA2_Stream7 CH4 */
     .dma_rx_req = DMA_REQ_USART1_RX,      /* RX -> DMA2_Stream5 CH4 */
+#ifdef JOC_RENODE
+    /* Renode 无 UART<->DMA 握手：DMA 引擎下 TX 永久阻塞在 TC 信号量、RX 环形 DMA
+     * 不搬运，控制台静默。改 IRQ 引擎（TXE 中断逐字节发 + RXNE 中断收），Renode
+     * STM32_UART 模型完整模拟，控制台输入输出均可工作。 */
+    .engine     = STREAM_MODE_IRQ,        /* Renode: interrupt-driven TX/RX */
+    .framing    = UART_FRAME_NONE,        /* Renode: no IDLE-line DMA framing */
+#else
     .engine     = STREAM_MODE_DMA,        /* RX engine: circular DMA */
     .framing    = UART_FRAME_IDLE,        /* framing: IDLE marks frame end (zero per-byte ISR) */
+#endif
 };
 /* uart1: GPS 串口（飞控 Rust 应用层经此收 NMEA/UBX）。USART2@PA2/PA3，非控制台。
  * RTOS 总线/外设提供到 uart 这一层，具体 GPS 协议解析由 Rust 应用层完成。 */

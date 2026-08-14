@@ -1,0 +1,37 @@
+# stm32f407_jos_app.resc - boot jOS release firmware + Rust app partition in Renode
+#
+# Track B (dual-partition): the Rust app is linked independently (app.ld) into
+# app.bin with a 16-byte app_header_t at 0x08060000.  We load it into the
+# emulated flash with `sysbus LoadBinary`; the firmware's app_slot_load_app()
+# validates magic/ABI, zeroes APP_RAM and spawns the async app_host task.
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32f407_jos_app.resc" > app_run.log 2>&1
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32f4_jos.repl
+
+# attach the UART capture hook (echoes firmware console + Rust logs to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (release + RENODE build)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_rel/stm32f407_minimal.elf
+
+# load the Rust app partition (app_header_t + code) at APP_FLASH 0x08060000
+sysbus LoadBinary @D:/projects/mcu/os/joc-app-rust/app.bin 0x08060000
+
+# quick functional verification: Renode default 100 MIPS - covers ~3.5-4.5x
+# more simulated time per wall second than 168 MIPS. For timing fidelity
+# (real 168 MHz core at IPC ~1) switch this to 168.
+cpu PerformanceInMips 100
+
+start
+sleep 2
+# prove the console still answers while the app is running
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd_rustdiag.py
+sleep 30
+# probe again mid-run to catch any stall in the app flow
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd.py
+sleep 30
+quit

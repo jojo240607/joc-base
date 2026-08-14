@@ -1,0 +1,12 @@
+# stm32f407_jos_rustdiag.resc - quick RUSTDIAG diagnostic test
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32f4_jos.repl
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_rel/stm32f407_minimal.elf
+sysbus LoadBinary @D:/projects/mcu/os/joc-app-rust/app.bin 0x08060000
+cpu PerformanceInMips 100
+start
+sleep 3
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd_rustdiag.py
+sleep 3
+quit

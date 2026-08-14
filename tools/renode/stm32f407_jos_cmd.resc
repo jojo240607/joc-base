@@ -1,0 +1,29 @@
+# stm32f407_jos_cmd.resc - boot jOS firmware in Renode and exercise the console
+#
+# Sends a few console commands through the emulated USART1 RX path and captures
+# the responses, proving the full console loop (RXNE IRQ -> ring buffer ->
+# command dispatch -> TXE IRQ -> output) works headlessly.
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32f407_jos_cmd.resc" > cmd.log 2>&1
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32f4_jos.repl
+
+# attach the UART capture hook (echoes firmware console to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (release + RENODE build)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_rel/stm32f407_minimal.elf
+
+# Renode default 100 MIPS: fast wall coverage for quick functional checks.
+# For timing fidelity (real 168 MHz core at IPC ~1) switch this to 168.
+cpu PerformanceInMips 100
+
+start
+sleep 2
+# send console commands through USART1 RX (responses captured to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd.py
+sleep 3
+quit

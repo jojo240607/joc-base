@@ -1,0 +1,25 @@
+# stm32f407_jos.resc — boot jOS firmware in Renode (headless)
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32f407_jos.resc" > run.log 2>&1
+#
+# The resc script: create machine -> load stm32f4 Discovery platform ->
+# attach UART capture hook -> load firmware ELF -> run for RENODE_RUN_SECONDS
+# virtual seconds -> quit. All console output lands in run.log.
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32f4_jos.repl
+
+# attach the UART capture hook (echoes firmware console to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (release + RENODE build)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_rel/stm32f407_minimal.elf
+
+# speed up emulation; 100 MIPS is roughly 60% of real 168 MHz throughput
+cpu PerformanceInMips 100
+
+start
+sleep 10
+quit

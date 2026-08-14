@@ -56,6 +56,12 @@ void app_main_task(void *arg)
 
     /* Bring up the CDC device EARLY and leave it connected so a real PC host can
      * enumerate it at boot — INDEPENDENT of the BIST running in its own task. */
+#ifdef JOC_RENODE
+    /* Renode 无 USB OTG 模型（stm32f4.repl 仅有 USB:RESET tag）：open 会写未映射的
+     * OTG FS 寄存器区 -> BusFault/HardFault -> WFI 挂死。Renode 构建跳过 USB。 */
+    device *d_usb = NULL;
+    log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: SKIP (renode: no USB OTG model)\n");
+#else
     device *d_usb = device_manager_get("usb0");
     if (!d_usb) {
         log_printf(app_log(), LOG_INFO, "main", "[boot] usb0: NOT REGISTERED\n");
@@ -65,6 +71,7 @@ void app_main_task(void *arg)
         log_printf(app_log(), LOG_INFO, "main",
                    "[boot] usb0: connected (CDC ACM, VID_0483 PID_5740)\n");
     }
+#endif
 
     /* 填充应用上下文，供命令 handler 使用（console.c 直接读 c->uart/c->adc/...） */
     c->uart      = d_uart;

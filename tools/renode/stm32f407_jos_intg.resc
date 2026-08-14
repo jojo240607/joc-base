@@ -1,0 +1,34 @@
+# stm32f407_jos_intg.resc - boot jOS release firmware + integration-test Rust app in Renode
+#
+# Integration test (Layer 3): exercises Rust-to-RTOS ABI paths:
+#   Test A: Device open/close loop (6 devices)
+#   Test B: msleep precision (6 probe points: 1/5/10/20/50/100 ms)
+#   Test C: Concurrent uart0 writes (2 tasks, 20 iterations each)
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32f407_jos_intg.resc" > intg_run.log 2>&1
+#
+# Verify:
+#   python tools/renode/verify_app.py build_rel/intg_run.log --mode=intg
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32f4_jos.repl
+
+# attach the UART capture hook
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (release + RENODE build)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_rel/stm32f407_minimal.elf
+
+# load the integration-test Rust app (features=integration-test)
+sysbus LoadBinary @D:/projects/mcu/os/joc-app-rust/app.bin 0x08060000
+
+cpu PerformanceInMips 500
+
+start
+# Integration test suite runs ~1.5s of emulation time, but host UART capture
+# makes wall-clock run ~30-40x slower; wait 120s to cover the whole suite +
+# margin (END marker must appear before quit).
+sleep 120
+quit

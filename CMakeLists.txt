@@ -24,6 +24,15 @@ option(RTOS_SELFTEST "Build with jOS RTOS self-tests + board BIST (OFF for relea
 # 供 RTOSTRACE 命令导出。默认 OFF（零开销、零 RAM）；开发/诊断构建设为 ON。
 option(RTOS_SCHED_TRACE "Build with scheduler-switch trace ring buffer (RTOSTRACE cmd)" OFF)
 
+# ---- Renode 模拟器构建开关 ----
+# 目标：让固件在 Renode (stm32f4_discovery.repl) 里跑通控制台，供无硬件开发/验证。
+# 开启后定义 JOC_RENODE=1，固件侧需规避 Renode 未模拟的外设/握手：
+#   - usb0 (USB OTG FS)：Renode 无 OTG 模型，open 会写未映射地址 -> HardFault，跳过；
+#   - uart0 控制台：Renode 无 UART<->DMA 握手，DMA TX 会永久阻塞在 TC 信号量，改 IRQ 引擎；
+# 其余外设（RCC/GPIO/USART/ADC/TIM/EXTI/I2C/SPI/CAN/iwdg/rtc/rng/crc/flash/DMA 内存搬运）
+# Renode 均有模型，行为不变。
+option(RENODE "Build for Renode emulation (skip non-emulated peripherals)" OFF)
+
 # ---- App RAM 分区规划（方案 B：开发/发布分流，详见 docs/app-slot-design.md）----
 # 主 SRAM 128KB：系统 .data/.bss + 堆放在低端，App 运行期 .bss 下沉到系统堆之下、
 # g_app_slot(0x2001DC00, 固定契约) 之上。App RAM 起点/尺寸随构建分流：
@@ -307,6 +316,12 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
     RTOS_CCM_DATA_SECTION=\"${RTOS_CCM_DATA_SECTION}\"
     ${SYS_STATIC_HEAP_DEF}
 )
+
+# Renode 构建：注入 JOC_RENODE=1，驱动/任务层据此规避未模拟外设。
+if(RENODE)
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE JOC_RENODE=1)
+  message(STATUS "Renode build ENABLED (JOC_RENODE=1: skip usb0, uart0 IRQ engine)")
+endif()
 
 target_compile_options(${PROJECT_NAME}.elf PRIVATE
     ${CPU_FLAGS}

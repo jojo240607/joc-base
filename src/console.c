@@ -173,6 +173,39 @@ static void cmd_appload(app_ctx_t *c, const char *line)
     c->console->vtable->write(c->console, out, (size_t)n);
 }
 
+/* RUSTDIAG: 输出 Rust 侧集成状态诊断。
+ * 通过 g_app_slot 和 rtos_rt_violation() 读取集成边界关键指标，
+ * 不依赖 Rust 应用层是否加载（g_app_slot 在 app_slot_init 后始终就绪）。 */
+static void cmd_rustdiag(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    char out[180];
+    int n;
+
+    /* ABI header */
+    n = snprintf(out, sizeof(out),
+                 "RUSTDIAG: magic=0x%08lx version=%lu dl=%lu\r\n",
+                 (unsigned long)g_app_slot.magic,
+                 (unsigned long)g_app_slot.version,
+                 (unsigned long)rtos_rt_violation());
+    c->console->vtable->write(c->console, out, (size_t)n);
+
+    /* Probe key devices */
+    static const char *dev_names[] = {
+        "uart0", "usb0", "pwm0", "i2c0", "spi0", "uart1",
+    };
+    for (size_t i = 0; i < sizeof(dev_names) / sizeof(dev_names[0]); i++) {
+        const char *name = dev_names[i];
+        /* Use app_slot's dev_get (same path Rust uses) */
+        device *d = g_app_slot.dev_get ? g_app_slot.dev_get(name) : NULL;
+        uintptr_t ptr = (uintptr_t)d;
+        n = snprintf(out, sizeof(out),
+                     "  dev_get(\"%s\")=0x%04lx\r\n",
+                     name, (unsigned long)ptr);
+        c->console->vtable->write(c->console, out, (size_t)n);
+    }
+}
+
 static void cmd_rtos(app_ctx_t *c, const char *line)
 {
     (void)line;
@@ -301,11 +334,12 @@ static void cmd_rtostrace(app_ctx_t *c, const char *line)
     (void)c; (void)line;
 #if RTOS_SCHED_TRACE
     rtos_trace_dump();
+#if RTOS_SELFTEST
     selftest_reply(c, "RTOSTRACE", 1);
+#endif
 #else
     log_printf(app_log(), LOG_INFO, "rtos",
                "[RTOSTRACE] disabled (RTOS_SCHED_TRACE=0, rebuild with -DRTOS_SCHED_TRACE=1)\n");
-    selftest_reply(c, "RTOSTRACE", 0);
 #endif
 }
 
@@ -316,11 +350,12 @@ static void cmd_rtosbench(app_ctx_t *c, const char *line)
     (void)c; (void)line;
 #if RTOS_SCHED_TRACE
     rtos_bench_run();
+#if RTOS_SELFTEST
     selftest_reply(c, "RTOSBENCH", 1);
+#endif
 #else
     log_printf(app_log(), LOG_INFO, "rtos",
                "[RTOSBENCH] disabled (RTOS_SCHED_TRACE=0, rebuild with -DRTOS_SCHED_TRACE=1)\n");
-    selftest_reply(c, "RTOSBENCH", 0);
 #endif
 }
 
@@ -636,6 +671,7 @@ static const cmd_entry_t g_cmds[] = {
     { "RUST",     cmd_rust,     0 },
 #endif
     { "APP_LOAD", cmd_appload,  0 },   /* 手动重新拉起 App（异步 app_host 任务） */
+    { "RUSTDIAG", cmd_rustdiag, 0 },   /* Rust 侧集成状态诊断 */
 };
 
 static void dispatch(app_ctx_t *c, const char *line)
