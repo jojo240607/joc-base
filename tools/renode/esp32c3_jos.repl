@@ -1,0 +1,54 @@
+// esp32c3_jos.repl - jOS firmware platform for Renode (ESP32-C3 RISC-V)
+//
+// Self-contained platform description: no stock Renode ESP32-C3 model exists.
+// All peripherals are either generic Renode models or Tag placeholders.
+//
+// Emulated peripherals:
+//   - CPU: RiscV32 (rv32imc_zicsr_zifencei)
+//   - DRAM: 192 KB @ 0x3FC80000 (.data/.bss/stack/heap)
+//   - IRAM: 192 KB @ 0x40380000 (.text/.rodata/RTOS segments)
+//   - APP_FLASH: 2 MB @ 0x40200000 (memory-mapped, app_slot_boot.c probe)
+//   - PLIC: PlatformLevelInterruptController @ 0x0C000000 (1 context, M-mode)
+//   - CLINT: CoreLevelInterruptor @ 0x02000000 (timer + software IPI)
+//   - UART0: NS16550 @ 0x60000000 (firmware console)
+//   - GPIO: Tag placeholder @ 0x60004000 (no model needed in Phase-1)
+//
+// APP_RAM (0x3FCAF000, 4 KB) and APP_SLOT_RAM (0x3FCAFC00, 1 KB) are within
+// the DRAM region — no separate memory blocks needed.
+//
+// CPU clock: set via `cpu PerformanceInMips 40` in .resc
+
+/* ==================== CPU ==================== */
+
+cpu: CPU.RiscV32 @ sysbus
+    cpuType: "rv32imc_zicsr_zifencei"
+    timeProvider: clint
+
+/* ==================== Memory ==================== */
+
+sram: Memory.MappedMemory @ sysbus 0x3FC80000
+    size: 0x00030000
+
+iram: Memory.MappedMemory @ sysbus 0x40380000
+    size: 0x00030000
+
+app_flash: Memory.MappedMemory @ sysbus 0x40200000
+    size: 0x00180000
+
+/* ==================== Interrupt Controller ==================== */
+
+plic: IRQControllers.PlatformLevelInterruptController @ sysbus 0x0C000000
+    0 -> cpu@11
+    numberOfSources: 48
+    numberOfContexts: 1
+
+clint: IRQControllers.CoreLevelInterruptor  @ sysbus 0x02000000
+    [0,1] -> cpu@[3,7]
+    frequency: 10000000
+
+/* ==================== UART ==================== */
+
+uart0: UART.NS16550 @ sysbus 0x60000000
+    IRQ -> plic@13
+
+/* GPIO @ 0x60004000: Phase 1 has no GPIO model (UART uses dedicated pins) */

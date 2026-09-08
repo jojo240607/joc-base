@@ -11,7 +11,7 @@ CMDS = ["PING", "TICKS", "ECHO hello-renode"]
 
 uart = None
 for entry in self.Machine.GetRegisteredPeripherals():
-    if str(entry.Name) == "usart1":
+    if str(entry.Name) in ("usart1", "uart0"):
         uart = clr.Convert(entry.Peripheral, Renode.Peripherals.UART.IUART)
         break
 

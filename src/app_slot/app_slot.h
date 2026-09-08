@@ -98,7 +98,14 @@ int app_slot_irq_disable(uint8_t irq_id);
  * 校验 magic/abi_version，取 entry 作为 App 入口。这样 App 镜像与系统镜像
  * 完全解耦：系统区烧一次，之后只烧 APP_FLASH 块（见 flash_app.bat）。
  * 地址契约（必须与链接脚本 APP_FLASH ORIGIN 一致）： */
-#define APP_FLASH_BASE   0x08060000u   /* 应用分区 Flash 起点（sector 7） */
+#ifndef APP_FLASH_BASE
+#define APP_FLASH_BASE   0x08060000u   /* F407 默认：sector 7（F103 由 CMake -D 覆盖为 0x08010000） */
+#endif
+/* App 分区大小（入口范围校验上界）。默认 384KB 覆盖 F407/F103 既有区段；
+ * H750 由 CMake -D 覆盖为 0x1000000u（QSPI 16MB，见 CMakeLists H750 编译宏）。 */
+#ifndef APP_FLASH_SIZE
+#define APP_FLASH_SIZE   0x00060000u
+#endif
 #define APP_HEADER_ADDR  APP_FLASH_BASE
 #define APP_HEADER_MAGIC 0x41504800u   /* "APH\0" */
 /* App 头部（烧录在 APP_FLASH 起点，由 Rust 侧 app.ld 生成并填充）。

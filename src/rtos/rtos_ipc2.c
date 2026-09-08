@@ -3,18 +3,15 @@
 #include "log/app_log.h"
 #include "irq/irq.h"
 #include "irq/irq_manager.h"
-#include "stm32f4xx.h"   /* TIM3 / RCC / TIM3_IRQn — test needs a real timer ISR */
+
 #include <stdint.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
  * jOS 同步与通信边界自测（RTOSIPC2 命令，并注册进 RTOSALL "ipc2" 条目）。
- * 覆盖准则 §2.3 S01(信号量计数边界) / S03(队列满空溢出) / S04(裸 event 广播) /
- *          S05(从 ISR 发信号量唤醒高优先级任务)。
- *
- * S05 用真实 TIM3 溢出中断（~1kHz）在 ISR 内调用 rtos_sem_give（ISR 安全），
- * 验证等待的高优先级任务被唤醒并立即运行。TIM2 留给 RTOSROBUST 的中断风暴测试，
- * 避免两个模块都定义 TIMx_IRQHandler 冲突。
+ * 覆盖准则 §2.3 S01(信号量计数边界) / S03(队列满空溢出) / S04(裸 event 广播)。
+ *          S05(从 ISR 发信号量唤醒高优先级任务)依赖真实定时器，已下沉到
+ *          src/hal/<platform>/test/ 目录（如 STM32 家族见 ipc2_s05.c）。
  * ------------------------------------------------------------------------- */
 
 /* ===================== S01 信号量计数边界 ===================== */
@@ -116,69 +113,6 @@ static int s04_broadcast(void) {
     return all;   /* event_set 唤醒所有满足者（广播） */
 }
 
-/* ===================== S05 FromISR（TIM3 溢出中断发信号量） =====================
- * 注意：本 RTOS 所有外部中断经统一 irq_manager 框架走唯一 IRQ_CommonHandler，
- * 向量表每个设备 IRQ 槽都指向它（见 startup 向量表）。因此【严禁】像裸机那样直接
- * 定义弱符号 TIM3_IRQHandler + NVIC_EnableIRQ：那样 TIM3 触发时仍由 IRQ_CommonHandler
- * 分发，而 irq_manager 中没有为 TIM3 注册回调 -> 空回调 / 故障 -> 板子冻结。必须走
- * irq_manager_attach/enable 注册回调（IRQ_PRIO_KERNEL，因为它调用内核 API，优先级数
- * 须 >= 阈值 4，通过启动期审计）。 */
-static rtos_sem_t g_s05_sem;
-static volatile int g_s05_wake;
-static volatile uint32_t g_s05_isr_cnt;
-
-/* irq_manager 回调：从 ISR 上下文调用 rtos_sem_give（ISR 安全）唤醒等待任务 */
-static void s05_tim3_isr(void *ctx) {
-    (void)ctx;
-    if (TIM3->SR & TIM_SR_UIF) {
-        TIM3->SR &= ~TIM_SR_UIF;          /* 清溢出标志，否则中断重入 */
-        g_s05_isr_cnt++;
-        rtos_sem_give(&g_s05_sem);        /* ISR 安全：唤醒等待者 + 请求 PendSV */
-    }
-}
-static void s05_timer3_start(uint32_t hz) {
-    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
-    TIM3->CR1   = 0;
-    TIM3->PSC   = 83;                              /* 84MHz / 84 = 1MHz 计数 */
-    TIM3->ARR   = (84000000u / 84u / hz) - 1u;     /* 达到 hz 溢出 */
-    TIM3->DIER |= TIM_DIER_UIE;
-    TIM3->CNT   = 0;
-    TIM3->SR    = 0;
-    TIM3->CR1  |= TIM_CR1_CEN;
-}
-static void s05_timer3_stop(void) {
-    TIM3->CR1 &= ~TIM_CR1_CEN;
-    RCC->APB1ENR &= ~RCC_APB1ENR_TIM3EN;
-}
-static void s05_waiter(void *arg) {
-    (void)arg;
-    rtos_sem_wait(&g_s05_sem);    /* 阻塞，直到 TIM3 ISR give */
-    g_s05_wake = 1;
-    rtos_msleep(10);
-}
-static int s05_from_isr(void) {
-    rtos_sem_init(&g_s05_sem, 0, 1);
-    g_s05_wake = 0; g_s05_isr_cnt = 0;
-    RTOS_TASK_STACK(st, 512);
-    rtos_task_create("s05w", s05_waiter, (void *)0, 6, st, sizeof(st));
-    rtos_msleep(20);              /* 让等待者先阻塞在信号量上 */
-
-    /* 经 irq_manager 注册 TIM3 回调（必须在使能定时器前完成，避免空窗触发空回调） */
-    irq_manager_attach((irq_id_t)TIM3_IRQn, s05_tim3_isr, NULL);
-    irq_manager_set_priority((irq_id_t)TIM3_IRQn, IRQ_PRIO_KERNEL, IRQ_CLASS_KERNEL);
-    irq_manager_enable((irq_id_t)TIM3_IRQn, s05_tim3_isr, NULL);
-
-    log_printf(app_log(), LOG_INFO, "rtos", "[IPC2] S05: TIM3 armed, starting\n");
-    s05_timer3_start(1000);       /* ~1kHz 溢出中断 */
-    uint32_t to = 0;
-    while (!g_s05_wake && to < 1000) { rtos_msleep(2); to += 2; }
-    int lok = (g_s05_wake == 1) && (g_s05_isr_cnt > 0);
-    s05_timer3_stop();
-    irq_manager_disable((irq_id_t)TIM3_IRQn, s05_tim3_isr, NULL);
-    irq_manager_detach((irq_id_t)TIM3_IRQn, s05_tim3_isr, NULL);
-    return lok;
-}
-
 int rtos_ipc2_selftest(void) {
     int ok = 1;
     log_printf(app_log(), LOG_INFO, "rtos", "[IPC2] self-test begin\n");
@@ -207,15 +141,6 @@ int rtos_ipc2_selftest(void) {
                    "[IPC2] S04 event broadcast(5 waiters): %s\n", lok ? "PASS" : "FAIL");
         RTOS_TEST_RESULT("S04_EventBroadcast", lok);
     }
-    /* S05 FromISR */
-    {
-        int lok = s05_from_isr();
-        if (!lok) ok = 0;
-        log_printf(app_log(), LOG_INFO, "rtos",
-                   "[IPC2] S05 sem-give from TIM3 ISR wakes task: %s\n", lok ? "PASS" : "FAIL");
-        RTOS_TEST_RESULT("S05_SemGiveFromISR", lok);
-    }
-
     log_printf(app_log(), LOG_INFO, "rtos", "[IPC2] self-test: %s\n", ok ? "PASS" : "FAIL");
     return ok;
 }

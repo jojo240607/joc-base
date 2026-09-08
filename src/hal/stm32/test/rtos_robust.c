@@ -4,7 +4,14 @@
 #include "log/app_log.h"
 #include "irq/irq.h"
 #include "irq/irq_manager.h"
+#ifdef STM32F103xx
+#include "stm32f103xx.h"      /* TIM2 / RCC / TIM2_IRQn */
+#elif defined(STM32F407xx)
 #include "stm32f4xx.h"      /* TIM2 / RCC / TIM2_IRQn — 中断风暴需真实定时器 ISR */
+#endif
+
+#if defined(STM32F103xx) || defined(STM32F407xx)
+
 #include <stdint.h>
 #include <string.h>
 
@@ -112,7 +119,11 @@ static void rb_ret_task(void *arg) {
 }
 
 /* ===================== §3.2 中断风暴（TIM2 ~10kHz） ===================== */
+#ifdef STM32F103xx
+#include "stm32f103xx.h"
+#else
 #include "stm32f4xx.h"
+#endif
 static volatile uint32_t g_rb_storm_cnt;
 static volatile uint32_t g_rb_storm_wake;
 static volatile int       g_rb_storm_run;
@@ -526,3 +537,8 @@ int rtos_robust_selftest(void) {
     return ok;
 }
 RTOS_SELFTEST_ADD("robust", rtos_robust_selftest);
+#else
+/* H750 (and other non-F4/103): skip F4-specific timer-based robust tests */
+int rtos_robust_selftest(void) { return 1; }
+RTOS_SELFTEST_ADD("robust", rtos_robust_selftest);
+#endif

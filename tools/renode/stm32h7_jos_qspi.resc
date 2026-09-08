@@ -1,0 +1,20 @@
+#
+# stm32h7_jos_qspi.resc — QSPI indirect-programming regression on Renode.
+# Expectation: RTOSDMA PASS (M2 regression) + QSPI reports "unavailable"
+# (Renode has no QUADSPI model; indirect programming is a silicon path).
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos_qspi.resc" > h7_qspi.log 2>&1
+#
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos.repl
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_h750/jOS.elf
+cpu PerformanceInMips 480
+start
+sleep 5
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd_h7_qspi.py
+sleep 10
+quit

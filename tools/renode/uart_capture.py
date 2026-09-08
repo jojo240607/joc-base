@@ -12,6 +12,9 @@
 import sys
 from Antmicro import Renode
 
+CAPTURE_FILE = r"d:\projects\mcu\os\joc-base\tools\renode\uart_capture.log"
+_cf = open(CAPTURE_FILE, "w")
+
 class UartCapture(object):
     def __init__(self, label):
         self.label = label
@@ -20,13 +23,18 @@ class UartCapture(object):
         self.buf += chr(b)
         sys.stdout.write(chr(b))
         sys.stdout.flush()
+        try:
+            _cf.write(chr(b))
+            _cf.flush()
+        except Exception:
+            pass
         if b == 10:                       # keep a copy of the last line
             self.buf = ""
 
 capture = None
 for entry in self.Machine.GetRegisteredPeripherals():
     name = str(entry.Name)
-    if name in ("usart1", "uart4", "uart5", "usart2", "usart3"):
+    if name in ("usart1", "uart4", "uart5", "usart2", "usart3", "uart0"):
         try:
             uart = clr.Convert(entry.Peripheral, Renode.Peripherals.UART.IUART)
             capture = UartCapture(name)
@@ -46,7 +54,7 @@ def uart_send_line(*args):
         return
     # re-resolve the peripheral (hooks are stateless across `include` reloads)
     for entry in self.Machine.GetRegisteredPeripherals():
-        if str(entry.Name) == "usart1":
+        if str(entry.Name) in ("usart1", "uart0"):
             uart = clr.Convert(entry.Peripheral, Renode.Peripherals.UART.IUART)
             for ch in line + "\r":
                 uart.WriteChar(ord(ch))

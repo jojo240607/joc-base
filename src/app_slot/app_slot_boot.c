@@ -23,16 +23,23 @@
  * 改契约（app_slot_t 字段/签名）时必须同步 +1 本值。 */
 #define RTOS_ABI_VERSION 1
 
+/* H750 轨 B：扫分区前须先把 QSPI 置为 memory-mapped 模式（0x90000000 可读）。
+ * qspi_hal.c 提供强符号（H750 构建）；F103/F407 无 QSPI，走本弱实现 no-op。
+ * Renode 构建下 qspi_hal.c 内部跳过寄存器编程（JOC_RENODE=1），直接读镜像。 */
+__attribute__((weak)) int qspi_hal_init_mm(void) { return 0; }
+
 /* App 运行期 .bss 专用 RAM 块（链接脚本 APP_RAM 段）。起点/尺寸由 CMake 经
  * APP_RAM_BASE / APP_RAM_SIZE 宏注入（与 linker 的 APP_RAM ORIGIN/LENGTH 一致，
- * 开发版 8KB、发布版约 101KB，详见 CMakeLists.txt 的 App RAM 分流）。
+ * 开发版 8KB、发布版约 111KB，详见 CMakeLists.txt 的 App RAM 分流）。
  * 整个块在挂载前清零——App 独立镜像没有自己的 C 启动 pre-init，其 .bss
- * 必须由系统加载器清零（App 不使用 .data，故无需 LMA 拷贝）。 */
+ * 必须由系统加载器清零（App 的 .data 由 Rust 运行时自拷贝，见 rust_app_start）。
+ * 注意：以下默认值必须与链接脚本 APP_RAM ORIGIN/LENGTH 一致，否则 .bss 清零
+ * 范围错误会导致 App 全局变量未初始化或踩坏系统内存。 */
 #ifndef APP_RAM_BASE
-#define APP_RAM_BASE   0x20006000u
+#define APP_RAM_BASE   0x20004000u   /* 发布版默认值；开发版由 CMake 覆盖为 0x2001F400 */
 #endif
 #ifndef APP_RAM_SIZE
-#define APP_RAM_SIZE   0x17C00u
+#define APP_RAM_SIZE   0x1BC00u      /* 发布版默认值 (111KB)；开发版由 CMake 覆盖为 0xC00 (3KB) */
 #endif
 
 /* app_host 任务运行体栈（独立栈，避免占用 App 业务栈 / 主栈）。
@@ -75,8 +82,17 @@ void app_host_task_entry(void *arg)
     }
 
     log_printf(app_log(), LOG_INFO, "app_slot",
-               "[app_host] starting App entry @0x%08X...\n",
-               (unsigned)((uintptr_t)entry & ~1u));
+               "[app_host] starting App entry @0x%08X (raw=0x%08X)...\n",
+               (unsigned)((uintptr_t)entry & ~1u),
+               (unsigned)(uintptr_t)entry);
+
+    /* 诊断：调用前打印 g_app_slot 关键信息，确认服务表已初始化 */
+    log_printf(app_log(), LOG_INFO, "app_slot",
+               "[app_host] g_app_slot @0x%08X: magic=0x%08X ver=%u task_create_rt=0x%08X\n",
+               (unsigned)(uintptr_t)&g_app_slot,
+               (unsigned)g_app_slot.magic,
+               (unsigned)g_app_slot.version,
+               (unsigned)(uintptr_t)g_app_slot.task_create_rt);
 
     int rc = entry();   /* 调用 App 入口；内部通常创建业务任务后返回 0 */
 
@@ -117,7 +133,9 @@ int app_slot_load_app(void)
         return -1;
     }
 #else
-    /* 轨 B：读分区头部 */
+    /* 轨 B：读分区头部（H750 先初始化 QSPI memory-mapped 模式，使
+     * 0x90000000 可读；其余目标走弱实现 no-op） */
+    qspi_hal_init_mm();
     const volatile app_header_t *hdr =
         (const volatile app_header_t *)APP_HEADER_ADDR;
 
@@ -134,7 +152,7 @@ int app_slot_load_app(void)
         return -1;
     }
     if (hdr->entry < APP_FLASH_BASE ||
-        hdr->entry >= (APP_FLASH_BASE + 0x00060000u)) {
+        hdr->entry >= (APP_FLASH_BASE + APP_FLASH_SIZE)) {
         log_printf(app_log(), LOG_ERROR, "app_slot",
                    "[boot] app entry 0x%08X out of APP_FLASH range -> SKIP\n",
                    (unsigned)hdr->entry);
@@ -153,17 +171,25 @@ int app_slot_load_app(void)
     }
 
 #ifndef RUST_APP_LIB
-    /* ---- 2) 清零 App 运行期 RAM 块（.bss，APP_RAM 区；App 不使用 .data）----
+    /* ---- 2) 清零 App 运行期 RAM 块（.bss，APP_RAM 区；App 的 .data 由 Rust 自拷贝）----
      * 仅轨 B（从 APP_FLASH 分区加载镜像）需要：镜像的 .bss 运行时须清零。
      * 轨 A（RUST_APP_LIB）App 已链进主 ELF，其 .bss 由 startup 的 C 初始化
      * 代码清零，且 g_app_loaded/g_app_entry 等系统全局变量恰落在 APP_RAM 区域
      * 内——若此处再清零 95KB，会把这些系统变量清 0、并掐断 running 任务的
      * 状态，导致进 IRQ 风暴卡死。故轨 A 跳过。 */
+    log_printf(app_log(), LOG_INFO, "app_slot",
+               "[boot] clearing APP_RAM: base=0x%08X size=0x%X (%u bytes)...\n",
+               APP_RAM_BASE, APP_RAM_SIZE, APP_RAM_SIZE);
     unsigned st = irq_lock();
-    for (volatile char *p = (volatile char *)APP_RAM_BASE;
-         p < (volatile char *)(APP_RAM_BASE + APP_RAM_SIZE); ++p)
-        *p = 0;
+    /* 优化：按字（4字节）清零，大幅提升模拟器执行速度 */
+    volatile uint32_t *p32 = (volatile uint32_t *)APP_RAM_BASE;
+    volatile uint32_t *end32 = (volatile uint32_t *)(APP_RAM_BASE + APP_RAM_SIZE);
+    while (p32 < end32) {
+        *p32++ = 0;
+    }
     irq_unlock(st);
+    log_printf(app_log(), LOG_INFO, "app_slot",
+               "[boot] APP_RAM cleared\n");
 #endif
 
     /* ---- 3) 创建独立 app_host 任务承载 App 入口（异步，不阻塞主线程）----

@@ -1,0 +1,203 @@
+/* ESP32-C3 (RISC-V RV32IMC) memory layout
+ * IRAM: 192K @ 0x40380000 (instruction RAM — .text/.rodata/RTOS segments)
+ * DRAM: 192K @ 0x3FC80000 (data RAM — .data/.bss/stack/heap)
+ * APP_FLASH: 2 MB @ 0x40200000 (flash memory-mapped — app partition header)
+ *
+ * Phase-1 (Renode, single ELF): the .elf is loaded directly into IRAM/DRAM;
+ * APP_FLASH is mapped for app_slot_boot.c to probe the header magic (no Rust
+ * app in Phase-1; the loader finds no magic and returns).
+ *
+ * Template: @APP_RAM_ORIGIN@ / @APP_RAM_LENGTH@ / @APP_SLOT_ORIGIN@ are
+ * injected by CMake configure_file (like the STM32F4 linker template).
+ */
+ENTRY(_start)
+
+MEMORY
+{
+  IRAM    (rx)   : ORIGIN = 0x40380000, LENGTH = 0x30000   /* 192K */
+  DRAM    (rwx)  : ORIGIN = 0x3FC80000, LENGTH = 0x30000   /* 192K */
+  APP_FLASH (rx) : ORIGIN = 0x40200000, LENGTH = 0x200000  /* 2 MB */
+  APP_RAM (rwx)  : ORIGIN = @APP_RAM_ORIGIN@, LENGTH = @APP_RAM_LENGTH@
+  APP_SLOT_RAM (rwx): ORIGIN = @APP_SLOT_ORIGIN@, LENGTH = 1K
+}
+
+__stack_top = ORIGIN(DRAM) + LENGTH(DRAM);          /* DRAM top = 0x3FCB0000 */
+__HeapLimit = ORIGIN(APP_RAM);                      /* heap ends where APP_RAM starts */
+
+SECTIONS
+{
+  .vectors :
+  {
+    . = ALIGN(4);
+    KEEP(*(.vectors))
+    . = ALIGN(4);
+  } >IRAM
+
+  .text :
+  {
+    . = ALIGN(4);
+    *(.text)
+    *(.text.*)
+    *(.glue_7)
+    *(.glue_7t)
+    *(.eh_frame)
+    KEEP (*(.init))
+    KEEP (*(.fini))
+    . = ALIGN(16);
+    _etext = .;
+  } >IRAM
+
+  .rodata :
+  {
+    . = ALIGN(4);
+    *(.rodata)
+    *(.rodata.*)
+    . = ALIGN(4);
+  } >IRAM
+
+  .preinit_array :
+  {
+    PROVIDE_HIDDEN (__preinit_array_start = .);
+    KEEP (*(.preinit_array*))
+    PROVIDE_HIDDEN (__preinit_array_end = .);
+  } >IRAM
+
+  .init_array :
+  {
+    PROVIDE_HIDDEN (__init_array_start = .);
+    KEEP (*(SORT(.init_array.*)))
+    KEEP (*(.init_array*))
+    PROVIDE_HIDDEN (__init_array_end = .);
+  } >IRAM
+
+  .fini_array :
+  {
+    PROVIDE_HIDDEN (__fini_array_start = .);
+    KEEP (*(SORT(.fini_array.*)))
+    KEEP (*(.fini_array*))
+    PROVIDE_HIDDEN (__fini_array_end = .);
+  } >IRAM
+
+  /* RTOS compile-time collected sections (task/msgq/BH registries, selftests) */
+  .rtos_selftests :
+  {
+    PROVIDE_HIDDEN (__rtos_selftest_start = .);
+    KEEP (*(SORT(.rtos_selftests.*)))
+    PROVIDE_HIDDEN (__rtos_selftest_end = .);
+  } >IRAM
+
+  ._rtos_tasks :
+  {
+    PROVIDE_HIDDEN (__rtos_tasks_start = .);
+    KEEP (*(SORT(._rtos_tasks.*)))
+    PROVIDE_HIDDEN (__rtos_tasks_end = .);
+  } >IRAM
+  ._rtos_ipc :
+  {
+    PROVIDE_HIDDEN (__rtos_ipc_start = .);
+    KEEP (*(SORT(._rtos_ipc.*)))
+    PROVIDE_HIDDEN (__rtos_ipc_end = .);
+  } >IRAM
+  ._rtos_bh :
+  {
+    PROVIDE_HIDDEN (__rtos_bh_start = .);
+    KEEP (*(SORT(._rtos_bh.*)))
+    PROVIDE_HIDDEN (__rtos_bh_end = .);
+  } >IRAM
+
+  /* Data: VMA = LMA = DRAM. Phase-1 Renode loads the ELF at VMA (RAM-only),
+   * so a separate load region is NOT used: with `AT> IRAM` the LMA bytes would
+   * never be loaded by Renode and the startup .data copy would read zeros and
+   * wipe .data (heap.0 / locale ptr corruption observed). With LMA==VMA the
+   * startup copy is a no-op (__data_load__ == __data_start__). */
+  __data_load__ = LOADADDR(.data);
+  .data :
+  {
+    . = ALIGN(4);
+    __data_start__ = .;
+    *(.data)
+    *(.data.*)
+    . = ALIGN(4);
+    __data_end__ = .;
+  } >DRAM
+
+  /* RISC-V small-data sections (gp-relative addressing). __global_pointer$
+   * is set at .sdata + 0x800 so the ±2 KB range covers .sdata + .sbss.
+   * The startup uses `la gp, __global_pointer$` (non-relaxed). */
+  .sdata :
+  {
+    __global_pointer$ = . + 0x800;
+    *(.sdata)
+    *(.sdata.*)
+  } >DRAM
+
+  .sbss :
+  {
+    *(.sbss)
+    *(.sbss.*)
+  } >DRAM
+
+  .bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __bss_start__ = .;
+    *(.bss)
+    *(.bss.*)
+    KEEP(*(.bss.__gcov0*))
+    *(COMMON)
+    . = ALIGN(4);
+    __bss_end__ = .;
+  } >DRAM
+
+  /* App runtime RAM (Rust .app_data/.app_bss sections — empty in Phase-1).
+   * The region is mapped so app_slot_boot.c can zero it at boot. */
+  .app_data :
+  {
+    . = ALIGN(4);
+    __rust_data_start = .;
+    *(.rust_data)
+    *(.rust_data.*)
+    . = ALIGN(4);
+    __rust_data_end = .;
+    __rust_data_lma = LOADADDR(.app_data);
+  } >@APP_RAM_MEM@ AT> IRAM
+
+  .app_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __rust_bss_start = .;
+    *(.rust_bss)
+    *(.rust_bss.*)
+    . = ALIGN(4);
+    __rust_bss_end = .;
+  } >@APP_RAM_MEM@
+
+  /* App service table (g_app_slot) — fixed 1 KB at top of DRAM */
+  .app_slot (NOLOAD) :
+  {
+    . = ALIGN(4);
+    KEEP(*(.app_slot))
+    KEEP(*(.app_slot.*))
+    . = ALIGN(4);
+  } >APP_SLOT_RAM
+
+  /* Heap + stack sentinel after .bss, before APP_RAM.
+   * malloc uses _end to __HeapLimit (if no SYS_STATIC_HEAP defined). */
+  ._user_heap_stack (NOLOAD) :
+  {
+    . = ALIGN(8);
+    PROVIDE ( end = . );
+    PROVIDE ( _end = . );
+    . = . + _Min_Heap_Size;
+    . = ALIGN(8);
+  } >DRAM
+
+  /DISCARD/ :
+  {
+    *(.note .note.*)
+  }
+}
+
+PROVIDE(_Min_Heap_Size = 0x200);
+PROVIDE(_Min_Stack_Size = 0x400);
+PROVIDE(_Min_Stack_Size = 0x400);

@@ -1,0 +1,33 @@
+# esp32c3_jos.resc - boot jOS firmware on ESP32-C3 (RISC-V) in Renode
+#
+# Minimal run: loads firmware ELF, starts simulation, checks UART output.
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/esp32c3_jos.resc" > c3_run.log 2>&1
+#
+# Build the firmware first:
+#   mkdir build_esp32c3 && cd build_esp32c3
+#   cmake .. -DJOC_TARGET=ESP32C3 -DRENODE=ON -DTOOLCHAIN_PREFIX=riscv32-esp-elf
+#   ninja
+#
+# The resulting jOS.elf is loaded directly into IRAM/DRAM by LoadELF.
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/esp32c3_jos.repl
+
+# attach the UART capture hook (echoes firmware console to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (build with -DJOC_TARGET=ESP32C3 -DRENODE=ON -DTOOLCHAIN_PREFIX=riscv32-esp-elf)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_esp32c3/jOS.elf
+
+# CPU performance: 40 MIPS matches Renode default 40 MHz RiscV32 core at IPC ~1
+cpu PerformanceInMips 40
+
+start
+sleep 3
+# send PING/TICKS/ECHO commands to verify console is alive
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd.py
+sleep 5
+quit

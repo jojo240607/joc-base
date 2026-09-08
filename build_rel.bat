@@ -11,7 +11,7 @@ REM     0x08060000 by flash_app.bat
 REM App entry is discovered at boot by app_slot_boot.c from the partition header
 REM (track-B branch), so libapp.a must NOT be linked into the system ELF.
 REM (track-A single-ELF is for dev quick checks only; add -DRUST_APP_LIB=... manually)
-cmake -S . -B build_rel -G Ninja -DRTOS_SELFTEST=OFF
+cmake -S . -B build_rel -G Ninja -DRTOS_SELFTEST=OFF -DRUST_APP_LIB=
 if errorlevel 1 goto cmake_fail
 cmake --build build_rel
 if errorlevel 1 goto build_fail

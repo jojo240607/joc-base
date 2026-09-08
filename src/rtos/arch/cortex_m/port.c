@@ -21,8 +21,7 @@ extern volatile int g_rtos_psp_ready;
  * ------------------------------------------------------------------------- */
 
 /* 移植旋钮 + ISA 级最小 IRQn 定义（见 cortex_m.h 注释；换芯片只改该头） */
-#include "cortex_m.h"
-#include "core_cm4.h"   /* CMSIS ISA 头：SCB / NVIC / FPU / SysTick_IRQn */
+#include "cortex_m.h"   /* CMSIS ISA 头：由 cortex_m.h 统一引入 core_cm*.h */
 
 /* 请求一次上下文切换：置 PENDSVSET，PendSV 在所有 ISR 退出后以最低优先级运行。
  *
@@ -47,8 +46,9 @@ void rtos_schedule_request(void) {
     __DSB();
 }
 
-/* 启动调度：配置 FPU 上下文保存、把 PendSV 设为最低优先级，再用 SVC 0 切换到首个任务。 */
+/* 启动调度：配置 FPU 上下文保存（如有）、把 PendSV 设为最低优先级，再用 SVC 0 切换到首个任务。 */
 void rtos_arch_start(void) {
+#if __FPU_PRESENT
     /* FPU 上下文保存配置（Cortex-M4 标准做法，与 FreeRTOS 一致）：
      *   ASPEN=1  开启“自动 FPU 状态保存”——异常进出时硬件保存/恢复 S0-S15+FPSCR；
      *   LSPEN=1  保留“懒栈”——仅当 Handler 里首次用到 FPU 才真正把 S0-S15+FPSCR
@@ -61,6 +61,7 @@ void rtos_arch_start(void) {
     FPU->FPCCR = (FPU->FPCCR & ~(uint32_t)FPU_FPCCR_ASPEN_Msk)
                               |  (uint32_t)FPU_FPCCR_ASPEN_Msk
                               |  (uint32_t)FPU_FPCCR_LSPEN_Msk;
+#endif
 
     /* PendSV / SysTick 置【最低硬件优先级】(4-bit 时为 15)：这是 FreeRTOS 的
      * configKERNEL_INTERRUPT_PRIORITY 约定——内核节拍与切换异常必须可被 BASEPRI
@@ -108,7 +109,7 @@ irq_id_t rtos_arch_tick_id(void) {
 void rtos_arch_tick_start(void) {
     /* STM32F407 核心时钟（HCLK）由板级 clock 驱动锁定为 168 MHz；此处用设计常量，
      * 避免依赖运行时全局（SystemCoreClock 的 .data 初值为 16M，需 clock_hal 改写）。 */
-    const uint32_t cpu_hz = 168000000UL;
+    const uint32_t cpu_hz = (uint32_t)RTOS_CPU_HZ;
     const uint32_t ticks   = cpu_hz / (uint32_t)RTOS_TICK_HZ;
 
     SysTick->LOAD = (ticks & SysTick_LOAD_RELOAD_Msk) - 1UL;  /* 节拍周期 */
@@ -120,6 +121,7 @@ void rtos_arch_tick_start(void) {
      * 确保 SysTick 可被 BASEPRI 临界区屏蔽（与 FreeRTOS configKERNEL_INTERRUPT_PRIORITY 一致）。 */
 }
 
+#if __DWT_PRESENT
 /* 使能 DWT 周期计数器（供 P4 收尾自测测量调度延迟 / 上半部有界性）。
  * DWT 属 ARMv7-M ISA 特性，仅在 arch 层访问；可移植核心经 rtos_cycle_now() 只读计数。
  * 幂等：已使能则直接返回，可安全地从 rtos_start() 与自测里多次调用。 */
@@ -133,6 +135,11 @@ void rtos_cycle_init(void) {
 uint32_t rtos_cycle_now(void) {
     return DWT->CYCCNT;
 }
+#else
+/* DWT 未使能或不可用：返回 0（临界区审计的 held=0 <= 阈值，不影响功能） */
+void   rtos_cycle_init(void) {}
+uint32_t rtos_cycle_now(void) { return 0; }
+#endif
 
 /* 按当前任务(priv 标志)设置 CONTROL.nPRIV。必须在 Handler 模式(PendSV/SVC)里调用，
  * 异常返回到线程模式时即按新 nPRIV 运行：特权任务 nPRIV=0，非特权任务 nPRIV=1。
@@ -151,7 +158,7 @@ void rtos_arch_apply_task_priv(void) {
     c &= ~(uint32_t)0x4u;   /* FPCA = 0 */
     __set_CONTROL(c);
     __ISB();
-#if RTOS_MPU_PER_TASK_STACK
+#if RTOS_MPU_PER_TASK_STACK && __MPU_PRESENT
     rtos_mpu_set_task_stack_region(g_running);   /* R4 = 新任务栈(unpriv RW + XN) */
 #endif
 }
@@ -161,8 +168,10 @@ int rtos_arch_in_unpriv(void) {
     return (__get_CONTROL() & 0x1u) ? 1 : 0;
 }
 
-/* 非特权任务触发 SVC：r0=调用号, r1..r3=参数；特权 Handler 模式执行后 r0 带回返回值。
- * 仅非特权路径使用；特权任务/ISR 直接调内核，不经此函数。 */
+/* SVC 系统调用门：非特权任务经此切换到 Handler 模式执行内核 API。
+ * 所有 Cortex-M (M3/M4/M7) 均支持 SVC 指令，故本函数无条件编译。
+ * 当 RTOS_USE_MPU=0 时所有任务均为特权，rtos_need_svc() 返回 0，
+ * 运行时不会走此路径，但链接器仍需符号解析。 */
 __attribute__((naked))
 uint32_t rtos_syscall(uint32_t nr, uint32_t a0, uint32_t a1, uint32_t a2) {
     __asm volatile ("svc 0x80\n bx lr" : : : "memory", "r0", "r1", "r2", "r3");

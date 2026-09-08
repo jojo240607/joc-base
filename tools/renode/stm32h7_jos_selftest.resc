@@ -1,0 +1,27 @@
+#
+# stm32h7_jos_selftest.resc — boot jOS firmware (H750, Renode, selftests)
+# and run RTOSBASIC + RTOSDMA to verify DMA M2M + core scheduler.
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos_selftest.resc" > h7_selftest.log 2>&1
+#
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos.repl
+
+# attach the UART capture hook (echoes firmware console to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (build with -DJOC_TARGET=STM32H750VBT6 -DRENODE=ON -DRTOS_SELFTEST=ON)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_h750/jOS.elf
+
+# speed up emulation
+cpu PerformanceInMips 480
+
+start
+sleep 5
+# probe console with a few commands
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd_h7_selftest.py
+sleep 15
+quit

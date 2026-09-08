@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "rtos_config.h"
 #include "arch/rtos_arch.h"   /* 移植契约：arch 层必须提供的入口（rtos_arch_start / rtos_schedule_request / rtos_arch_tick_id） */
+#include "common/ccm_bss.h"
 
 /* ---------------------------------------------------------------------------
  * jOS RTOS 公开 API
@@ -116,7 +117,7 @@ void rtos_task_resume(task_t *t);
      (sz) <= 2048   ? 2048u : (sz) <= 4096 ? 4096u : (sz) <= 8192 ? 8192u : 16384u)
 #define RTOS_TASK_STACK(name, sz) \
     static uint8_t name[RTOS_STACK_ALIGN_UP(sz)] \
-        __attribute__((aligned(RTOS_STACK_ALIGN_UP(sz)), section(".ccm_bss")))
+        __attribute__((aligned(RTOS_STACK_ALIGN_UP(sz)))) RTOS_CCM_BSS
 
 /* ---- 任务主动让出 / 延时 / 抢占点 ---- */
 void rtos_yield(void);
@@ -181,9 +182,11 @@ int  rtos_watchdog_enable(uint32_t timeout_ms);      /* 配置+ARM（致命，�
 int  rtos_watchdog_is_armed(void);
 uint32_t rtos_watchdog_feeds(void);
 
+#if RTOS_SELFTEST
 int  rtos_marathon_start(uint8_t arm_wdt);           /* 派生长跑心跳任务组(常驻) */
 void rtos_marathon_stop(void);
 int  rtos_marathon_is_running(void);
+#endif /* RTOS_SELFTEST */
 
 /* ---- 查询 ---- */
 task_t     *rtos_running(void);
@@ -246,6 +249,7 @@ void rtos_unlock_scheduler(void);
  * 供 RTOSALL / RTOSCRIT 自检读取。 */
 extern volatile uint32_t g_rtos_crit_overflow;
 uint32_t rtos_rt_crit_overflow(void);   /* 返回 g_rtos_crit_overflow（看门狗聚合用） */
+uint32_t rtos_crit_nest(void);          /* 返回当前临界区嵌套深度（自测诊断用） */
 
 /* ---- 临界区硬上限执行计数（P0-3，sched.c 定义） ----
  * RTOS_CRIT_KILL != REPORT 时，每次超长临界区退出触发升级处理（杀任务/武装 WDT/
@@ -493,7 +497,8 @@ typedef enum {
     RTOS_SYS_TASK_DELETE,    /* a0: task_t* (NULL=删除自身) */
     RTOS_SYS_TASK_SET_PRIO,  /* a0: task_t*, a1: prio */
     RTOS_SYS_TASK_SUSPEND,   /* a0: task_t* */
-    RTOS_SYS_TASK_RESUME     /* a0: task_t* */
+    RTOS_SYS_TASK_RESUME,    /* a0: task_t* */
+    RTOS_SYS_TASK_EXIT       /* 任务自退出（SVC 分发在 M 模式执行 rtos_task_exit_priv） */
 } rtos_syscall_nr_t;
 
 /* 非特权任务调用：从用户态触发 SVC，回到特权 Handler 模式执行系统调用。

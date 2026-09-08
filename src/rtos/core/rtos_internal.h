@@ -4,6 +4,11 @@
 #include "rtos.h"
 #include "common/lock.h"
 
+/* 注：RISC-V 强制 RTOS_MAX_ZERO_LATENCY_IRQS=0 的防御钩子已归位到
+ * arch/riscv/arch_lock.h（common/lock.h → arch_lock.h 链路上生效），
+ * 此处不再含任何 ISA 分支。RTOS_MAX_ZERO_LATENCY_IRQS>0 的 BASEPRI 临界区
+ * 仅当架构提供对等物（Cortex-M）且配置显式开启时才编译。 */
+
 /* ---------------------------------------------------------------------------
  * jOS RTOS 内部共享头（core/ 各 .c 文件共用，不暴露给应用层）
  *
@@ -79,6 +84,9 @@ void    sleep_add(task_t *t);
 
 /* 把任务从它当前所在的队列（就绪/睡眠/等待，含计时阻塞双链）摘除（sched.c）。 */
 void rtos_task_unlink(task_t *t);
+/* 任务退出的内核路径（task.c 定义；syscalls.c 的 RTOS_SYS_TASK_EXIT 分发调用）：
+ * 标记 TASK_DEAD 并请求切换。只能在特权上下文（M 模式 / SVC 门内）执行。 */
+void rtos_task_exit_priv(void);
 /* 取消任务的计时阻塞（mutex handoff 在超时前拿到锁时调用）：仅当 wait_armed==1
  * 时摘除其睡眠链表条目并清标记，避免误删未计时的任务。 */
 void rtos_cancel_timed_wait(task_t *t);
@@ -126,6 +134,8 @@ extern volatile uint32_t g_sched_bad_line;
 extern task_t          *g_running;
 extern volatile uint32_t g_tick;
 extern int             g_rtos_started;
+/* PSP (= 首任务 SP) 就绪标志：首任务 context switch 完成前保护 PendSV */
+extern volatile int    g_rtos_psp_ready;
 /* g_in_svc 已在 rtos.h 声明（extern volatile int g_in_svc;） */
 
 /* 临界区持锁超长计数（阶段2，sched.c 定义）：任何内核临界区超过 RTOS_CRIT_MAX_TICKS

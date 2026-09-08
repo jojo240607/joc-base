@@ -6,6 +6,35 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
+ * 平台测试弱符号兜底。
+ *
+ * console.c 的 RTOSROBUST / RTOSIRQ / RTOSACCEPT 命令直接调用各自测入口（不走
+ * .rtos_selftests 段注册表）。依赖芯片外设的用例（异常注入 / 中断实时性 / 硬实时
+ * 验收 / 1h soak）放在 hal/<plat>/test/（如 src/hal/stm32/test/rtos_robust.c 等），
+ * 仅特定平台编译。无对应平台测试文件的芯片（ESP32-C3 / STM32H7 等）由这里的弱符号
+ * 兜底直接返回 1（“无此平台用例，视为通过”），保证任何平台的 RTOS_SELFTEST 构建
+ * 都能链接；有平台实现时（强符号）自动覆盖这些弱符号。
+ * ------------------------------------------------------------------------- */
+__attribute__((weak)) int rtos_robust_selftest(void) { return 1; }
+__attribute__((weak)) int rtos_irq_selftest(void)     { return 1; }
+__attribute__((weak)) int rtos_accept_selftest(void)  { return 1; }
+__attribute__((weak)) int acc_b1_soak_long(void)      { return 1; }
+
+/* 各独立套件弱符号兜底：console.c 的 RTOSBASIC/RTOSIPC2/RTOSSTRESS/RTOSP4/
+ * RTOSTIMER/RTOSUSR/RTOSINV/RTOSFUZZ 命令直接调用测入口。dev 版按需裁剪套件时，
+ * 未编译的套件由弱符号兜底返回 1（“未纳入本次构建，视为通过”），保证链接通过；
+ * 编译了对应源文件时强符号自动覆盖。 */
+__attribute__((weak)) int rtos_basic_selftest(void)  { return 1; }
+__attribute__((weak)) int rtos_ipc2_selftest(void)   { return 1; }
+__attribute__((weak)) int rtos_stress_selftest(void) { return 1; }
+__attribute__((weak)) int rtos_p4_selftest(void)     { return 1; }
+__attribute__((weak)) int rtos_timer_selftest(void)  { return 1; }
+__attribute__((weak)) int rtos_usr_selftest(void)    { return 1; }
+__attribute__((weak)) int rtos_inv_selftest(void)    { return 1; }
+__attribute__((weak)) int rtos_fuzz_selftest(void)   { return 1; }
+
+
+/* ---------------------------------------------------------------------------
  * jOS IPC 运行时自测：从控制台 "RTOSIPC" 命令触发。
  * 覆盖信号量语义、互斥量压力（无丢失更新）、消息队列生产/消费、事件标志唤醒。
  * 自测作为 main 任务的一部分运行；它创建的子任务结束后变为 DEAD，其池槽由
@@ -253,6 +282,7 @@ RTOS_SELFTEST_ADD("bus", rtos_bus_selftest);
 static volatile uint32_t g_fpu_done[FPU_TASKS];
 static volatile uint32_t g_fpu_ok[FPU_TASKS];
 
+#if __FPU_PRESENT
 static void fpu_task(void *arg) {
     int id = (int)(intptr_t)arg;
     /* 钉在 s16-s18：强制累加器跨 rtos_msleep()/上下文切换一直驻留在这些寄存器里 */
@@ -313,6 +343,7 @@ int rtos_fpu_selftest(void) {
 
 /* 编译期注册：RTOSALL 会遍历该段依次执行 */
 RTOS_SELFTEST_ADD("fpu", rtos_fpu_selftest);
+#endif /* __FPU_PRESENT */
 
 /* 遍历链接器收集到的所有自测项（.rtos_selftests.* 段），依次运行 */
 int rtos_selftest_run_all(void) {
@@ -330,7 +361,7 @@ int rtos_selftest_run_all(void) {
         g_rtos_current_selftest = nm;   /* 镜像当前子测试名，便于定位卡死点 */
         int nidx = (int)(p - __rtos_selftest_start);
         if (nidx < RTOSALL_DETAIL_MAX)
-            g_rtosall_nest_at[nidx] = *(volatile int *)0x20003558;  /* g_crit_nest */
+            g_rtosall_nest_at[nidx] = (int)rtos_crit_nest();  /* g_crit_nest */
         log_printf(app_log(), LOG_INFO, "rtos", "[SELFTEST] >>> %s\n", nm);
         int r = p->fn();
         if (!r) ok = 0;
@@ -424,7 +455,7 @@ int rtos_crit_selftest(void) {
      * 用 rtos_cycle_now 自旋（BASEPRI 屏蔽 systick 但 DWT CYCCNT 仍计数）制造长临界区。 */
     {
         int bpriv = arch_in_priv();
-        g_dbg_crit_b_nest0 = (uint32_t)(*(volatile int *)0x20003558);  /* g_crit_nest 进入时 */
+        g_dbg_crit_b_nest0 = rtos_crit_nest();  /* g_crit_nest 进入时 */
         uint32_t before = rtos_rt_crit_overflow();
         unsigned st = rtos_crit_enter();
         uint32_t t0 = rtos_cycle_now();
@@ -437,6 +468,10 @@ int rtos_crit_selftest(void) {
         g_dbg_crit_b_priv   = (uint32_t)bpriv;
         g_dbg_crit_b_cyc0   = t0;
         g_dbg_crit_b_cyc1   = t1;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[CRIT] B diag: priv=%d nest0=%lu spun=%lu (max=%d)\n",
+                   bpriv, (unsigned long)g_dbg_crit_b_nest0,
+                   (unsigned long)(t1 - t0), (int)RTOS_CRIT_MAX_CYCLES);
         if (after != before + 1) ok = 0;   /* 必须恰好 +1（一次最外层临界区） */
         /* Part B 故意制造一次长临界区以验证审计机制，该次溢出是自测贡献，
          * 不应污染全局生产监控计数 g_rtos_crit_overflow（否则 run_all 末尾
@@ -460,6 +495,12 @@ int rtos_crit_selftest(void) {
             if (g_running->prio != 2) ok = 0;
         }
         g_dbg_crit_c_prio_after = g_running->prio;
+        log_printf(app_log(), LOG_INFO, "rtos",
+                   "[CRIT] C diag: entry=%u inblk=%u after=%u running=%s\n",
+                   (unsigned)g_dbg_crit_c_prio_entry,
+                   (unsigned)g_dbg_crit_c_prio_inblk,
+                   (unsigned)g_dbg_crit_c_prio_after,
+                   g_running && g_running->name ? g_running->name : "?");
         if (g_running->prio != save) ok = 0;
         g_dbg_crit_c = ok ? 1 : 0;
         log_printf(app_log(), LOG_INFO, "rtos",

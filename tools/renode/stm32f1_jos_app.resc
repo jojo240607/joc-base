@@ -1,0 +1,32 @@
+# stm32f1_jos_app.resc - boot jOS + Rust app partition on STM32F103RCT6 in Renode
+#
+# Track B (dual-partition): the Rust app is linked independently (app_f103.ld)
+# into app_f103.bin with an app_header_t at 0x08010000.  We load it into the
+# emulated flash with `sysbus LoadBinary`; the firmware's app_slot_load_app()
+# validates magic/ABI, zeroes APP_RAM and spawns the async app_host task.
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32f1_jos_app.resc" > f1_app_run.log 2>&1
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32f1_jos.repl
+
+# attach the UART capture hook (echoes firmware console + Rust logs to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (build with -DJOC_TARGET=STM32F103RCT6 -DRENODE=ON -DRTOS_SELFTEST=OFF)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_f103/jOS.elf
+
+# load the Rust app partition (app_header_t + code) at APP_FLASH 0x08010000
+sysbus LoadBinary @D:/projects/mcu/os/joc-app-rust/app_f103.bin 0x08010000
+
+# CPU performance: 72 MIPS matches real 72 MHz core at IPC ~1
+cpu PerformanceInMips 72
+
+start
+sleep 2
+# probe console while app is running
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd.py
+sleep 10
+quit

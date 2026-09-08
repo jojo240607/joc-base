@@ -62,14 +62,18 @@ int rtos_timer_selftest(void) {
         unsigned st = irq_lock();
         rtos_timer_start_ticks(&t, RTOS_TIMER_PERIODIC, 3);
         tm_drive(20);            /* 20/3 = 6 次 (tick 3,6,9,12,15,18) */
-        irq_unlock(st);
+        /* 判定须在关中断窗口内完成：tm_drive(20) 后 expire=g0+21、g_tick=g0+20，
+         * 若先解锁再判定，解锁后第一个真实节拍会把 expire 推到期并触发第 7 次回调
+         * （竞态，ESP32C3/RISC-V Renode 上偶现 fired=7）。锁内判定+停止再解锁，
+         * 消除竞态，其它平台行为不变。 */
         int lok = (g_tm_periodic == 6) && rtos_timer_is_active(&t);
+        rtos_timer_stop(&t);
+        irq_unlock(st);
         if (!lok) ok = 0;
         log_printf(app_log(), LOG_INFO, "rtos",
                    "[TIMER] periodic: fired=%lu (expect 6) %s\n",
                    (unsigned long)g_tm_periodic, lok ? "PASS" : "FAIL");
         RTOS_TEST_RESULT("TimerPeriodic", lok);
-        rtos_timer_stop(&t);
     }
 
     /* ---------- 停止定时器：停止后不再触发 ---------- */

@@ -1,6 +1,12 @@
 #include "flash.h"
 #include "hal/stm32/flash_hal.h"
+#if defined(STM32F407xx)
 #include "stm32f4xx.h"          /* FLASH peripheral base — driver layer only */
+#elif defined(STM32F103xx)
+#include "stm32f103xx.h"
+#else
+#error "flash.c: unsupported MCU target"
+#endif
 #include <stdlib.h>
 #include <string.h>
 

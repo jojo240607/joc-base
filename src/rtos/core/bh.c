@@ -22,7 +22,9 @@
 /* ===========================================================================
  * (A) BH 任务
  * ========================================================================= */
+#ifndef RTOS_BH_MAX
 #define RTOS_BH_MAX        8
+#endif
 #define RTOS_BH_PEND_LIMIT 64   /* 每个 BH 的待处理触发上限（计数信号量上限） */
 
 struct bh {
@@ -91,7 +93,9 @@ void rtos_bh_wait(bh_t *bh) {
 /* ===========================================================================
  * (B) 工作队列（共享 worker 任务）
  * ========================================================================= */
+#ifndef RTOS_WORKQ_STACK_WORDS
 #define RTOS_WORKQ_STACK_WORDS 256    /* 256 字 = 1 KB 栈（worker 仅出队执行 fn） */
+#endif
 RTOS_TASK_STACK(g_wq_stack, RTOS_WORKQ_STACK_WORDS * 4);
 /* 纯软件，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
 static rtos_work_t *RTOS_CCM_BSS g_wq_head;

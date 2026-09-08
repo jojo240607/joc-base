@@ -27,7 +27,11 @@
  * 纯软件链表头 + 信号量（无 DMA 目标缓冲），搬入 CCM 收缩主 SRAM .bss。 */
 static rtos_timer_t *RTOS_CCM_BSS g_timer_head;
 static rtos_sem_t    RTOS_CCM_BSS g_timer_sem;          /* 定时器任务等待的信号量 */
-RTOS_TASK_STACK(g_timer_stack, 1024);      /* 定时器任务栈（回调运行于此） */
+#ifndef RTOS_TIMER_STACK_SIZE
+#define RTOS_TIMER_STACK_SIZE 1024
+#endif
+RTOS_TASK_STACK(g_timer_stack, RTOS_TIMER_STACK_SIZE);
+
 
 /* 把 t 从活动链表摘除（调用方持锁） */
 static void timer_unlink(rtos_timer_t *t) {

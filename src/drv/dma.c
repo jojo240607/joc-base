@@ -5,6 +5,7 @@
 #include <string.h>
 #include "log/log.h"
 #include "log/app_log.h"
+#include "rtos.h"
 
 /* --- private per-stream runtime state lives in dma.h (dma_stream_rt_t) --- */
 
@@ -169,7 +170,7 @@ static dma_stream_t *dma_acquire(dma *self, uint8_t stream_idx, uint8_t channel,
     }
     self->streams[i].in_use  = 1;
     self->streams[i].dir      = dir;
-    self->streams[i].channel  = channel & 0x7U;
+    self->streams[i].channel  = channel;     /* F4 HAL masks to 3-bit CHSEL; H7 stores full DMAMUX ID */
     self->streams[i].cb       = NULL;
     self->streams[i].cb_ctx   = NULL;
     return &self->handles[i];
@@ -338,3 +339,58 @@ static int dma_control_set(control_device *self, int param, const void *val)
 
 static int dma_control_get(control_device *self, int param, void *val)
     { (void)self; (void)param; (void)val; return -1; }
+
+/* ---------------------------------------------------------------------------
+ * DMA self-test (M2M, Renode-only). selftest.c is excluded from H750 builds,
+ * so this lives here gated by RTOS_SELFTEST + JOC_RENODE + STM32H750xx.
+ * ------------------------------------------------------------------------- */
+#if RTOS_SELFTEST && defined(JOC_RENODE) && defined(STM32H750xx)
+#include "device_manager.h"
+int dma_m2m_selftest(void)
+{
+    device *d = device_manager_get("dma2");
+    if (!d) { log_printf(app_log(), LOG_DEBUG, "dma", "selftest: dma2 not found\n"); return 0; }
+    d->vtable->open(d);
+
+    dma *dm = (dma *)d;
+    int pass = 1;
+
+    /* 8-bit, 64-byte M2M copy */
+    static uint8_t src8[64], dst8[64];
+    for (int i = 0; i < 64; i++) { src8[i] = (uint8_t)(i * 3 + 1); dst8[i] = 0; }
+    dma_stream_t *s8 = dm->fun->acquire(dm, DMA_STREAM_ANY, 0, DMA_DIR_M2M);
+    int ok8 = 0;
+    if (s8) {
+        int rc = 0;
+        rc |= dm->fun->config(dm, s8, src8, dst8, 64, DMA_DATA_8, 1, 1, DMA_PRIO_MED);
+        rc |= dm->fun->start(dm, s8, NULL, NULL);
+        rc |= dm->fun->wait_done(dm, s8, 0);
+        ok8 = (rc == 0);
+        for (int i = 0; i < 64; i++) if (dst8[i] != src8[i]) ok8 = 0;
+        dm->fun->free(dm, s8);
+    }
+    if (!ok8) pass = 0;
+    log_printf(app_log(), LOG_DEBUG, "dma", "M2M selftest: 8-bit %s\n", ok8 ? "PASS" : "FAIL");
+
+    /* 32-bit, 128-byte (32 items) M2M copy */
+    static uint32_t src32[32], dst32[32];
+    for (int i = 0; i < 32; i++) { src32[i] = 0xDEAD0000u + (uint32_t)i; dst32[i] = 0; }
+    dma_stream_t *s32 = dm->fun->acquire(dm, DMA_STREAM_ANY, 0, DMA_DIR_M2M);
+    int ok32 = 0;
+    if (s32) {
+        int rc = 0;
+        rc |= dm->fun->config(dm, s32, src32, dst32, 32, DMA_DATA_32, 1, 1, DMA_PRIO_HIGH);
+        rc |= dm->fun->start(dm, s32, NULL, NULL);
+        rc |= dm->fun->wait_done(dm, s32, 0);
+        ok32 = (rc == 0);
+        for (int i = 0; i < 32; i++) if (dst32[i] != src32[i]) ok32 = 0;
+        dm->fun->free(dm, s32);
+    }
+    if (!ok32) pass = 0;
+    log_printf(app_log(), LOG_DEBUG, "dma", "M2M selftest: 32-bit %s\n", ok32 ? "PASS" : "FAIL");
+
+    d->vtable->close(d);
+    return pass;
+}
+RTOS_SELFTEST_ADD("dma_m2m", dma_m2m_selftest);
+#endif /* RTOS_SELFTEST && JOC_RENODE && STM32H750xx */

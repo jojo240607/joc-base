@@ -1,0 +1,36 @@
+#
+# stm32h7_jos_app.resc - Track B (dual-partition) on STM32H750VBT6
+#
+# The RTOS firmware (build_h750/jOS.elf) boots from internal flash; the Rust
+# app is linked independently (app_h750.ld) into app_h750.bin with an
+# app_header_t at 0x90000000, loaded straight into the emulated QSPI
+# memory-mapped region. The JOC_RENODE build skips all QUADSPI register
+# setup (qspi_hal_init_mm() no-ops), so the app runs XIP from 0x90000000.
+# The firmware's app_slot_load_app() validates magic/ABI/entry, zeroes APP_RAM
+# (AXI SRAM 0x24000000) and spawns the async app_host task.
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos_app.resc" > h7_app_run.log 2>&1
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos.repl
+
+# attach the UART capture hook (echoes firmware console + Rust logs to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (build with -DJOC_TARGET=STM32H750VBT6 -DRENODE=ON -DRTOS_SELFTEST=OFF)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_rel/jOS.elf
+
+# load the Rust app partition (app_header_t + code) at QSPI memory-mapped base
+sysbus LoadBinary @D:/projects/mcu/os/joc-app-rust/app_h750.bin 0x90000000
+
+# CPU performance: 480 MIPS matches a real 480 MHz core at IPC ~1
+cpu PerformanceInMips 480
+
+start
+sleep 2
+# probe console while app is running
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd.py
+sleep 10
+quit

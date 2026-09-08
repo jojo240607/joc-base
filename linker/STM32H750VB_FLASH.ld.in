@@ -1,0 +1,279 @@
+/* STM32H750VBT6 memory layout (jOS 轨 B 双分区)
+ * Flash : 128 KB @ 0x08000000 (RTOS 固件，内部 Flash)
+ * DTCM  : 128 KB @ 0x20000000 (RTOS .data/.bss/任务栈 —— 主数据区，用户选定)
+ * AXI SRAM : 512 KB @ 0x24000000 (APP_RAM —— Rust App 运行期 .data/.bss)
+ * QSPI  : 16 MB @ 0x90000000   (APP_FLASH —— Rust App 代码 XIP)
+ * MSP 主栈：DTCM 顶部 0x20020000 起预留 4K（启动栈 + 中断栈）
+ *
+ * 注意：本文件是模板，由 CMake 的 configure_file 注入 @APP_RAM_ORIGIN@ /
+ * @APP_RAM_LENGTH@ / @APP_RAM_MEM@ 生成最终 linker/STM32H750VB_FLASH.ld。
+ * App RAM 为 AXI_SRAM(0x24000000/512K)，与系统 DTCM 物理隔离。
+ *
+ * g_app_slot 采用 F103 方案：置于 .bss 开头（DTCM 起点附近），地址由
+ * rtos_sym.ld 从本 ELF 提取后导出给 Rust app_h750.ld 的 PROVIDE(g_app_slot=...)。
+ */
+ENTRY(Reset_Handler)
+
+_estack = 0x20020000;        /* DTCM 顶 0x20000000 + 128K；顶部 4K 预留给 MSP */
+_Min_Heap_Size = 0x200;
+_Min_Stack_Size = 0x400;
+
+MEMORY
+{
+  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 128K
+  DTCM   (xrw) : ORIGIN = 0x20000000, LENGTH = 128K   /* RTOS 数据区（无 DMA 访问） */
+  /* 轨 B 应用分区：
+   * - APP_FLASH(QSPI)：App 的 .app_header/.app_code 段，memory-mapped XIP 执行。
+   *   RTOS 固件本身不包含这些段（发布版为空），由独立 Rust app_h750.ld 收集。
+   * - APP_RAM(AXI_SRAM)：App 运行期 .data/.bss。起点/尺寸由 CMake 注入，
+   *   与 Rust app_h750.ld 的 APP_RAM 定义必须一致（跨镜像契约）。 */
+  QSPI     (rx)  : ORIGIN = 0x90000000, LENGTH = 16M
+  AXI_SRAM (xrw) : ORIGIN = @APP_RAM_ORIGIN@, LENGTH = @APP_RAM_LENGTH@
+  SRAM1    (xrw) : ORIGIN = 0x30000000, LENGTH = 128K    /* D2 SRAM1, DMA-coherent heap */
+}
+
+/* 堆上界：系统堆止于 APP_RAM 起点（AXI_SRAM）。RTOS 使用自有分配器，
+ * libc 堆(_sbrk)实际不增长；此界仅作安全护栏，防止 malloc 越界进 App RAM。 */
+__HeapLimit = ORIGIN(AXI_SRAM);
+
+SECTIONS
+{
+  .isr_vector :
+  {
+    . = ALIGN(4);
+    KEEP(*(.isr_vector))
+    . = ALIGN(4);
+  } >FLASH
+
+  .text :
+  {
+    . = ALIGN(4);
+    *(.text)
+    *(.text.*)
+    *(.glue_7)
+    *(.glue_7t)
+    *(.eh_frame)
+    KEEP (*(.init))
+    KEEP (*(.fini))
+    . = ALIGN(16);
+    _etext = .;
+  } >FLASH
+
+  .rodata :
+  {
+    . = ALIGN(4);
+    *(.rodata)
+    *(.rodata.*)
+    . = ALIGN(4);
+  } >FLASH
+
+  .ARM.extab :
+  {
+    *(.ARM.extab* .gnu.linkonce.armextab.*)
+  } >FLASH
+
+  .ARM :
+  {
+    __exidx_start = .;
+    *(.ARM.exidx*)
+    __exidx_end = .;
+  } >FLASH
+
+  .preinit_array :
+  {
+    PROVIDE_HIDDEN (__preinit_array_start = .);
+    KEEP (*(.preinit_array*))
+    PROVIDE_HIDDEN (__preinit_array_end = .);
+  } >FLASH
+
+  .init_array :
+  {
+    PROVIDE_HIDDEN (__init_array_start = .);
+    KEEP (*(SORT(.init_array.*)))
+    KEEP (*(.init_array*))
+    PROVIDE_HIDDEN (__init_array_end = .);
+  } >FLASH
+
+  .fini_array :
+  {
+    PROVIDE_HIDDEN (__fini_array_start = .);
+    KEEP (*(SORT(.fini_array.*)))
+    KEEP (*(.fini_array*))
+    PROVIDE_HIDDEN (__fini_array_end = .);
+  } >FLASH
+
+  /* 编译期收集的自测注册表：每个 RTOS_SELFTEST_ADD 把一项放进 .rtos_selftests.<name>
+   * 段；运行时 rtos_selftest_run_all() 遍历 __rtos_selftest_start.._end 依次执行。 */
+  .rtos_selftests :
+  {
+    PROVIDE_HIDDEN (__rtos_selftest_start = .);
+    KEEP (*(SORT(.rtos_selftests.*)))
+    PROVIDE_HIDDEN (__rtos_selftest_end = .);
+  } >FLASH
+
+  /* 编译期段收集（见 docs/rtos-design.md 第 5 章）：RTOS_TASK / RTOS_MSGQ /
+   * RTOS_BH 宏分别把对象定义放进 ._rtos_tasks / ._rtos_ipc / ._rtos_bh 段；
+   * rtos_start() 遍历这些段自动实例化。KEEP 防止被 GC；SORT 稳定排序。 */
+  ._rtos_tasks :
+  {
+    PROVIDE_HIDDEN (__rtos_tasks_start = .);
+    KEEP (*(SORT(._rtos_tasks.*)))
+    PROVIDE_HIDDEN (__rtos_tasks_end = .);
+  } >FLASH
+  ._rtos_ipc :
+  {
+    PROVIDE_HIDDEN (__rtos_ipc_start = .);
+    KEEP (*(SORT(._rtos_ipc.*)))
+    PROVIDE_HIDDEN (__rtos_ipc_end = .);
+  } >FLASH
+  ._rtos_bh :
+  {
+    PROVIDE_HIDDEN (__rtos_bh_start = .);
+    KEEP (*(SORT(._rtos_bh.*)))
+    PROVIDE_HIDDEN (__rtos_bh_end = .);
+  } >FLASH
+
+  /* ===========================================================================
+   * 轨 B 应用分区（QSPI XIP）。
+   * 这些段仅当构建"双分区部署镜像"时才被填充（Rust 侧用独立 app_h750.ld 把
+   * libapp.a 的段收集进 app_header/app_code，LMA=QSPI 0x90000000）；常态单 ELF
+   * 构建里这些输入段为空，KEEP 为空、布局不占空间。
+   * 固定地址契约（RTOS 启动加载器 app_slot_boot.c 按此地址寻址）：
+   *   - app_header MUST 位于 APP_FLASH 起点 (0x90000000)
+   *   - app_code    紧跟 header 之后（LMA 连续，运行时经 memory-mapped 直接 XIP）
+   * App 的 .data/.bss 进下方 APP_RAM（AXI_SRAM，见 app_bss 段），由加载器拷贝/清零。
+   * =========================================================================== */
+  .app_header :
+  {
+    . = ALIGN(4);
+    KEEP(*(.app_header))
+    KEEP(*(.app_header.*))
+    . = ALIGN(16);
+  } >QSPI
+
+  .app_code :
+  {
+    . = ALIGN(4);
+    KEEP(*(.app_text))
+    KEEP(*(.app_text.*))
+    KEEP(*(.app_rodata))
+    KEEP(*(.app_rodata.*))
+    . = ALIGN(4);
+  } >QSPI
+
+  _sidata = LOADADDR(.data);
+
+  .data :
+  {
+    . = ALIGN(4);
+    _sdata = .;
+    *(.data)
+    *(.data.*)
+    . = ALIGN(4);
+    _edata = .;
+  } >DTCM AT> FLASH
+
+  /* gcov 覆盖率计数段(.bss.__gcov0.*)。gcov 计数器必须在上电时清零为 0，
+   * 否则插桩 ++ 会在垃圾值上累加、__gcov_dump 解引用时卡死/崩溃。
+   * 直接并入 .bss 段（用 KEEP 防 GC），由 Reset_Handler 的 .bss 清零循环
+   * 统一清零到 0。仅 -DCOVERAGE=ON 时这些输入段非空；常态构建 KEEP 为空。 */
+  .bss :
+  {
+    . = ALIGN(4);
+    _sbss = .;
+    __bss_start__ = _sbss;
+    /* F103 方案：g_app_slot 置于 .bss 开头（地址经 rtos_sym.ld 导出，
+     * Rust app_h750.ld 用 PROVIDE(g_app_slot=...) 引用同一地址 —— 跨镜像契约）。 */
+    KEEP(*(.app_slot))
+    KEEP(*(.app_slot.*))
+    *(.bss)
+    *(.bss.*)
+    KEEP(*(.bss.__gcov0*))
+    *(COMMON)
+    . = ALIGN(4);
+    _ebss = .;
+    __bss_end__ = _ebss;
+  } >DTCM
+
+  /* App 运行期 RAM 块（单 ELF 注入 / 开发版）。
+   * Rust 侧用 #[link_section] 把 App 静态分两类收集：
+   *   - .rust_data：非零初值，需从 Flash LMA 拷贝到 RAM（同 .data 机制）
+   *   - .rust_bss ：全零初值，NOLOAD，启动时清零
+   * 输出内存区由 @APP_RAM_MEM@ 决定（H750 = AXI_SRAM）。
+   * 轨 B 双分区下 Rust 独立 app_h750.ld 也用同段名收集进 APP_RAM，契约一致。 */
+  .app_data :
+  {
+    . = ALIGN(4);
+    __rust_data_start = .;
+    *(.rust_data)
+    *(.rust_data.*)
+    . = ALIGN(4);
+    __rust_data_end = .;
+    __rust_data_lma = LOADADDR(.app_data);
+  } >@APP_RAM_MEM@ AT> FLASH
+
+  .app_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __rust_bss_start = .;
+    *(.rust_bss)
+    *(.rust_bss.*)
+    . = ALIGN(4);
+    __rust_bss_end = .;
+  } >@APP_RAM_MEM@
+
+  /* 系统堆 + 栈底标记：落在 DTCM .bss 之后。主栈在 DTCM 顶部
+   * (_estack=0x20020000，预留 4K)，故此处仅需 _Min_Heap_Size 堆空间。
+   * 堆上界由 __HeapLimit(=ORIGIN(AXI_SRAM)) 界定；RTOS 用自有分配器，
+   * libc _sbrk 实际不增长。 */
+  ._user_heap_stack :
+  {
+    . = ALIGN(8);
+    PROVIDE ( end = . );
+    PROVIDE ( _end = . );
+    . = . + _Min_Heap_Size;
+    . = ALIGN(8);
+  } >DTCM
+
+  /* 系统堆(g_sys_heap)：H7 上 SRAM1 做堆（可被 MPU 配为非缓存 → DMA 一致）。
+   * H750 不再使用 .ccm_heap（下文仅留作兼容/安全保护区）。尺寸由 @SYS_HEAP_SIZE_LD@ 注入。 */
+  .sram1_heap (NOLOAD) :
+  {
+    . = ALIGN(8);
+    __sram1_heap_start = .;
+    KEEP(*(.sram1_heap))
+    KEEP(*(.sram1_heap.*))
+    . = ALIGN(8);
+    __sram1_heap_end = .;
+  } >SRAM1
+
+  /* CCM BSS（H7 上并入 DTCM）：RTOS 任务栈 + TCB 池等“仅 CPU 访问”的对象。
+   * 由 RTOS_TASK_STACK 宏 与 g_task_pool 的 section(".ccm_bss") 属性收集。
+   * 启动代码(Reset_Handler)会按 __ccm_bss_start/end 将其清零。 */
+  .ccm_bss (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __ccm_bss_start = .;
+    KEEP(*(.ccm_bss))
+    KEEP(*(.ccm_bss.*))
+    . = ALIGN(4);
+    __ccm_bss_end = .;
+  } >DTCM
+
+  /* 系统静态堆(g_sys_heap，SYS_STATIC_HEAP 定义时)：紧随 .ccm_bss 之后连续排布，
+   * 与 MSP 主栈(DTCM 顶部)物理隔离。尺寸由 @SYS_HEAP_SIZE_LD@ 注入。 */
+  .ccm_heap (NOLOAD) :
+  {
+    . = ALIGN(8);
+    __ccm_heap_start = .;
+    KEEP(*(.ccm_heap))
+    KEEP(*(.ccm_heap.*))
+    . = ALIGN(8);
+    __ccm_heap_end = .;
+  } >DTCM
+
+  /DISCARD/ :
+  {
+    *(.note .note.*)
+  }
+}

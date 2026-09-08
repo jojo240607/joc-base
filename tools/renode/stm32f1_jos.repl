@@ -1,0 +1,205 @@
+// stm32f1_jos.repl - jOS firmware platform for Renode (STM32F103RCT6)
+//
+// Self-contained platform description based on stock Renode stm32f103.repl,
+// vendored so we can add the DWT counter that stock omits.
+//
+// Peripherals not modeled (unemulated in Renode 1.16): DAC, USB, SDIO, CAN2.
+// The JOC_RENODE build skips usb0 at boot; the others are never touched.
+//
+// CPU clock: set via `cpu PerformanceInMips <N>` in .resc (default 72 for
+// timing fidelity). SysTick and DWT run at 72 MHz in the firmware.
+
+/* ==================== Memory & Bus ==================== */
+
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x0000C000
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x00040000
+
+flash_controller: MTD.STM32F4_FlashController @ {
+        sysbus 0x40022000;
+        sysbus new Bus.BusMultiRegistration { address: 0x1FFFC000; size: 0x100; region: "optionBytes" }
+    }
+    flash: flash
+
+fsmcBank1: Memory.MappedMemory @ sysbus 0x60000000
+    size: 0x10000000
+
+/* ==================== UART ==================== */
+
+usart1: UART.STM32_UART @ sysbus <0x40013800, +0x400>
+    -> nvic@37
+
+usart2: UART.STM32_UART @ sysbus <0x40004400, +0x400>
+    -> nvic@38
+
+usart3: UART.STM32_UART @ sysbus <0x40004800, +0x400>
+    -> nvic@39
+
+/* ==================== Interrupt Controller & CPU ==================== */
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 72000000
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m3"
+    nvic: nvic
+
+/* ==================== Power & Reset & CRC ==================== */
+
+/* PWR and CRC not modeled in stock F103 repl; firmware writes handled by SVD */
+
+/* ==================== EXTI ==================== */
+
+exti: IRQControllers.STM32F4_EXTI @ sysbus 0x40010400
+    numberOfOutputLines: 19
+    [0-4] -> nvic@[6-10]
+    [5-9] -> nvicInput23@[0-4]
+    [10-15] -> nvicInput40@[0-5]
+
+nvicInput23: Miscellaneous.CombinedInput @ none
+    numberOfInputs: 5
+    -> nvic@23
+
+nvicInput40: Miscellaneous.CombinedInput @ none
+    numberOfInputs: 6
+    -> nvic@40
+
+/* ==================== GPIO ==================== */
+
+gpioPortA: GPIOPort.STM32F1GPIOPort @ sysbus <0x40010800, +0x400>
+    [0-15] -> exti@[0-15]
+
+gpioPortB: GPIOPort.STM32F1GPIOPort @ sysbus <0x40010C00, +0x400>
+    [0-15] -> exti@[0-15]
+
+gpioPortC: GPIOPort.STM32F1GPIOPort @ sysbus <0x40011000, +0x400>
+    [0-15] -> exti@[0-15]
+
+gpioPortD: GPIOPort.STM32F1GPIOPort @ sysbus <0x40011400, +0x400>
+    [0-15] -> exti@[0-15]
+
+gpioPortE: GPIOPort.STM32F1GPIOPort @ sysbus <0x40011800, +0x400>
+    [0-15] -> exti@[0-15]
+
+gpioPortF: GPIOPort.STM32F1GPIOPort @ sysbus <0x40011C00, +0x400>
+    [0-15] -> exti@[0-15]
+
+gpioPortG: GPIOPort.STM32F1GPIOPort @ sysbus <0x40012000, +0x400>
+    [0-15] -> exti@[0-15]
+
+/* ==================== AFIO ==================== */
+
+afio: GPIOPort.STM32F1AFIO @ sysbus 0x40010000
+    gpioPorts: [gpioPortA, gpioPortB, gpioPortC, gpioPortD, gpioPortE, gpioPortF, gpioPortG]
+
+/* ==================== SPI ==================== */
+
+spi1: SPI.STM32SPI @ sysbus 0x40013000
+    IRQ->nvic@35
+
+spi2: SPI.STM32SPI @ sysbus 0x40003800
+    IRQ->nvic@36
+
+/* ==================== I2C ==================== */
+
+i2c1: I2C.STM32F4_I2C @ sysbus 0x40005400
+    EventInterrupt -> nvic@31
+    ErrorInterrupt -> nvic@32
+
+i2c2: I2C.STM32F4_I2C @ sysbus 0x40005800
+    EventInterrupt -> nvic@33
+    ErrorInterrupt -> nvic@34
+
+/* ==================== DMA ==================== */
+
+dma1: DMA.STM32DMA @ sysbus 0x40020000
+    [0-7] -> nvic@[11-17,47]
+
+/* ==================== Timers ==================== */
+
+timer1: Timers.STM32_Timer @ sysbus 0x40012C00
+    BreakInterrupt -> nvic@24
+    UpdateInterrupt -> nvic@25
+    [TriggerInterrupt, CommutationInterrupt] -> nvic@[26, 26]
+    CaptureCompareInterrupt -> nvic@27
+    frequency: 10000000
+    initialLimit: 0xFFFF
+
+timer2: Timers.STM32_Timer @ sysbus 0x40000000
+    -> nvic@28
+    frequency: 10000000
+    initialLimit: 0xFFFF
+
+timer3: Timers.STM32_Timer @ sysbus 0x40000400
+    -> nvic@29
+    frequency: 10000000
+    initialLimit: 0xFFFF
+
+timer4: Timers.STM32_Timer @ sysbus 0x40000800
+    -> nvic@30
+    frequency: 10000000
+    initialLimit: 0xFFFF
+
+timer5: Timers.STM32_Timer @ sysbus 0x40000C00
+    -> nvic@50
+    frequency: 10000000
+    initialLimit: 0xFFFF
+
+timer6: Timers.STM32_Timer @ sysbus 0x40001000
+    -> nvic@54
+    frequency: 10000000
+    initialLimit: 0xFFFF
+
+timer7: Timers.STM32_Timer @ sysbus 0x40001400
+    -> nvic@55
+    frequency: 10000000
+    initialLimit: 0xFFFF
+
+/* IWDG/WWDG not modeled in stock F103 repl */
+
+/* ==================== RTC ==================== */
+
+/* RTC not modeled in stock F103 repl */
+
+/* ==================== RCC ==================== */
+
+/* RCC is handled via SVD + Tag in sysbus init (no dedicated model) */
+
+/* ==================== ADC ==================== */
+
+adc1: Analog.STM32_ADC @ sysbus 0x40012400
+    IRQ -> nvic@18
+
+/* ==================== CAN ==================== */
+
+can1: CAN.STMCAN @ sysbus <0x40006400, +0x400>
+    [0-3] -> nvic@[19-22]
+
+/* ==================== Bit-banding ==================== */
+
+bitbandPeripherals: Miscellaneous.BitBanding @ sysbus <0x42000000, +0x2000000>
+    peripheralBase: 0x40000000
+
+bitbandSram: Miscellaneous.BitBanding @ sysbus <0x22000000, +0x200000>
+    peripheralBase: 0x20000000
+
+/* ==================== jOS additions ==================== */
+
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 72000000
+
+/* ==================== sysbus init ==================== */
+
+sysbus:
+    init:
+        ApplySVD @https://dl.antmicro.com/projects/renode/svd/STM32F103.svd.gz
+        // RCC_CR startup value for HSE+PLL bypass
+        Tag <0x40021000, 0x40021003> "RCC_CR" 0x0A020083
+        // RCC_CFGR: report PLL as system clock source (SWS=0b10) so the
+        // firmware's clock_hal_configure() polling loop at line 32 does not
+        // hang waiting for the non-existent RCC model to update SWS.
+        Tag <0x40021004, 0x40021007> "RCC_CFGR" 0x01D040A

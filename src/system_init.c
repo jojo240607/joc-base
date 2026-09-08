@@ -10,7 +10,15 @@
 #include "rtos.h"
 #include "log/log.h"
 #include "log/app_log.h"
-#include "stm32f4xx.h"   /* RCC->CSR 复位标志 */
+#if defined(STM32F103xx) || defined(STM32F1)
+#include "stm32f1xx.h"    /* RCC->CSR 复位标志 */
+#elif defined(STM32H750xx) || defined(STM32H7)
+#include "stm32h7xx.h"    /* RCC->RSR 复位标志（H7：标志在 RSR，不在 CSR） */
+#elif defined(ESP32C3)
+/* RISC-V：无 RCC 复位状态寄存器；Renode 恒为上电复位 */
+#else
+#include "stm32f4xx.h"    /* RCC->CSR 复位标志 */
+#endif
 
 /* ---- 复位原因解码（rtos-test-plan §6.4）---- */
 const char *reset_reason_name(reset_reason_t r)
@@ -25,12 +33,10 @@ const char *reset_reason_name(reset_reason_t r)
     }
 }
 
+#if !defined(ESP32C3)
 reset_reason_t board_decode_reset_reason(uint32_t csr)
 {
-    /* 优先级：看门狗 > 软件 > 上电 > 引脚 > 低功耗。
-     * 注意：STM32F4（RM0090）上 IWDGRSTF(bit29) 与 WWDGRSTF(bit30) 是【独立位】，
-     * 并非同一位（system_init.h 旧注释有误）；两者均属“看门狗复位”家族，统一解码
-     * 为 RESET_REASON_IWDG（与 rtos_watchdog.c 自测用例 (1u<<30)->IWDG 对齐）。 */
+    /* STM32-specific RCC CSR decoding; ESP32-C3 has no RCC. */
     if (csr & (RCC_CSR_IWDGRSTF | RCC_CSR_WWDGRSTF)) return RESET_REASON_IWDG;
     if (csr & RCC_CSR_SFTRSTF)  return RESET_REASON_SOFTWARE;
     if (csr & RCC_CSR_PORRSTF)  return RESET_REASON_POWER;
@@ -38,14 +44,33 @@ reset_reason_t board_decode_reset_reason(uint32_t csr)
     if (csr & RCC_CSR_LPWRRSTF) return RESET_REASON_LOWPWR;
     return RESET_REASON_UNKNOWN;
 }
+#else
+/* ESP32-C3 has no RCC CSR register; stub returns POWER-ON unconditionally. */
+reset_reason_t board_decode_reset_reason(uint32_t csr) {
+    (void)csr;
+    return RESET_REASON_POWER;
+}
+#endif
 
 void board_report_reset_reason(void)
 {
+#if defined(STM32H750xx) || defined(STM32H7)
+    uint32_t csr = RCC->RSR;                       /* H7：复位标志在 RSR */
+    reset_reason_t r = board_decode_reset_reason(csr);
+    log_printf(app_log(), LOG_INFO, "boot",
+               "[BIST] reset : %s (RSR=0x%08lx)\n", reset_reason_name(r), csr);
+    RCC->RSR |= RCC_RSR_RMVF;                      /* 写 1 清所有复位标志 */
+#elif defined(ESP32C3)
+    /* RISC-V 无复位原因寄存器（Renode 恒为上电复位） */
+    log_printf(app_log(), LOG_INFO, "boot",
+               "[BIST] reset : POWER-ON (RISC-V)\n");
+#else
     uint32_t csr = RCC->CSR;
     reset_reason_t r = board_decode_reset_reason(csr);
     log_printf(app_log(), LOG_INFO, "boot",
                "[BIST] reset : %s (CSR=0x%08lx)\n", reset_reason_name(r), csr);
     RCC->CSR |= RCC_CSR_RMVF;   /* 写 1 清所有复位标志（含 RMVF 自身） */
+#endif
 }
 
 void system_early_init(void)

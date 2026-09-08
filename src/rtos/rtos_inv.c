@@ -48,9 +48,9 @@ static volatile int g_inv_l_prio_unlock;      /* L 释放后瞬时 prio（应已
 static volatile int g_inv_h_prio_run;         /* H 拿到锁后运行时的 prio（handoff 提升） */
 static volatile rtos_mutex_t *g_inv_cur;      /* 当前使用的锁 */
 
-RTOS_TASK_STACK(g_inv_lstack, 128);
-RTOS_TASK_STACK(g_inv_hstack, 128);
-RTOS_TASK_STACK(g_inv_mstack, 128);
+RTOS_TASK_STACK(g_inv_lstack, 512);
+RTOS_TASK_STACK(g_inv_hstack, 512);
+RTOS_TASK_STACK(g_inv_mstack, 512);
 
 static void inv_work(uint32_t n) {            /* 忙等 n 个 cycle */
     uint32_t s = rtos_cycle_now();

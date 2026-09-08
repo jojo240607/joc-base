@@ -5,7 +5,14 @@
 #include "log/app_log.h"
 #include "irq/irq.h"
 #include "irq/irq_manager.h"
+#ifdef STM32F103xx
+#include "stm32f103xx.h"
+#elif defined(STM32F407xx)
 #include "stm32f4xx.h"                  /* TIM2/TIM5 / RCC / TIMx_IRQn / DWT / SCB */
+#endif
+
+#if defined(STM32F103xx) || defined(STM32F407xx)
+
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -39,8 +46,11 @@
 
 /* ============ 通用辅助 ============ */
 static void acc_timer_start(TIM_TypeDef *tim, uint32_t hz) {
+#ifndef STM32F103xx
     if (tim == TIM5)      RCC->APB1ENR |= RCC_APB1ENR_TIM5EN;
-    else if (tim == TIM2) RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    else
+#endif
+    if (tim == TIM2) RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
     tim->CR1 = 0;
     tim->PSC = 83;                                  /* 84MHz / 84 = 1MHz */
     tim->ARR = (84000000u / 84u / hz) - 1u;
@@ -50,13 +60,20 @@ static void acc_timer_start(TIM_TypeDef *tim, uint32_t hz) {
 }
 static void acc_timer_stop(TIM_TypeDef *tim) {
     tim->CR1 &= ~TIM_CR1_CEN;
+#ifndef STM32F103xx
     if (tim == TIM5)      RCC->APB1ENR &= ~RCC_APB1ENR_TIM5EN;
-    else if (tim == TIM2) RCC->APB1ENR &= ~RCC_APB1ENR_TIM2EN;
+    else
+#endif
+    if (tim == TIM2) RCC->APB1ENR &= ~RCC_APB1ENR_TIM2EN;
 }
 
 /* 在 RUNNING 上下文自旋 ms 毫秒（不睡眠，使 tick 持续累加 budget_used）。 */
 static void acc_spin_ms(uint32_t ms) {
+#ifdef STM32F103xx
+    uint32_t cyc = ms * 72000u;
+#else
     uint32_t cyc = ms * 168000u;
+#endif
     uint32_t t0 = rtos_cycle_now();
     while ((uint32_t)(rtos_cycle_now() - t0) < cyc) { }
 }
@@ -235,14 +252,17 @@ static void a2_task(void *arg) {
 }
 static void a2_isr(void *ctx) {
     (void)ctx;
+#ifndef STM32F103xx
     if (TIM5->SR & TIM_SR_UIF) {
         TIM5->SR &= ~TIM_SR_UIF;
         g_a2_t0 = rtos_cycle_now();
         g_a2_irq++;
         rtos_sem_give(&g_a2_sem);
     }
+#endif
 }
 int acc_a2_isr_wake(void) {
+#ifndef STM32F103xx
     int ok = 1;
     rtos_cycle_init();
     rtos_sem_init(&g_a2_sem, 0, 100000);
@@ -318,6 +338,11 @@ int acc_a2_isr_wake(void) {
                lok ? "PASS" : "FAIL");
     RTOS_TEST_RESULT("ACC_A2_IsrWake", lok);
     return ok;
+#else
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[LATENCY] A2 isr_wake: SKIP (no TIM5 on F103)\n");
+    return 1;
+#endif
 }
 
 /* =================== A3. 调度抖动(jitter) =================== */
@@ -934,12 +959,15 @@ static void c2_task(void *arg) {
 }
 static void c2_isr(void *ctx) {
     (void)ctx;
+#ifndef STM32F103xx
     if (TIM5->SR & TIM_SR_UIF) {
         TIM5->SR &= ~TIM_SR_UIF;
         g_c2_isr_cnt++;          /* 正常计数：验证 fault 恢复期间中断不丢失 */
     }
+#endif
 }
 int acc_c2_concurrent_fault(void) {
+#ifndef STM32F103xx
     int ok = 1;
     rtos_cycle_init();
     g_c2_task_survived = 0;
@@ -988,6 +1016,11 @@ int acc_c2_concurrent_fault(void) {
                lok ? "PASS" : "FAIL");
     RTOS_TEST_RESULT("ACC_C2_ConcurrentFault", lok);
     return ok;
+#else
+    log_printf(app_log(), LOG_INFO, "rtos",
+               "[ACC-C2] concurrent-fault: SKIP (no TIM5 on F103)\n");
+    return 1;
+#endif
 }
 
 /* =================== C3. 长临界区突破硬实时 + 内核有界化捕获（P3 验证） =================== */
@@ -1207,3 +1240,4 @@ int rtos_accept_selftest(void) {
     return ok;
 }
 /* TEMP-DISABLED for boot-crash bisection */ /* RTOS_SELFTEST_ADD("accept", rtos_accept_selftest); */
+#endif

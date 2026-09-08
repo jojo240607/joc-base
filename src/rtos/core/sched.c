@@ -232,6 +232,11 @@ uint32_t rtos_rt_crit_overflow(void) {
     return g_rtos_crit_overflow;
 }
 
+/* 临界区嵌套深度查询（RTOSCRIT 自测诊断用；g_crit_nest 为 static）。 */
+uint32_t rtos_crit_nest(void) {
+    return (uint32_t)g_crit_nest;
+}
+
 /* 硬实时看门狗联动（阶段4 §4.3）：若 RTOS_HARD_RT_WDT 开启且任一违约计数非零，
  * 武装独立看门狗使违约升级为确定性复位。零挂起风险：仅在 tick 中检查、不阻塞调度。
  * 返回 1=已触发联动（看门狗 armed），0=无需触发或本宏关闭。 */
@@ -486,6 +491,14 @@ void rtos_schedule(void) {
 uint32_t rtos_ipc_misuse_count(void) { return g_ipc_misuse; }
 
 /* 由 PendSV 汇编调用（中断已关）：保存 old_sp，挑选下一任务，返回其 sp */
+/* RISC-V 调试：切换轨迹环形缓冲（仅 __riscv）。崩溃后从调试器/Renode 读
+ * g_riscv_sw_trace[0..15][4] = {cur_name, old_sp, nxt_name, nxt_sp}，
+ * g_riscv_sw_trace_cnt 单调递增（& 15 为索引）。 */
+#if defined(__riscv)
+volatile uint32_t g_riscv_sw_trace[16][4];
+volatile uint32_t g_riscv_sw_trace_cnt;
+#endif
+
 void *rtos_pendsv_switch(void *old_sp) {
     /* 临界区：保护就绪/等待链表不被“调用了内核 API 的更高优先级 ISR”并发改写。
      * 用统一入口 rtos_crit_enter/exit（见 rtos_internal.h）：
@@ -527,6 +540,16 @@ void *rtos_pendsv_switch(void *old_sp) {
         rtos_trace_switch(cur, nxt, reason);
     }
     rtos_crit_exit(st);
+#if defined(__riscv)
+    {
+        uint32_t i = g_riscv_sw_trace_cnt & 15u;
+        g_riscv_sw_trace[i][0] = (uint32_t)(uintptr_t)(cur ? cur->name : (const char *)0);
+        g_riscv_sw_trace[i][1] = (uint32_t)(uintptr_t)old_sp;
+        g_riscv_sw_trace[i][2] = (uint32_t)(uintptr_t)(nxt ? nxt->name : (const char *)0);
+        g_riscv_sw_trace[i][3] = (uint32_t)(uintptr_t)(nxt ? nxt->sp : 0);
+        g_riscv_sw_trace_cnt++;
+    }
+#endif
     return nxt ? nxt->sp : old_sp;
 }
 

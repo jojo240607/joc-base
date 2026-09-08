@@ -26,6 +26,11 @@
 #if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__) || \
     (defined(__CORTEX_M) && __CORTEX_M >= 3)
   #define ATOMIC_ARMv7M 1
+#elif defined(__riscv)
+  /* RV32IMC 无原子指令（无 A 扩展；__atomic 内建会生成 amoswap 等，链接/运行
+   * 均失败）：单核下用 irq_lock 临界区近似，语义等价（关中断窗口极短）。 */
+  #define ATOMIC_RISCV 1
+  #include "common/lock.h"   /* irq_lock/irq_unlock（仅 RISC-V 分支展开） */
 #endif
 
 /* ---------------- ARM 路径的底层内联 ---------------- */
@@ -69,6 +74,11 @@ static inline uint32_t atomic_u32_load(const atomic_u32_t *a) {
     uint32_t v = a->v;
     atomic_dmb();
     return v;
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    uint32_t v = a->v;
+    irq_unlock(st);
+    return v;
 #else
     return __atomic_load_n(&((atomic_u32_t *)a)->v, __ATOMIC_ACQUIRE);
 #endif
@@ -80,6 +90,10 @@ static inline void atomic_u32_store(atomic_u32_t *a, uint32_t val) {
     atomic_dmb();
     a->v = val;
     atomic_dmb();
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    a->v = val;
+    irq_unlock(st);
 #else
     __atomic_store_n(&a->v, val, __ATOMIC_RELEASE);
 #endif
@@ -94,6 +108,12 @@ static inline uint32_t atomic_u32_fetch_add(atomic_u32_t *a, uint32_t val) {
         res = atomic_strex(old + val, &a->v);
     } while (res != 0U);
     atomic_dmb();
+    return old;
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    uint32_t old = a->v;
+    a->v = old + val;
+    irq_unlock(st);
     return old;
 #else
     return __atomic_fetch_add(&a->v, val, __ATOMIC_ACQ_REL);
@@ -110,6 +130,12 @@ static inline uint32_t atomic_u32_fetch_sub(atomic_u32_t *a, uint32_t val) {
     } while (res != 0U);
     atomic_dmb();
     return old;
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    uint32_t old = a->v;
+    a->v = old - val;
+    irq_unlock(st);
+    return old;
 #else
     return __atomic_fetch_sub(&a->v, val, __ATOMIC_ACQ_REL);
 #endif
@@ -124,6 +150,12 @@ static inline uint32_t atomic_u32_fetch_or(atomic_u32_t *a, uint32_t val) {
         res = atomic_strex(old | val, &a->v);
     } while (res != 0U);
     atomic_dmb();
+    return old;
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    uint32_t old = a->v;
+    a->v = old | val;
+    irq_unlock(st);
     return old;
 #else
     return __atomic_fetch_or(&a->v, val, __ATOMIC_ACQ_REL);
@@ -140,6 +172,12 @@ static inline uint32_t atomic_u32_fetch_and(atomic_u32_t *a, uint32_t val) {
     } while (res != 0U);
     atomic_dmb();
     return old;
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    uint32_t old = a->v;
+    a->v = old & val;
+    irq_unlock(st);
+    return old;
 #else
     return __atomic_fetch_and(&a->v, val, __ATOMIC_ACQ_REL);
 #endif
@@ -154,6 +192,12 @@ static inline uint32_t atomic_u32_swap(atomic_u32_t *a, uint32_t val) {
         res = atomic_strex(val, &a->v);
     } while (res != 0U);
     atomic_dmb();
+    return old;
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    uint32_t old = a->v;
+    a->v = val;
+    irq_unlock(st);
     return old;
 #else
     return __atomic_exchange_n(&a->v, val, __ATOMIC_ACQ_REL);
@@ -179,6 +223,17 @@ static inline bool atomic_u32_compare_exchange(atomic_u32_t *a,
         return atomic_u32_compare_exchange(a, &e, desired);
     }
     atomic_dmb();
+    return true;
+#elif defined(ATOMIC_RISCV)
+    irq_state_t st = irq_lock();
+    uint32_t old = a->v;
+    if (old != *expected) {
+        *expected = old;
+        irq_unlock(st);
+        return false;
+    }
+    a->v = desired;
+    irq_unlock(st);
     return true;
 #else
     return __atomic_compare_exchange_n(&a->v, expected, desired,

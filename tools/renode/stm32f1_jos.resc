@@ -1,0 +1,26 @@
+# stm32f1_jos.resc - boot jOS firmware on STM32F103RCT6 in Renode
+#
+# Minimal run: loads firmware ELF, starts simulation, checks UART output.
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32f1_jos.resc" > f1_run.log 2>&1
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32f1_jos.repl
+
+# attach the UART capture hook (echoes firmware console to stdout)
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+# load the firmware (build with -DJOC_TARGET=STM32F103RCT6 -DRENODE=ON)
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_f103/jOS.elf
+
+# CPU performance: 72 MIPS matches real 72 MHz core at IPC ~1
+cpu PerformanceInMips 72
+
+start
+sleep 3
+# send HELP command to verify console is alive
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd.py
+sleep 5
+quit

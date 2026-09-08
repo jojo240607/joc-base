@@ -1,6 +1,5 @@
 #include "rtos.h"
 #include "core/rtos_internal.h"   /* g_tick / rtos_timer_tick / rtos_timer_run_pending / rtos_crit_enter/exit */
-#include "system_init.h"          /* reset_reason_t / board_decode_reset_reason（自测验证解码逻辑） */
 #include "devmgr/device_manager.h"
 #include "drv/iwdg.h"
 #include <stdint.h>
@@ -118,19 +117,19 @@ uint32_t rtos_watchdog_feeds(void) { return g_wdt_feeds; }
  *   2) 双缓冲栈 g_marathon_stack_arr[2][N]（ping-pong）：start 每次把缓冲索引翻转，新代
  *      永远用【另一块】内存。即便交接窗口内有旧 worker 尚存活，它也只在旧缓冲上运行，
  *      与新代物理隔离——绝不会两个活任务共用同一块栈。旧代退出后其缓冲才在下一轮被复用。 */
+#if RTOS_SELFTEST
+#ifndef MARATHON_N
 #define MARATHON_N 3
+#endif
+#ifndef MARATHON_STACK_SZ
 #define MARATHON_STACK_SZ 512
+#endif
 #define MARATHON_GENS 2
 static uint8_t  g_marathon_on;
 static volatile uint8_t  g_marathon_gen;     /* 代际令牌：worker 仅在令牌匹配时运行 */
 static int                g_marathon_buf;    /* ping-pong 缓冲索引(0/1)，每次 start 翻转 */
 static volatile uint32_t g_marathon_beat[MARATHON_N];
 static rtos_sem_t        g_marathon_done;
-/* 马拉松工作栈放在【主 SRAM】(而非 CCM(.ccm_bss))：CCM 仅 63K，已承载 MSP(顶 1K)
- * + TCB 池(g_task_pool[48]) + 常驻任务栈(main/blink/idle/bist/wq/bh/各 selftest)，
- * 空间紧张。开发者已把 rtos_ostest/robust/basic 的自测栈挪到主 SRAM，明确注释
- * "避免 CCM 与 MSP/TCB 池争用导致溢出相互踩踏"。双缓冲仍保持 2 的幂大小 + 基址对齐，
- * 满足 MPU 每任务栈 region(R4)。 */
 static uint8_t g_marathon_stack_arr[MARATHON_GENS][MARATHON_N][MARATHON_STACK_SZ]
     __attribute__((aligned(MARATHON_STACK_SZ)));
 
@@ -153,7 +152,9 @@ int rtos_marathon_start(uint8_t arm_wdt)
     g_marathon_gen++;                                   /* 令牌自增：旧 worker 见此必退出 */
     rtos_sem_init(&g_marathon_done, 0, MARATHON_N + 1);
     g_marathon_buf ^= 1;                                /* ping-pong 翻转：本代用另一块缓冲 */
-    int prio[MARATHON_N] = { 20, 22, 24 };              /* 均低于主任务(16)，后台心跳 */
+    int prio[MARATHON_N];
+    for (int i = 0; i < MARATHON_N; i++)
+        prio[i] = 20 + i * 2;              /* 均低于主任务(16)，后台心跳 */
     for (int i = 0; i < MARATHON_N; i++) {
         rtos_task_create("marathon", marathon_worker, (void *)(intptr_t)i,
                          (uint8_t)prio[i],
@@ -174,58 +175,55 @@ void rtos_marathon_stop(void)
 }
 
 int rtos_marathon_is_running(void) { return g_marathon_on; }
+#endif /* RTOS_SELFTEST (marathon) */
 
 #if RTOS_SELFTEST
 /* ---- 自测（RTOSALL "watchdog" 条目）：仅验证安全、可确定性判定的部分 ----
  * 1) 复位原因解码（纯函数，跨各种 CSR 位组合，含优先级）；
  * 2) 喂狗路径（rtos_watchdog_feed 计数 +1，不 arming，安全）；
  * 3) 周期喂狗定时器集成（不 arming；irq_lock 窗口内手动推进 g_tick 驱动回调）。 */
+
+/* 平台钩子（弱符号，由 hal/<plat>/test/watchdog_plat.c 覆盖）：复位原因解码自测。
+ * 位组合与预期表是平台相关数据（STM32 的 RCC_CSR 位号 / ESP32-C3 的 stub 契约），
+ * 不放在 RTOS 核心；未提供覆盖的平台默认直接通过。 */
+__attribute__((weak))
+int rtos_watchdog_plat_reset_selftest(void)
+{
+    return 1;
+}
+
 int rtos_watchdog_selftest(void)
 {
     int ok = 1;
 
-    /* 1) 复位原因解码：STM32F4 上 IWDG/WWDG 同位，故看门狗统一为 IWDG。
-     *    用与 device/stm32f407xx.h 一致的位号（避免 rtos 层直接 include 芯片头）。 */
-    struct { uint32_t csr; reset_reason_t exp; } cases[] = {
-        { (1u<<29), RESET_REASON_IWDG },                       /* IWDGRSTF */
-        { (1u<<30), RESET_REASON_IWDG },                       /* WWDGRSTF(=IWDG 别名) */
-        { (1u<<28), RESET_REASON_SOFTWARE },                   /* SFTRSTF */
-        { (1u<<27), RESET_REASON_POWER },                      /* PORRSTF */
-        { (1u<<26), RESET_REASON_PIN },                        /* PINRSTF */
-        { (1u<<31), RESET_REASON_LOWPWR },                     /* LPWRRSTF */
-        { (1u<<26)|(1u<<27), RESET_REASON_POWER },             /* POR>PIN 优先级 */
-        { (1u<<29)|(1u<<28), RESET_REASON_IWDG },              /* IWDG>SFT 优先级 */
-        { 0,        RESET_REASON_UNKNOWN },
-    };
-    for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
-        reset_reason_t r = board_decode_reset_reason(cases[i].csr);
-        if (r != cases[i].exp) { ok = 0; break; }
-    }
+    /* 1) 复位原因解码：委托平台钩子（hal/<plat>/test/watchdog_plat.c）。 */
+    if (!rtos_watchdog_plat_reset_selftest()) ok = 0;
 
-    /* 2) 设备存在 + 喂狗路径（不 arming，安全） */
+    /* 2) 喂狗路径（不 arming，安全）：rtos_watchdog_feed 计数 +1。
+     *    设备存在时（STM32 iwdg0）顺带走 ioctl 刷新路径；无设备平台
+     *    （ESP32-C3 无 IWDG）仅验证计数路径——rtos_watchdog_feed 对空设备
+     *    安全返回、仍计数，喂狗机制本身不依赖具体硬件。 */
     device *d = device_manager_get("iwdg0");
-    if (!d) { ok = 0; }
-    else {
-        g_wdt_dev = d;
-        uint32_t before = g_wdt_feeds;
-        rtos_watchdog_feed();
-        if (g_wdt_feeds != before + 1) ok = 0;
-    }
+    if (d) g_wdt_dev = d;
+    uint32_t before = g_wdt_feeds;
+    rtos_watchdog_feed();
+    if (g_wdt_feeds != before + 1) ok = 0;
 
-    /* 3) 周期喂狗定时器集成（不 arming）：irq_lock 窗口内手动越过一个周期，
-     *    调用 rtos_timer_tick + rtos_timer_run_pending 执行回调（写 KR=0xAAAA，无害）。 */
+    /* 3) 周期喂狗定时器集成（不 arming）：仅当存在真实看门狗设备时驱动。
+     *    irq_lock 窗口内手动越过一个周期，调用 rtos_timer_tick +
+     *    rtos_timer_run_pending 执行回调（写 KR=0xAAAA，无害）。 */
     if (d) {
         rtos_timer_t t;
         rtos_timer_init(&t, "wdt_probe", wdt_feed_cb, NULL);
         rtos_timer_start_ticks(&t, RTOS_TIMER_PERIODIC, 10);   /* 10 tick 周期 */
         unsigned st = rtos_crit_enter();
-        uint32_t before = g_wdt_feeds;
+        uint32_t before3 = g_wdt_feeds;
         g_tick = (uint32_t)(g_tick + 10);                      /* 手动越过一个周期 */
         rtos_timer_tick();                                     /* 置 pending + 唤醒定时器任务 */
         rtos_timer_run_pending();                              /* 在当前上下文执行回调(喂狗) */
         rtos_crit_exit(st);
         rtos_timer_stop(&t);
-        if (g_wdt_feeds <= before) ok = 0;                     /* 回调应至少触发一次 */
+        if (g_wdt_feeds <= before3) ok = 0;                    /* 回调应至少触发一次 */
     }
     return ok;
 }

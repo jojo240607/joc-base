@@ -41,8 +41,8 @@ static volatile int       g_fz_stop;
 static volatile uint32_t  g_fz_ops;   /* 总操作计数（活性证明） */
 static volatile uint32_t  g_fz_hb;    /* 心跳计数器（存活证明） */
 
-RTOS_TASK_STACK(g_fz_stack[NFUZZ_TASKS], 128);
-RTOS_TASK_STACK(g_fz_hb_stack, 128);
+RTOS_TASK_STACK(g_fz_stack[NFUZZ_TASKS], 512);
+RTOS_TASK_STACK(g_fz_hb_stack, 512);
 
 /* 确定性 LCG（多任务共享，仅影响趣味，不要求严格独立） */
 static uint32_t fz_rand(void) {

@@ -1,0 +1,18 @@
+#
+# stm32h7_jos_rtosdma.resc — verify DMA M2M selftest (RTOSDMA command)
+#
+# Usage:
+#   cd D:\soft\Renode
+#   .\renode.exe --disable-xwt --console -e "include @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos_rtosdma.resc" > h7_rtosdma.log 2>&1
+#
+
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/stm32h7_jos.repl
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_h750/jOS.elf
+cpu PerformanceInMips 480
+start
+sleep 5
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd_h7_rtosdma.py
+sleep 10
+quit

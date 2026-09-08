@@ -19,8 +19,9 @@
 #include "cortex_m.h"
 /* 芯片内存映射（MPU 区域布局）：换芯片只改 memmap.h */
 #include "memmap.h"
-#include "core_cm4.h"   /* CMSIS ISA 头：SCB / NVIC / FPU / SysTick_IRQn */
+#if __MPU_PRESENT
 #include "mpu_armv7.h"  /* CMSIS ISA 头：MPU_Type / MPU / MPU_CTRL_*（MPU 是 ISA 特性） */
+#endif
 
 /* 以下为纯软件故障诊断快照（无 DMA 目标缓冲），搬入 CCM 收缩主 SRAM .bss。
  * OpenOCD 事后翻帧脚本按符号（&g_fault_*）动态读取，不依赖固定地址，搬迁安全。 */
@@ -52,14 +53,20 @@ volatile uint32_t RTOS_CCM_BSS g_svc_enter_lr       = 0;
 volatile uint32_t RTOS_CCM_BSS g_svc_enter_ctrl     = 0;
 volatile uint32_t RTOS_CCM_BSS g_svc_syscall_path    = 0;   /* 非 0 = 走了 SVC 系统调用分支 */
 
+#if __MPU_PRESENT
+
 /* 一个区域：base 必须对齐到 size；ap 见 Cortex-M RASR AP 位；xn=1 禁止执行 */
 static void mpu_set_region(uint32_t idx, uint32_t base,
-                           uint32_t size_log2, uint32_t ap, int xn) {
+                           uint32_t size_log2, uint32_t ap, int xn,
+                           uint32_t tex, int c, int b) {
     MPU->RNR  = idx;
     MPU->RBAR = (base & 0xFFFFFFE0u) | (1u << 4) | (idx & 0xFu); /* VALID | REGION */
     MPU->RASR = (1u << 0)                       /* ENABLE */
               | ((xn ? 1u : 0u) << 28)          /* XN */
               | ((ap & 0x7u) << 24)             /* AP[2:0] */
+              | ((tex & 0x7u) << 19)            /* TEX[2:0] */
+              | ((c  ? 1u : 0u) << 17)          /* C */
+              | ((b  ? 1u : 0u) << 16)          /* B */
               | ((size_log2 - 1u) << 1);        /* SIZE = log2-1 */
 }
 
@@ -92,6 +99,9 @@ void rtos_mpu_set_task_stack_region(task_t *t) {
     MPU->RASR = (1u << 0)                       /* ENABLE */
               | (1u << 28)                      /* XN = 1（栈不可执行） */
               | (0b011u << 24)                  /* AP = 双方 RW（任务读写自身栈） */
+              | ((MEMMAP_CCM_TEX & 0x7u) << 19) /* 继承 CCM/DTCM 内存类型属性 */
+              | ((MEMMAP_CCM_C ? 1u : 0u) << 17)
+              | ((MEMMAP_CCM_B ? 1u : 0u) << 16)
               | ((size_log2 - 1u) << 1);        /* SIZE = log2 - 1（先不禁用 subregion） */
     __DSB();
 #else
@@ -104,33 +114,50 @@ void rtos_mpu_init(void) {
     MPU->CTRL = 0;
 
     /* Region 0: Flash（只读 + 可执行）—— 保护代码不被改写。布局见 memmap.h */
-    mpu_set_region(0, MEMMAP_FLASH_BASE,        MEMMAP_FLASH_SIZE_LOG2,        MEMMAP_FLASH_AP,        MEMMAP_FLASH_XN);
-    /* Region 1: SRAM。RTOS_MPU_PROTECT_KERNEL_RAM=1 时设为“仅特权 RW”，实现内核
+    mpu_set_region(0, MEMMAP_FLASH_BASE,        MEMMAP_FLASH_SIZE_LOG2,        MEMMAP_FLASH_AP,        MEMMAP_FLASH_XN,        MEMMAP_FLASH_TEX, MEMMAP_FLASH_C, MEMMAP_FLASH_B);
+    /* Region 1: SRAM/DTCM。RTOS_MPU_PROTECT_KERNEL_RAM=1 时设为"仅特权 RW"，实现内核
      * RAM 隔离（§6 R2）——非特权任务只能经自己的栈 region(R4) + SVC 门访问内存，
      * 无法直接读写内核 .data/.bss/堆/其它任务栈。默认 0：整块 SRAM 双方 RW，与现行
-     * “常态任务保持特权 + 共享 IPC 全局”模型零回归（详见 rtos_config.h 注释）。 */
+     * "常态任务保持特权 + 共享 IPC 全局"模型零回归（详见 rtos_config.h 注释）。 */
 #if RTOS_MPU_PROTECT_KERNEL_RAM
-    mpu_set_region(1, MEMMAP_SRAM_BASE, MEMMAP_SRAM_SIZE_LOG2, 0b001u, MEMMAP_SRAM_XN);
+    mpu_set_region(1, MEMMAP_SRAM_BASE, MEMMAP_SRAM_SIZE_LOG2, 0b001u,      MEMMAP_SRAM_XN,        MEMMAP_SRAM_TEX, MEMMAP_SRAM_C, MEMMAP_SRAM_B);
 #else
-    mpu_set_region(1, MEMMAP_SRAM_BASE, MEMMAP_SRAM_SIZE_LOG2, MEMMAP_SRAM_AP, MEMMAP_SRAM_XN);
+    mpu_set_region(1, MEMMAP_SRAM_BASE, MEMMAP_SRAM_SIZE_LOG2, MEMMAP_SRAM_AP, MEMMAP_SRAM_XN,         MEMMAP_SRAM_TEX, MEMMAP_SRAM_C, MEMMAP_SRAM_B);
 #endif
     /* Region 2: 外设（仅特权 RW，不可执行） */
-    mpu_set_region(2, MEMMAP_PERIPH_BASE,       MEMMAP_PERIPH_SIZE_LOG2,       MEMMAP_PERIPH_AP,       MEMMAP_PERIPH_XN);
+    mpu_set_region(2, MEMMAP_PERIPH_BASE,       MEMMAP_PERIPH_SIZE_LOG2,       MEMMAP_PERIPH_AP,       MEMMAP_PERIPH_XN,       MEMMAP_PERIPH_TEX, MEMMAP_PERIPH_C, MEMMAP_PERIPH_B);
     /* Region 3: Flash BIST 备用扇区（仅特权 RW，不可执行）。
-     * 编号高于 Region0，重叠时高编号优先，使 flash 烧录自检的“写闪存”不被 RO 拦截，
-     * 其余 Flash 仍为只读（代码保护）。 */
-    mpu_set_region(3, MEMMAP_FLASH_BIST_BASE,   MEMMAP_FLASH_BIST_SIZE_LOG2,   MEMMAP_FLASH_BIST_AP,   MEMMAP_FLASH_BIST_XN);
+     * 编号高于 Region0，重叠时高编号优先，使 flash 烧录自检的"写闪存"不被 RO 拦截，
+     * 其余 Flash 仍为只读（代码保护）。
+     * H750 无 BIST：MEMMAP_FLASH_BIST_SIZE_LOG2 未定义时被跳过。 */
+#if defined(MEMMAP_FLASH_BIST_SIZE_LOG2)
+    mpu_set_region(3, MEMMAP_FLASH_BIST_BASE,   MEMMAP_FLASH_BIST_SIZE_LOG2,   MEMMAP_FLASH_BIST_AP,   MEMMAP_FLASH_BIST_XN,   MEMMAP_FLASH_BIST_TEX, MEMMAP_FLASH_BIST_C, MEMMAP_FLASH_BIST_B);
+#endif
 
-    /* Region 5: CCM（内核对象区：TCB 池 + 任务栈，CPU 专用、DMA 不可达）。
+    /* Region 5: CCM/DTCM（内核对象区：TCB 池 + 任务栈，CPU 专用、DMA 不可达）。
      * 非特权任务运行时要读 g_running(TCB，判断是否需要 SVC 门) 并读写自身栈，
      * 故对 CCM 开放 unpriv RW(XN)。与 R4 每任务栈 region 重叠处属性一致，无冲突。
      * 注意：务必放在 R4 之前的固定区编程，且编号不得与 RTOS_MPU_STACK_REGION(4) 冲突。 */
-    mpu_set_region(5, MEMMAP_CCM_BASE,          MEMMAP_CCM_SIZE_LOG2,          MEMMAP_CCM_AP,          MEMMAP_CCM_XN);
+    mpu_set_region(5, MEMMAP_CCM_BASE,          MEMMAP_CCM_SIZE_LOG2,          MEMMAP_CCM_AP,          MEMMAP_CCM_XN,          MEMMAP_CCM_TEX,   MEMMAP_CCM_C,   MEMMAP_CCM_B);
 
-    /* 使能 MPU；PRIVDEFENA=1 让特权代码拥有背景区（对现行特权任务透明）。 */
+    /* H750 扩展区域（AXI SRAM、QSPI、SRAM1）—— 仅当 MEMMAP_AXI_BASE 已定义。 */
+#if defined(MEMMAP_AXI_BASE)
+    mpu_set_region(6, MEMMAP_AXI_BASE,          MEMMAP_AXI_SIZE_LOG2,          MEMMAP_AXI_AP,          MEMMAP_AXI_XN,          MEMMAP_AXI_TEX, MEMMAP_AXI_C, MEMMAP_AXI_B);
+    mpu_set_region(7, MEMMAP_QSPI_BASE,         MEMMAP_QSPI_SIZE_LOG2,         MEMMAP_QSPI_AP,         MEMMAP_QSPI_XN,         MEMMAP_QSPI_TEX, MEMMAP_QSPI_C, MEMMAP_QSPI_B);
+    mpu_set_region(8, MEMMAP_SRAM1_BASE,        MEMMAP_SRAM1_SIZE_LOG2,        MEMMAP_SRAM1_AP,        MEMMAP_SRAM1_XN,        MEMMAP_SRAM1_TEX, MEMMAP_SRAM1_C, MEMMAP_SRAM1_B);
+#endif
+
+    /* 使能 MPU；PRIVDEFENA=1 让特权代码拥有背景区（对现行特权任务透明）。
+     * 对于使能 D-Cache 的平台（H750），在 MPU 配置就绪后 clean+invalidate D-Cache，
+     * 确保旧缓存行不会携带错误的 MPU 属性。 */
     MPU->CTRL = MPU_CTRL_ENABLE_Msk | MPU_CTRL_PRIVDEFENA_Msk;
     __DSB();
     __ISB();
+#if __DCACHE_PRESENT
+    SCB_CleanInvalidateDCache();
+    __DSB();
+    __ISB();
+#endif
 
     /* 打开 MemManage 异常（否则 MPU 违例会升级为 HardFault） */
     SCB->SHCSR |= SCB_SHCSR_MEMFAULTENA_Msk;
@@ -141,6 +168,7 @@ void rtos_mpu_init(void) {
 
 void rtos_mpu_enable(void)  { MPU->CTRL |=  MPU_CTRL_ENABLE_Msk;  __DSB(); __ISB(); }
 void rtos_mpu_disable(void) { MPU->CTRL &= ~MPU_CTRL_ENABLE_Msk;  __DSB(); __ISB(); }
+#endif /* __MPU_PRESENT */
 
 /* ---- 栈哨兵 ---- */
 #define STACK_SENTINEL 0xCDCDCDCDu
@@ -198,7 +226,7 @@ size_t rtos_stack_used(task_t *t) {
  * 用 naked 函数：无 prologue/epilogue，不改动 PSP；因此故障帧里的 LR 直接指向
  * selftest 调用点的下一条指令，且异常返回时 PSP 已正确落回 selftest 栈帧。
  * 故障处理器只需把 PC 恢复为 LR，即可干净跳过本函数（无需猜指令长度/布局）。 */
-#if RTOS_SELFTEST
+#if RTOS_SELFTEST && __MPU_PRESENT
 __attribute__((naked))
 static void rtos_mpu_do_violation(void) {
     __asm volatile(
@@ -214,6 +242,7 @@ static void rtos_mpu_do_violation(void) {
  * 注意：故障处理器运行在异常上下文，UART TX 需要的 TXE 中断被自身屏蔽，
  * 因此这里【禁止调用 log_printf/printf】（会忙等死锁）。只把诊断写入全局，
  * 由 OpenOCD/串口在事后读取；真实故障则停机(WFI)等待调试。 */
+extern task_t *g_running;
 int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
     uint32_t cfsr = SCB->CFSR;
 
@@ -297,8 +326,9 @@ int rtos_fault_handler(uint32_t *frame, uint32_t lr) {
 }
 
 #if RTOS_SELFTEST
+#if __MPU_PRESENT
 /* ---- SRAM 隔离（§6 R2/R3）隔离子测试 ----
- * 启动一个“对齐栈(RTOS_TASK_STACK)”任务，验证：
+ * 启动一个"对齐栈(RTOS_TASK_STACK)"任务，验证：
  *  (a) 每任务栈 region(R4) 已编程：读回 RBAR/RASR 校验 base/size/AP/XN 正确；
  *  (b) 内核 RAM 隔离(R2)：临时整块 SRAM 仅特权，非特权任务写内核全局(.bss)
  *      应被 MPU 拦截并触发 MemFault，由故障处理器捕获恢复。
@@ -339,7 +369,10 @@ static void mpu_ram_test_task(void *arg) {
      * 本任务栈由 R4(unpriv RW) 覆盖，故写自身栈不受影响；但 .bss 内核全局不在 R4 内，
      * 受 R1(仅特权) 拦截。 */
     MPU->RNR = 1; uint32_t saved_rasr = MPU->RASR;
-    MPU->RASR = (1u<<0) | (1u<<28) | (0b001u<<24) | ((MEMMAP_SRAM_SIZE_LOG2 - 1u) << 1);
+    /* Preserve TEX/C/B from saved region attributes. */
+    uint32_t rasr_texcb = saved_rasr & ((7u<<19)|(1u<<17)|(1u<<16));
+    MPU->RASR = (1u<<0) | (1u<<28) | (0b001u<<24) | rasr_texcb
+              | ((MEMMAP_SRAM_SIZE_LOG2 - 1u) << 1);
     __DSB(); __ISB();
     g_mpu_violation = 0; g_mpu_test_active = 1;
     __set_CONTROL(0x3u); __ISB();                 /* 降到非特权 */
@@ -421,3 +454,4 @@ int rtos_mpu_selftest(void) {
 /* 编译期注册：RTOSALL 会遍历该段依次执行 */
 RTOS_SELFTEST_ADD("mpu", rtos_mpu_selftest);
 #endif /* RTOS_SELFTEST */
+#endif /* __MPU_PRESENT */

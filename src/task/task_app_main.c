@@ -27,8 +27,13 @@ uint32_t rust_ticks(void) { return 0u; }
 
 /* 主栈统一 8K：BIST/命令循环的深层调用需要。覆盖率构建曾为腾 CCM 砍到 2K，导致栈溢出、
  * 启动期 UART 输出丢失（误判 coverage 构建卡死）；现 gcov 段已搬回主 SRAM，CCM 有余量，
- * 主栈恢复 8K。 */
+ * 主栈恢复 8K。
+ * F103 (48KB SRAM, no CCM): reduce to 2KB to fit within limited RAM. */
+#ifdef STM32F103xx
+RTOS_TASK_STACK(g_main_stack, 2048);
+#else
 RTOS_TASK_STACK(g_main_stack, 8192);
+#endif
 
 
 void app_main_task(void *arg)
@@ -42,17 +47,33 @@ void app_main_task(void *arg)
     device *d_clk  = device_manager_get("clk");
     device *d_uart = device_manager_get("uart0");
     device *d_led  = device_manager_get("led");
+
+#ifdef JOC_RENODE
+    /* Renode 无 STM32H7 ADC 模型（不同于 F4 的 Analog.STM32_ADC），open 会写未映射的
+     * ADC 寄存器区 -> BusFault/HardFault。Renode 构建跳过 ADC / temp。 */
+    device *d_adc  = NULL;
+    device *d_temp = NULL;
+#else
     device *d_adc  = device_manager_get("adc0");
     device *d_temp = device_manager_get("temp0");
+#endif
 
     /* every driver is brought up through the SAME virtual call. */
-    d_clk->vtable->open(d_clk);
-    d_uart->vtable->open(d_uart);
-    d_led->vtable->open(d_led);
-    d_adc->vtable->open(d_adc);
-    d_temp->vtable->open(d_temp);
+    if (d_clk)  d_clk->vtable->open(d_clk);
+    if (d_uart) d_uart->vtable->open(d_uart);
+    if (d_led)  d_led->vtable->open(d_led);
+    if (d_adc)  d_adc->vtable->open(d_adc);
+    if (d_temp) d_temp->vtable->open(d_temp);
 
+#ifdef STM32F103xx
+    log_printf(app_log(), LOG_INFO, "main", "jOS RTOS ready (STM32F103RCT6, OOC)\n");
+#elif defined(STM32H750xx)
+    log_printf(app_log(), LOG_INFO, "main", "jOS RTOS ready (STM32H750VBT6, OOC)\n");
+#elif defined(ESP32C3)
+    log_printf(app_log(), LOG_INFO, "main", "jOS RTOS ready (ESP32-C3, RISC-V)\n");
+#else
     log_printf(app_log(), LOG_INFO, "main", "jOS RTOS ready (STM32F407 Discovery, OOC)\n");
+#endif
 
     /* Bring up the CDC device EARLY and leave it connected so a real PC host can
      * enumerate it at boot — INDEPENDENT of the BIST running in its own task. */

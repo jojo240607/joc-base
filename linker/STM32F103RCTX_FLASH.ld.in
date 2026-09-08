@@ -1,0 +1,128 @@
+/*
+ * Linker script for STM32F103RCT6
+ *
+ * Memory layout:
+ *   FLASH:    256 KB  (0x08000000 .. 0x0803FFFF)
+ *     RTOS:     0x08000000 .. 0x0800FFFF (first 64 KB)
+ *     APP:      0x08010000 .. 0x0803FFFF (192 KB, Rust app partition)
+ *   SRAM:   28 KB   (0x20000000 .. 0x20006FFF, RTOS data + heap)
+ *   APP_RAM: 16 KB  (0x20007000 .. 0x2000AFFF, Rust app runtime .bss)
+ *   Stack:   4 KB   (0x2000B000 .. 0x2000BFFF, initial SP)
+ *
+ * No CCM RAM. g_app_slot is first in .bss; its symbol exported via rtos_sym.ld.
+ */
+MEMORY
+{
+    FLASH (rx)   : ORIGIN = 0x08000000, LENGTH = 256K
+    SRAM  (rwx)  : ORIGIN = 0x20000000, LENGTH = 28672
+    APP_RAM (rwx): ORIGIN = 0x20007000, LENGTH = 16K
+    STACK (rw)   : ORIGIN = 0x2000B000, LENGTH = 4K
+}
+
+SECTIONS
+{
+    /* ---- Vector table at flash base ---- */
+    .isr_vector :
+    {
+        . = ALIGN(4);
+        KEEP(*(.isr_vector))
+        . = ALIGN(4);
+    } >FLASH
+
+    /* ---- Code ---- */
+    .text :
+    {
+        . = ALIGN(4);
+        *(.text*)
+        *(.rodata*)
+        . = ALIGN(4);
+    } >FLASH
+
+    /* ---- Global constructors ---- */
+    .init_array :
+    {
+        . = ALIGN(4);
+        __init_array_start = .;
+        KEEP(*(.init_array*))
+        __init_array_end = .;
+        . = ALIGN(4);
+    } >FLASH
+
+  /* RTOS 编译期段收集：rtos_start() 遍历自动实例化任务/IPC/BH。
+   * KEEP 防止 GC；SORT 保证稳定排序。 */
+  ._rtos_tasks :
+  {
+    PROVIDE_HIDDEN (__rtos_tasks_start = .);
+    KEEP (*(SORT(._rtos_tasks.*)))
+    PROVIDE_HIDDEN (__rtos_tasks_end = .);
+  } >FLASH
+  ._rtos_ipc :
+  {
+    PROVIDE_HIDDEN (__rtos_ipc_start = .);
+    KEEP (*(SORT(._rtos_ipc.*)))
+    PROVIDE_HIDDEN (__rtos_ipc_end = .);
+  } >FLASH
+  ._rtos_bh :
+  {
+    PROVIDE_HIDDEN (__rtos_bh_start = .);
+    KEEP (*(SORT(._rtos_bh.*)))
+    PROVIDE_HIDDEN (__rtos_bh_end = .);
+  } >FLASH
+  /* 编译期自测注册表（RTOS_SELFTEST=OFF 时为空，KEEP 安全）。 */
+  .rtos_selftests :
+  {
+    PROVIDE_HIDDEN (__rtos_selftest_start = .);
+    KEEP (*(SORT(.rtos_selftests.*)))
+    PROVIDE_HIDDEN (__rtos_selftest_end = .);
+  } >FLASH
+
+    /* ---- Data load (flash copy) ---- */
+    .data_load :
+    {
+        __data_load__ = .;
+    } >FLASH
+
+    /* ---- Initialized data (SRAM) ---- */
+    .data : AT(__data_load__)
+    {
+        . = ALIGN(4);
+        __data_start__ = .;
+        *(.data*)
+        . = ALIGN(4);
+        __data_end__ = .;
+    } >SRAM
+
+    /* ---- BSS (zero-initialized) ---- */
+    .bss :
+    {
+        . = ALIGN(4);
+        __bss_start__ = .;
+        *(.ccm_bss*)
+        *(.app_slot*)
+        *(.bss*)
+        *(COMMON)
+        . = ALIGN(4);
+        __bss_end__ = .;
+    } >SRAM
+
+    /* ---- Heap (not used by RTOS) ---- */
+    .heap :
+    {
+        . = ALIGN(4);
+        __heap_start__ = .;
+        . = . + 1K;
+        __heap_end__ = .;
+        . = ALIGN(4);
+    } >SRAM
+
+    /* ---- Discard unused sections ---- */
+    /DISCARD/ :
+    {
+        *(.ARM.exidx*)
+        *(.ARM.attributes*)
+        *(.comment*)
+    }
+}
+
+/* Export stack boundaries for startup code */
+PROVIDE(__stack_top = ORIGIN(STACK) + LENGTH(STACK));

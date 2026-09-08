@@ -1,6 +1,10 @@
 #include "selftest.h"
 #include "irq_manager.h"     /* dump the centralized interrupt registry in BIST */
+#ifdef STM32F103xx
+#include "stm32f103xx.h"
+#else
 #include "stm32f4xx.h"
+#endif
 #include <stdio.h>
 #include "log/log.h"
 #include "log/app_log.h"
@@ -12,6 +16,7 @@
 #include "drv/uart.h"
 #include "drv/gpio_pin.h"
 #include "drv/adc.h"
+#ifndef STM32F103xx
 #include "drv/temp_sensor.h"
 #include "drv/timer.h"
 #include "drv/pwm.h"
@@ -24,20 +29,25 @@
 #include "drv/rng.h"
 #include "drv/crc.h"
 #include "drv/iwdg.h"
-#include "system_init.h"   /* board_report_reset_reason（复位原因，§6.4） */
 #include "drv/wwdg.h"
 #include "drv/flash.h"
 #include "drv/i2s.h"
 #include "drv/can.h"
 #include "drv/usb.h"
 #include "drv/dma.h"
+#endif
+#include "system_init.h"   /* board_report_reset_reason（复位原因，§6.4） */
 #include "iface/block_device.h"   /* device_as_block downcast */
 #include "devmgr/device_manager.h"
 #include "iface/stream_device.h"   /* device_as_stream downcast */
 #include "iface/io_xfer.h"         /* io_xfer_t, io_xfer_complete */
 #include "common/ringbuffer.h"     /* ringbuffer_run_selftest (common utility class) */
 
+#ifdef STM32F103xx
+#define UART_PCLK2_HZ 72000000UL
+#else
 #define UART_PCLK2_HZ 84000000UL
+#endif
 #define UART_BAUD     115200UL
 
 static int selftest_vclock(selftest *self);

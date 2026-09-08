@@ -27,9 +27,14 @@
 #include "drv/temp_sensor.h"
 #include "drv/usb.h"
 #include "drv/i2c.h"
+#if !defined(STM32F103xx) && !defined(ESP32C3)
 #include "drv/timer.h"         /* TIMERDMA: timer_dma_burst / timer_get_ccr */
+#endif
 #include "drv/pinmux.h"
 #include "drv/exti.h"           /* EXTI 设备接口 */
+#if defined(STM32H750xx)
+#include "drv/qspi_flash.h"     /* QSPI 命令：外部 QSPI flash 烧写接口 */
+#endif
 #include "rtos.h"
 #include "rtos/rtos_mpu.h"
 #include "common/gcov_dump.h"   /* §6.6 RTOSCOV：导出 gcov .gcda 帧（覆盖率构建） */
@@ -66,12 +71,21 @@ static void cmd_bist(app_ctx_t *c, const char *line)
     log_printf(app_log(), LOG_INFO, "main",
                "BUILD: pinmux name-based (USART1_TX_PA9 / GPIOD_12 / ADC1_IN0) - %s %s\n",
                __DATE__, __TIME__);
+#if !defined(STM32F103xx) && !defined(STM32H750xx) && !defined(ESP32C3)
     if (c->st) selftest_run(c->st);
+#else
+    (void)c;
+#endif
 }
 #endif /* RTOS_SELFTEST */
 
 static void cmd_adc(app_ctx_t *c, const char *line)
 {
+    if (!c->adc) {
+        const char *s = "ADC no device\r\n";
+        c->console->vtable->write(c->console, s, strlen(s));
+        return;
+    }
     uint32_t ch = 0;
     if (line[3] == ' ') ch = (uint32_t)atoi(line + 4);
     if (ch > 18U) ch = 0U;
@@ -93,6 +107,11 @@ static void cmd_adc(app_ctx_t *c, const char *line)
 static void cmd_temp(app_ctx_t *c, const char *line)
 {
     (void)line;
+    if (!c->adc || !c->temp) {
+        const char *s = "TEMP no device\r\n";
+        c->console->vtable->write(c->console, s, strlen(s));
+        return;
+    }
     uint32_t traw = 0, ch = 16U;
     c->adc->vtable->ioctl(c->adc, ADC_IOCTL_SET_CHANNEL, &ch);
     c->adc->vtable->read(c->adc, &traw, sizeof(traw));
@@ -247,7 +266,13 @@ static void cmd_rtosipc2(app_ctx_t *c, const char *line) { (void)line; selftest_
 static void cmd_rtosrobust(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSROBUST", rtos_robust_selftest()); }
 static void cmd_rtosrr (app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSRR",  rtos_rr_selftest()); }
 static void cmd_rtosbus(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBUS", rtos_bus_selftest()); }
+#if __MPU_PRESENT
 static void cmd_rtosmpu(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSMPU", rtos_mpu_selftest()); }
+#endif
+#if defined(JOC_RENODE) && defined(STM32H750xx)
+extern int dma_m2m_selftest(void);
+static void cmd_rtosdma(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSDMA", dma_m2m_selftest()); }
+#endif
 static void cmd_rtosstress(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSSTRESS", rtos_stress_selftest()); }
 static void cmd_rtosp4(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSP4", rtos_p4_selftest()); }
 static void cmd_rtosall(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSALL", rtos_selftest_run_all()); }
@@ -301,7 +326,9 @@ static void cmd_rtossched(app_ctx_t *c, const char *line) {
     rtos_sched_analysis_print();
     selftest_reply(c, "RTOSSCHED", rtos_rt_sched_invalid() == 0);
 }
+#if __FPU_PRESENT
 static void cmd_rtosfpu(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFPU", rtos_fpu_selftest()); }
+#endif
 static void cmd_rtosbh(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSBH", rtos_bh_selftest()); }
 static void cmd_rtostimer(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSTIMER", rtos_timer_selftest()); }
 static void cmd_rtosusr(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSUSR", rtos_usr_selftest()); }
@@ -309,7 +336,9 @@ static void cmd_rtosirq(app_ctx_t *c, const char *line) { (void)line; selftest_r
 static void cmd_rtosinv(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSINV", rtos_inv_selftest()); }
 static void cmd_rtosfuzz(app_ctx_t *c, const char *line) { (void)line; selftest_reply(c, "RTOSFUZZ", rtos_fuzz_selftest()); }
 static void cmd_rtosaccept(app_ctx_t *c, const char *line) {
-    /* P1-4：支持 `RTOSACCEPT long` 跑 1 小时 soak（默认 60s 全 suite） */
+    /* P1-4：支持 `RTOSACCEPT long` 跑 1 小时 soak（默认 60s 全 suite）。
+     * 平台无关：rtos_accept_selftest / acc_b1_soak_long 在无平台测试文件的芯片
+     * （ESP32-C3/STM32H7 等）上由 rtos_selftest.c 的弱符号兜底直接返回 1。 */
     if (line && (strstr(line, "long") || strstr(line, "1h"))) {
         selftest_reply(c, "RTOSACCEPT_LONG", acc_b1_soak_long());
     } else {
@@ -372,6 +401,7 @@ static void cmd_rtoscov(app_ctx_t *c, const char *line)
 #endif
 }
 
+#if RTOS_SELFTEST
 /* 马拉松长跑（§6.4）：派生长跑心跳任务组常驻；参数含 "wdt" 时同时 ARM 看门狗
  * （IWDG 存活至复位，仅马拉松模式用）。返回即后台运行，72h 是让它一直跑。 */
 static void cmd_rtosmarathon(app_ctx_t *c, const char *line)
@@ -383,6 +413,66 @@ static void cmd_rtosmarathon(app_ctx_t *c, const char *line)
                      rtos_watchdog_is_armed() ? "ARMED" : "DISARMED");
     c->console->vtable->write(c->console, out, (size_t)n);
 }
+#endif /* RTOS_SELFTEST */
+
+#if defined(STM32H750xx)
+/* QSPI：外部 QUADSPI flash（W25Q128，APP_FLASH 分区）烧写接口自测。
+ * 1) 读 JEDEC ID；2) 对最后一个 4KB 扇区做 擦除→写→读回 验证。
+ * Renode 无 QUADSPI 模型，ID 读取失败即打印不可用（真机路径）。
+ * 部署功能：不依赖 RTOS_SELFTEST，发布构建也可用。 */
+static void cmd_qspi(app_ctx_t *c, const char *line)
+{
+    (void)line;
+    device *d = device_manager_get("qspi0");
+    if (!d) {
+        log_printf(app_log(), LOG_ERROR, "qspi", "qspi0 device not found\n");
+        return;
+    }
+    if (d->vtable->open(d)) {
+        log_printf(app_log(), LOG_ERROR, "qspi", "qspi0 open failed\n");
+        return;
+    }
+
+    uint8_t id[3] = { 0, 0, 0 };
+    if (d->vtable->ioctl(d, QSPI_FLASH_IOCTL_GET_ID, id)) {
+        log_printf(app_log(), LOG_WARN, "qspi",
+                   "QSPI unavailable: Renode has no QUADSPI model (real-silicon only)\n");
+        return;
+    }
+    log_printf(app_log(), LOG_INFO, "qspi", "JEDEC ID: %02X %02X %02X\n",
+               id[0], id[1], id[2]);
+
+    block_device *b = device_as_block(d);
+    if (!b) { log_printf(app_log(), LOG_ERROR, "qspi", "not a block device\n"); return; }
+    block_device_info_t info;
+    if (b->vtable->get_info(b, &info)) { log_printf(app_log(), LOG_ERROR, "qspi", "get_info failed\n"); return; }
+
+    /* 自测区 = 最后一个 4KB 扇区（Flash 尾部，不影响 App 分区）。
+     * 流程：擦除扇区 → 写 1 页模式数据 → 读回逐字节比较 → 再擦除恢复 0xFF。 */
+    uint64_t last_lba = info.block_count - 1;   /* 最后 256B 页（扇区内） */
+    static uint8_t pat[QSPI_PAGE_SIZE], rd[QSPI_PAGE_SIZE];
+    for (int i = 0; i < (int)QSPI_PAGE_SIZE; i++) {
+        pat[i] = (uint8_t)(i * 7 + 3);
+        rd[i]  = 0;
+    }
+
+    if (b->vtable->erase(b, last_lba, 1)) { log_printf(app_log(), LOG_ERROR, "qspi", "erase failed\n"); return; }
+    if (b->vtable->write(b, last_lba, pat, 1)) { log_printf(app_log(), LOG_ERROR, "qspi", "write failed\n"); return; }
+    if (b->vtable->read(b, last_lba, rd, 1))  { log_printf(app_log(), LOG_ERROR, "qspi", "read failed\n");  return; }
+
+    int ok = 1;
+    for (int i = 0; i < (int)QSPI_PAGE_SIZE; i++) if (pat[i] != rd[i]) ok = 0;
+    if (!ok) {
+        log_printf(app_log(), LOG_ERROR, "qspi", "readback mismatch @0x%X\n",
+                   (unsigned)(last_lba * QSPI_PAGE_SIZE));
+        return;
+    }
+    b->vtable->erase(b, last_lba, 1);   /* 恢复 0xFF，不留测试残留 */
+    log_printf(app_log(), LOG_INFO, "qspi",
+               "sector test: erase+write+readback PASS @0x%X\n",
+               (unsigned)(last_lba * QSPI_PAGE_SIZE));
+}
+#endif /* STM32H750xx */
 
 /* 软件复位：用于上位机在【不重新烧录】的情况下让板子回到全新 boot 状态，
  * 保证下一次 RTOSCOV 触发的是首次 __gcov_dump 调用（newlib gcov 首次 dump 后才
@@ -583,6 +673,7 @@ static void cmd_uartdma(app_ctx_t *c, const char *line)
                         : "UARTDMA TX-OK RX-FAIL\r\n");
 }
 
+#if !defined(STM32F103xx) && !defined(ESP32C3)
 /* ---- TIMER DMA 验证命令：让 TIM2(timer0) 的 Update 事件驱动一条 DMA 把一组
  * 16-bit 计数搬进 CCR1，再回读 CCR1 看是否等于最后一个值。这证明 TIM2_UP 的
  * DMA 路由 + CHSEL + PAR/M0AR + TC 整条通路正确（等价于 DAC DMA 回读 DOR）。
@@ -612,6 +703,7 @@ static void cmd_timerdma(app_ctx_t *c, const char *line)
     usb_reply(c, (rc == 0 && ccr == 40000U) ? "TIMERDMA OK\r\n"
                                             : "TIMERDMA FAIL\r\n");
 }
+#endif /* !STM32F103xx */
 
 /* ---- 命令表：加命令只需在此追加一行 + 对应 handler ---- */
 static const cmd_entry_t g_cmds[] = {
@@ -632,18 +724,28 @@ static const cmd_entry_t g_cmds[] = {
     { "RTOSROBUST", cmd_rtosrobust, 0 },
     { "RTOSRR",   cmd_rtosrr,   0 },
     { "RTOSBUS",  cmd_rtosbus,  0 },
+#if __MPU_PRESENT
     { "RTOSMPU",  cmd_rtosmpu,  0 },
+#endif
+#if defined(JOC_RENODE) && defined(STM32H750xx)
+    { "RTOSDMA",  cmd_rtosdma,  0 },
+#endif
     { "RTOSSTRESS", cmd_rtosstress, 0 },
     { "RTOSP4",   cmd_rtosp4,   0 },
     { "RTOSALL",  cmd_rtosall,  0 },
     { "RTOSDEADLINE", cmd_rtosdeadline, 0 },
     { "RTOSCRIT",     cmd_rtoscrit,     0 },
     { "RTOSSCHED",    cmd_rtossched,    1 },
+#if __FPU_PRESENT
     { "RTOSFPU",  cmd_rtosfpu,  0 },
+#endif
     { "RTOSBH",   cmd_rtosbh,   0 },
     { "RTOSTIMER", cmd_rtostimer, 0 },
-#endif
     { "RTOSMARATHON", cmd_rtosmarathon, 0 },
+#endif
+#if defined(STM32H750xx)
+    { "QSPI",     cmd_qspi,     0 },   /* 部署功能：不依赖 RTOS_SELFTEST */
+#endif
 #if RTOS_SELFTEST
     { "RTOSUSR",  cmd_rtosusr,  0 },
     { "RTOSIRQ",  cmd_rtosirq,  0 },
@@ -666,7 +768,9 @@ static const cmd_entry_t g_cmds[] = {
     { "USBRST",   cmd_usbrst,   0 },
     { "IOXFER",   cmd_ioxfer,   0 },
     { "UARTDMA",  cmd_uartdma,  0 },
+#if !defined(STM32F103xx) && !defined(ESP32C3)
     { "TIMERDMA", cmd_timerdma, 0 },
+#endif
 #ifdef RUST_APP_LIB
     { "RUST",     cmd_rust,     0 },
 #endif

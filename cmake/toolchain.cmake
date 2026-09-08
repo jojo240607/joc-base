@@ -2,7 +2,7 @@
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
-set(TOOLCHAIN_PREFIX arm-none-eabi)
+set(TOOLCHAIN_PREFIX "arm-none-eabi" CACHE STRING "Toolchain prefix (arm-none-eabi / riscv32-esp-elf)")
 
 find_program(CMAKE_C_COMPILER   ${TOOLCHAIN_PREFIX}-gcc     REQUIRED)
 find_program(CMAKE_CXX_COMPILER ${TOOLCHAIN_PREFIX}-g++     REQUIRED)
@@ -10,7 +10,7 @@ find_program(CMAKE_ASM_COMPILER ${TOOLCHAIN_PREFIX}-gcc     REQUIRED)
 find_program(CMAKE_OBJCOPY      ${TOOLCHAIN_PREFIX}-objcopy REQUIRED)
 find_program(CMAKE_OBJDUMP      ${TOOLCHAIN_PREFIX}-objdump REQUIRED)
 find_program(CMAKE_SIZE         ${TOOLCHAIN_PREFIX}-size    REQUIRED)
-find_program(CMAKE_GDB          ${TOOLCHAIN_PREFIX}-gdb     REQUIRED)
+find_program(CMAKE_GDB          ${TOOLCHAIN_PREFIX}-gdb)
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 

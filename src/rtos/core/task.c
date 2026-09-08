@@ -1,10 +1,17 @@
 #include "rtos.h"
+#include "common/ccm_bss.h"
 #include "rtos_internal.h"
 #include "common/lock.h"
 #include "irq.h"
 #include "irq_manager.h"   /* irq_manager_audit_priorities：启动期中断优先级契约校验 */
 #include "bh.h"
 #include <string.h>
+
+#if defined(__riscv)
+#include "riscv.h"   /* RISCV_FRAME_* 初始帧常量（task_stack_init） */
+/* __global_pointer$ 来自链接脚本（.sdata + 0x800），task 恢复时必须保持有效 */
+extern uint32_t __global_pointer$;
+#endif
 
 /* ---------------------------------------------------------------------------
  * jOS 任务管理（core/task.c）：TCB 静态池、初始栈帧、任务创建/退出、
@@ -16,13 +23,36 @@
 /* ---- TCB 静态池（无堆，确定性）：放 CCM，纯 CPU 访问、不占主 SRAM ---- */
 /* 非 static：rtos_internal.h 已 extern 声明，供 sched_trace.c 在切换点把 task_t*
  * 换算成稳定池索引（诊断/导出用，不参与调度逻辑）。其余访问仍走 rtos_task_* API。 */
-task_t g_task_pool[RTOS_MAX_TASKS] __attribute__((section(".ccm_bss")));
+task_t g_task_pool[RTOS_MAX_TASKS] RTOS_CCM_BSS;
 
 /* 前向声明：任务入口返回时调用，标记 TASK_DEAD 并请求重新调度 */
 static void rtos_task_exit(void);
 
 /* ---- 初始栈帧：伪造一次异常入栈，使首次切换的“恢复”路径合法 ---- */
 static void task_stack_init(task_t *t) {
+#if defined(__riscv)
+    /* RISC-V：无硬件自动压栈，初始帧即 _trap_handler 保存的 32 字帧
+     * （与 riscv.h 的 RISCV_FRAME_* 严格一致）。t->sp 指向帧基址，恢复时
+     * sp += 0x80 后 mret。寄存器语义：
+     *   mstatus = MPIE|MPP_M —— 首次 mret 后 MIE=1（开中断）、M 模式；
+     *   mepc    = 任务入口；
+     *   a0      = 任务参数（arg）；
+     *   ra      = rtos_task_exit（任务返回时的退出路径，与 Cortex-M LR 同义）。
+     * 其余寄存器清零（gp/tp 由运行时设置或不用）。 */
+    uint32_t *sp = (uint32_t *)((uint8_t *)t->stack_base + t->stack_size);
+    sp -= RISCV_FRAME_SIZE / 4u;                 /* 回退 32 字 = 0x80 B */
+    memset(sp, 0, RISCV_FRAME_SIZE);
+    sp[RISCV_FRAME_MSTATUS / 4u] = RISCV_FRAME_MSTATUS_INIT;
+    sp[RISCV_FRAME_MEPC    / 4u] = (uint32_t)(uintptr_t)t->entry;
+    sp[RISCV_FRAME_A0      / 4u] = (uint32_t)(uintptr_t)t->arg;
+    sp[RISCV_FRAME_RA      / 4u] = (uint32_t)(uintptr_t)rtos_task_exit;
+    /* gp：初始帧全部清零后 gp=x3=0，但 RISC-V 的 gp-relative 小数据寻址依赖
+     * 全局指针。若不清零则首次 mret 后 gp=0，所有 gp-relative 访问乱了。
+     * 这里把链接脚本算出的 __global_pointer$ 值写入帧内 gp 槽，
+     * 使首任务（及所有用此函数创建的任务）一启动即持有正确的 gp。 */
+    sp[RISCV_FRAME_GP      / 4u] = (uint32_t)(uintptr_t)&__global_pointer$;
+    t->sp = (void *)sp;
+#else
     uint32_t *sp = (uint32_t *)((uint8_t *)t->stack_base + t->stack_size);
     /* 硬件自动弹出的 8 字异常帧：xPSR, PC, LR, R12, R3, R2, R1, R0 */
     *--sp = 0x01000000u;               /* xPSR（T 位必须置 1） */
@@ -41,20 +71,34 @@ static void task_stack_init(task_t *t) {
      * 恢复路径会误把 R4 当 EXC_RETURN 导致 INVSTATE HardFault。 */
     *--sp = 0xFFFFFFFDu;                          /* 返回线程模式 / PSP / 无 FPU 帧 */
     t->sp = (void *)sp;
+#endif
 }
 
-static void rtos_task_exit(void) {
+/* 任务真正退出的内核路径（特权上下文执行）：标记 TASK_DEAD 并请求切换。
+ * 不能在 U 模式直接执行——rtos_crit_enter 的 irq_lock 读 mstatus（M 模式 CSR），
+ * U 模式访问会触发 Illegal instruction（mcause=2）。非特权任务经
+ * RTOS_SYS_TASK_EXIT SVC 门由 syscalls.c 在 M 模式分发调用本函数。 */
+void rtos_task_exit_priv(void) {
     unsigned st = rtos_crit_enter();
     if (g_running) {
         rtos_kobj_deregister(KOBJ_TASK, g_running);   /* 回收内核对象表条目，避免 RTOSALL 串联时注册表溢出 */
         g_running->state = TASK_DEAD;
     }
     rtos_crit_exit(st);
-    /* 非特权任务返回时也需请求切换，但 rtos_schedule_request() 直接写 ICSR
-     * (仅特权)，会导致 BusFault。改用 rtos_yield()：它在非特权态会经 SVC 门
-     * (RTOS_SYS_YIELD) 在特权 Handler 模式里真正请求切换；特权任务则直连，
-     * 行为与历史完全一致。任务已是 TASK_DEAD，rtos_yield 不会把它重新入就绪队列。 */
+    /* 请求切换：任务已是 TASK_DEAD，rtos_yield 不会把它重新入就绪队列，仅置位
+     * 调度请求（RISC-V 上写 msip），下一个 READY 任务在 mret 后接管本 CPU。 */
     rtos_yield();
+}
+
+static void rtos_task_exit(void) {
+    if (rtos_need_svc()) {
+        /* 非特权任务：直接执行上面的特权路径会读 mstatus 触发 Illegal instruction，
+         * 故经 SVC 门在 M 模式执行（syscalls.c 的 RTOS_SYS_TASK_EXIT）。mret 后本
+         * 任务停在 for(;;) 挂死，随后挂起的软件中断把已 DEAD 的它切出、永不再调度。 */
+        rtos_syscall(RTOS_SYS_TASK_EXIT, 0, 0, 0);
+        for (;;) { }
+    }
+    rtos_task_exit_priv();
     for (;;) { }
 }
 

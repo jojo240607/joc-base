@@ -8,7 +8,12 @@
 #ifndef __USB_CONF__H__
 #define __USB_CONF__H__
 
-#include "stm32f4xx.h"
+#ifdef STM32H750xx
+  #include "stm32h750xx.h"
+  #include "core_cm7.h"
+#else
+  #include "stm32f4xx.h"
+#endif
 
 /* ---- Core / PHY selection ---------------------------------------------- */
 #define USE_USB_OTG_FS

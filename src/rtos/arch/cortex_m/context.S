@@ -120,10 +120,10 @@ PendSV_Handler:
     stmdb  r0!, {r4-r11}
     mov    r3, #0xFFFFFFED
     str    r3, [r0, #-4]!    /* EXC_RETURN(word0) 在最低地址 */
-.Lpendsv_saved:
 #if RTOS_SCHED_TRACE
     PSEG 2                  /* SAVE 完成（r4-r11 ± s16-s31） */
 #endif
+    b      .Lpendsv_saved
 #else
     /* 无 FPU：布局低→高 = [EXC_RETURN][r4-r11][hw帧] */
     stmdb  r0!, {r4-r11}
@@ -134,9 +134,9 @@ PendSV_Handler:
     mov   r2, #0
     str   r2, [r1, #4]      /* seg[1] = 0 */
 #endif
-    b      .Lpendsv_saved   /* 汇合到 SAVE 完成点（打 PSEG 2） */
 #endif
 
+.Lpendsv_saved:
     /* 临界区已收口到 rtos_pendsv_switch 内部（rtos_crit_enter/exit：
      * ZERO_LATENCY>0 时 BASEPRI 选择性屏蔽，否则 PRIMASK），故此处不再粗暴关全中断。
      * 寄存器保存/恢复与 FPU 懒栈本来就运行在中断开启状态，只有“选下一任务”这一小段被保护。 */

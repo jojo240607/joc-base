@@ -1,0 +1,15 @@
+# temp: ESP32-C3 RISC-V RTOS self-test verification (Renode)
+mach create
+machine LoadPlatformDescription @d:/projects/mcu/os/joc-base/tools/renode/esp32c3_jos.repl
+
+include @d:/projects/mcu/os/joc-base/tools/renode/uart_capture.py
+
+sysbus LoadELF @d:/projects/mcu/os/joc-base/build_esp32c3/jOS.elf
+
+cpu PerformanceInMips 40
+
+start
+sleep 3
+include @d:/projects/mcu/os/joc-base/tools/renode/send_cmd_espc3_selftest.py
+sleep 120
+quit

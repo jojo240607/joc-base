@@ -20,7 +20,9 @@
  * 决定，而非“历史上创建过的全部任务”。128 给稳健模块(如 RTOSROBUST 的
  * 32 个 filler 任务瞬时共存)留足余量，避免注册表在 RTOSALL 中途溢出、导致
  * 后续模块(尤其唯一走 SVC 门校验的 RTOSUSR)的 IPC 对象登记失败而误判。 */
+#ifndef KOBJ_MAX
 #define KOBJ_MAX 128
+#endif
 /* 纯软件对象注册表，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。
  * 注意：匿名 struct 数组的 section 属性须置于数组声明符之后才被 GCC 接受。 */
 static struct { const char *name; rtos_kobj_type_t type; void *ptr; } g_kobj[KOBJ_MAX] RTOS_CCM_BSS;

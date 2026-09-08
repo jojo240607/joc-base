@@ -2,15 +2,220 @@ cmake_minimum_required(VERSION 3.20)
 
 set(CMAKE_TOOLCHAIN_FILE ${CMAKE_SOURCE_DIR}/cmake/toolchain.cmake CACHE FILEPATH "" FORCE)
 
-project(stm32f407_minimal C CXX ASM)
+set(PROJ_NAME "jOS" CACHE STRING "Project output name")
+project(${PROJ_NAME} C CXX ASM)
 
-# ---- MCU specific ----
-# STM32F4 Discovery: STM32F407VGT6, HSE = 8 MHz on board
-set(CPU_FLAGS -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16)
-set(MCU_DEFINE "STM32F407xx")
-set(HSE_VALUE 8000000)   # Discovery board external crystal = 8 MHz
+# Architecture directory (used for RTOS arch layer sources)
+set(ARCH_DIR "cortex_m" CACHE STRING "Architecture dir (cortex_m / riscv)")
 
-# ---- 覆盖率构建（docs/rtos-test-plan.md §6.6）----
+# ---- Target MCU selection ----
+set(JOC_TARGET "STM32F407VGT6" CACHE STRING "Target MCU (STM32F407VGT6 / STM32F103RCT6 / STM32H750VBT6 / ESP32C3)")
+
+if(JOC_TARGET STREQUAL "STM32F103RCT6")
+  # STM32F103RCT6: Cortex-M3, 72 MHz, no FPU, no MPU
+  set(CPU_FLAGS         -mcpu=cortex-m3 -mthumb -mfloat-abi=soft)
+  set(MCU_DEFINE        "STM32F103xx")
+  set(CORE_DEFINE       "CORE_CORTEX_M3")
+  set(HSE_VALUE         8000000)
+  set(BOARD_SRC_FILE    src/board/stm32f103rct6.c)
+  set(STARTUP_SRC_FILE  startup/startup_stm32f103xx.s)
+  set(SYSTEM_SRC_FILE   system_stm32f1xx.c)
+  set(LINKER_TEMPLATE   ${CMAKE_SOURCE_DIR}/linker/STM32F103RCTX_FLASH.ld.in)
+  set(HAL_DIR           src/hal/stm32f1)
+  # F103 HAL sources (minimal set)
+  set(HAL_SRCS
+    ${HAL_DIR}/clock_hal.c
+    ${HAL_DIR}/gpio_hal.c
+    ${HAL_DIR}/uart_hal.c
+    ${HAL_DIR}/irq_hal.c
+    ${HAL_DIR}/pinmux_hal.c
+    ${HAL_DIR}/pinmux_af_stm32f1.c
+        ${HAL_DIR}/dma_hal.c
+    ${HAL_DIR}/i2c_hal.c
+    ${HAL_DIR}/spi_hal.c
+    ${HAL_DIR}/tim_hal.c
+    ${HAL_DIR}/exti_hal.c
+    ${HAL_DIR}/adc_hal.c
+    ${HAL_DIR}/iwdg_hal.c
+    ${HAL_DIR}/crc_hal.c
+    ${HAL_DIR}/wwdg_hal.c
+    ${HAL_DIR}/dac_hal.c
+    ${HAL_DIR}/flash_hal.c
+    ${HAL_DIR}/rtc_hal.c
+    ${HAL_DIR}/can_hal.c)
+  # F103 driver sources (all available peripherals)
+  set(DRV_SRCS
+    src/drv/gpio_pin.c
+    src/drv/clock.c
+    src/drv/uart.c
+    src/drv/pinmux.c
+    src/drv/systick.c
+    src/drv/i2c.c
+    src/drv/spi.c
+    src/drv/timer.c
+    src/drv/pwm.c
+    src/drv/exti.c
+    src/drv/adc.c
+    src/drv/iwdg.c
+    src/drv/rtc.c
+    src/drv/flash.c
+    src/drv/crc.c
+    src/drv/dac.c
+    src/drv/can.c
+    src/drv/dma.c)
+  message(STATUS "Target: STM32F103RCT6 (Cortex-M3, ${CPU_FLAGS})")
+elseif(JOC_TARGET STREQUAL "STM32F407VGT6")
+  # STM32F4 Discovery: STM32F407VGT6, HSE = 8 MHz on board (default)
+  set(CPU_FLAGS         -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16)
+  set(MCU_DEFINE        "STM32F407xx")
+  set(CORE_DEFINE       "CORE_CORTEX_M4")
+  set(HSE_VALUE         8000000)
+  set(BOARD_SRC_FILE    src/board/stm32f4_discovery.c)
+  set(STARTUP_SRC_FILE  startup/startup_stm32f407xx.s)
+  set(SYSTEM_SRC_FILE   src/system_stm32f4xx.c)
+  set(LINKER_TEMPLATE   ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTX_FLASH.ld.in)
+  set(HAL_DIR           src/hal/stm32)
+  # F407 HAL sources (full peripheral set)
+  set(HAL_SRCS
+    ${HAL_DIR}/adc_hal.c
+    ${HAL_DIR}/gpio_hal.c
+    ${HAL_DIR}/clock_hal.c
+    ${HAL_DIR}/uart_hal.c
+    ${HAL_DIR}/temp_hal.c
+    ${HAL_DIR}/pinmux_hal.c
+    ${HAL_DIR}/pinmux_af_stm32f4.c
+    ${HAL_DIR}/irq_hal.c
+    ${HAL_DIR}/tim_hal.c
+    ${HAL_DIR}/exti_hal.c
+    ${HAL_DIR}/i2c_hal.c
+    ${HAL_DIR}/spi_hal.c
+    ${HAL_DIR}/sdio_hal.c
+    ${HAL_DIR}/dac_hal.c
+    ${HAL_DIR}/rtc_hal.c
+    ${HAL_DIR}/rng_hal.c
+    ${HAL_DIR}/crc_hal.c
+    ${HAL_DIR}/iwdg_hal.c
+    ${HAL_DIR}/wwdg_hal.c
+    ${HAL_DIR}/flash_hal.c
+    ${HAL_DIR}/i2s_hal.c
+    ${HAL_DIR}/can_hal.c
+    ${HAL_DIR}/usb_hal.c
+    ${HAL_DIR}/dma_hal.c
+    ${HAL_DIR}/st_usb/usb_core.c
+    ${HAL_DIR}/st_usb/usb_dcd.c
+    ${HAL_DIR}/st_usb/usb_dcd_int.c
+    ${HAL_DIR}/st_usb/usbd_core.c
+    ${HAL_DIR}/st_usb/usbd_req.c
+    ${HAL_DIR}/st_usb/usbd_ioreq.c
+    ${HAL_DIR}/st_usb/usb_bsp.c
+    ${HAL_DIR}/st_usb/usbd_cdc_core.c)
+  # F407 driver sources (full peripheral set)
+  set(DRV_SRCS
+    src/drv/adc.c
+    src/drv/gpio_pin.c
+    src/drv/clock.c
+    src/drv/temp_sensor.c
+    src/drv/uart.c
+    src/drv/pinmux.c
+    src/drv/systick.c
+    src/drv/timer.c
+    src/drv/pwm.c
+    src/drv/exti.c
+    src/drv/i2c.c
+    src/drv/spi.c
+    src/drv/sdio.c
+    src/drv/sd_card.c
+    src/drv/dac.c
+    src/drv/rtc.c
+    src/drv/rng.c
+    src/drv/crc.c
+    src/drv/iwdg.c
+    src/drv/wwdg.c
+    src/drv/flash.c
+    src/drv/i2s.c
+    src/drv/can.c
+    src/drv/usb.c
+    src/drv/dma.c)
+  message(STATUS "Target: STM32F407VGT6 (Cortex-M4, ${CPU_FLAGS})")
+elseif(JOC_TARGET STREQUAL "STM32H750VBT6")
+  # STM32H750B-DK: Cortex-M7 @ 480 MHz, double-precision FPU, MPU,
+  # 128 KB internal Flash, 128 KB DTCM, 512 KB AXI SRAM, QSPI 16 MB (轨 B).
+  set(CPU_FLAGS         -mcpu=cortex-m7 -mthumb -mfloat-abi=hard -mfpu=fpv5-d16)
+  set(MCU_DEFINE        "STM32H750xx")
+  set(CORE_DEFINE       "CORE_CORTEX_M7")
+  set(HSE_VALUE         25000000)
+  set(BOARD_SRC_FILE    src/board/stm32h750b_dk.c)
+  set(STARTUP_SRC_FILE  startup/startup_stm32h750xx.s)
+  set(SYSTEM_SRC_FILE   src/system_stm32h7xx.c)
+  set(LINKER_TEMPLATE   ${CMAKE_SOURCE_DIR}/linker/STM32H750VB_FLASH.ld.in)
+  set(HAL_DIR           src/hal/stm32h7)
+  # H750 HAL sources (milestone 1 minimal set: clock/gpio/uart/irq/pinmux/exti/
+  # flash/qspi + tim/dma 链接桩 — drv/timer.c 依赖 tim_hal_* 与 dma_hal_route)
+  set(HAL_SRCS
+    ${HAL_DIR}/clock_hal.c
+    ${HAL_DIR}/gpio_hal.c
+    ${HAL_DIR}/uart_hal.c
+    ${HAL_DIR}/irq_hal.c
+    ${HAL_DIR}/pinmux_hal.c
+    ${HAL_DIR}/pinmux_af_stm32h7.c
+    ${HAL_DIR}/tim_hal.c
+    ${HAL_DIR}/dma_hal.c
+    ${HAL_DIR}/exti_hal.c
+    ${HAL_DIR}/flash_hal.c
+    ${HAL_DIR}/qspi_hal.c
+    ${HAL_DIR}/iwdg_hal.c
+    ${HAL_DIR}/wwdg_hal.c
+    ${HAL_DIR}/crc_hal.c
+    ${HAL_DIR}/rng_hal.c
+    ${HAL_DIR}/temp_hal.c
+    ${HAL_DIR}/adc_hal.c
+    ${HAL_DIR}/rtc_hal.c
+    ${HAL_DIR}/spi_hal.c
+    ${HAL_DIR}/i2c_hal.c
+    ${HAL_DIR}/i2s_hal.c
+    ${HAL_DIR}/dac_hal.c
+    ${HAL_DIR}/sdio_hal.c
+    ${HAL_DIR}/usb_hal.c)
+  # H750 driver sources (subset matching the milestone-1 HAL surface)
+  set(DRV_SRCS
+    src/drv/adc.c
+    src/drv/gpio_pin.c
+    src/drv/clock.c
+    src/drv/uart.c
+    src/drv/pinmux.c
+    src/drv/systick.c
+    src/drv/temp_sensor.c
+    src/drv/timer.c
+    src/drv/dma.c
+    src/drv/qspi_flash.c
+    src/drv/sdio.c
+    src/drv/sd_card.c)
+  message(STATUS "Target: STM32H750VBT6 (Cortex-M7, ${CPU_FLAGS})")
+elseif(JOC_TARGET STREQUAL "ESP32C3")
+  # ESP32-C3: RISC-V RV32IMC @ 40 MHz, no FPU, no MPU
+  set(CPU_FLAGS         -march=rv32imc_zicsr_zifencei -mabi=ilp32)
+  set(MCU_DEFINE        "ESP32C3")
+  set(CORE_DEFINE       "__riscv")
+  set(HSE_VALUE         0)
+  set(BOARD_SRC_FILE    src/board/esp32c3_devkit.c)
+  set(STARTUP_SRC_FILE  startup/startup_esp32c3.s)
+  set(LINKER_TEMPLATE   ${CMAKE_SOURCE_DIR}/linker/ESP32C3.ld.in)
+  set(HAL_DIR           src/hal/esp32c3)
+  set(ARCH_DIR          riscv)
+  # ESP32-C3 HAL sources (Phase-1 minimal set)
+  set(HAL_SRCS
+    ${HAL_DIR}/clock_hal.c
+    ${HAL_DIR}/uart_hal.c
+    ${HAL_DIR}/irq_hal.c
+    ${HAL_DIR}/pinmux_hal.c
+    ${HAL_DIR}/dma_hal.c)
+  # ESP32-C3 driver sources (Phase-1 minimal set)
+  set(DRV_SRCS
+    src/drv/clock.c
+    src/drv/uart.c)
+  message(STATUS "Target: ESP32C3 (RISC-V RV32IMC, ${CPU_FLAGS})")
+endif()
+
 # 开启后加入 --coverage（= -fprofile-arcs -ftest-coverage），并在运行时经调试
 # UART 导出 .gcda 帧（见 src/common/gcov_dump.c + 命令 RTOSCOV）；host 端用
 # tools/coverage_collect.py 收帧落盘并跑 gcov 出报告。常态关闭，不影响正常构建。
@@ -19,6 +224,70 @@ option(COVERAGE "Build with gcov coverage instrumentation (--coverage)" OFF)
 # 是否包含 RTOS 自测 + 板载 BIST。开发/覆盖率构建默认 ON；发布构建设为 OFF，
 # 剔除全部自测代码与攻击面（rtos 自测文件、BIST、RTOS* 控制台命令、.rtos_selftests 段）。
 option(RTOS_SELFTEST "Build with jOS RTOS self-tests + board BIST (OFF for release)" ON)
+
+# ---- RTOS 自测按套件裁剪（dev 版 RAM 控制）----
+# F407 dev 版(RTOS_SELFTEST=ON)主 SRAM 仅 128KB，全量自测 .bss ~195KB 会 region overflow。
+# 按需编译测试条目（未编译的套件由 rtos_selftest.c 弱符号兜底返回 1，console 命令仍可调用，
+# 不产生链接错误）。主 .bss 大户：ostest ~29KB / accept(含 1h-soak) ~24KB / basic ~18KB /
+# robust ~15.5KB / irq。
+# 用法：
+#   cmake -DRTOS_SELFTEST=ON -DRTOS_SELFTEST_MINIMAL=ON ..              # F407 lean dev（默认禁重套件）
+#   cmake -DRTOS_SELFTEST=ON -DRTOS_SELFTEST_MINIMAL=ON -DRTOS_SELFTEST_ACCEPT=ON ..  # +1h-soak soak 版
+# 未显式 -D 时，MINIMAL=ON 会把以下重套件默认置 OFF；用户显式 -DRTOS_SELFTEST_* =ON 可覆盖。
+option(RTOS_SELFTEST_MINIMAL "Lean: disable heavy suites by default (F407 dev RAM)" OFF)
+if(RTOS_SELFTEST_MINIMAL)
+  set(_st_def_ostest OFF)
+  set(_st_def_robust  OFF)
+  set(_st_def_irq     OFF)
+  set(_st_def_accept  OFF)
+else()
+  set(_st_def_ostest ON)
+  set(_st_def_robust  ON)
+  set(_st_def_irq     ON)
+  set(_st_def_accept  ON)
+endif()
+set(RTOS_SELFTEST_OSTEST      ${_st_def_ostest} CACHE BOOL "Compile rtos_ostest.c (~29KB .bss, RTOSALL)" )
+set(RTOS_SELFTEST_ACCEPT      ${_st_def_accept} CACHE BOOL "Compile stm32 rtos_accept.c (~24KB .bss incl 1h-soak)" )
+set(RTOS_SELFTEST_ROBUST      ${_st_def_robust} CACHE BOOL "Compile stm32 rtos_robust.c (~15.5KB .bss)" )
+set(RTOS_SELFTEST_IRQ         ${_st_def_irq}    CACHE BOOL "Compile stm32 rtos_irq.c (ISR 实时性/风暴)" )
+set(RTOS_SELFTEST_BASIC       ON  CACHE BOOL "Compile rtos_basic.c (T01-T05 + sched-lock/crit/SysTick)" )
+set(RTOS_SELFTEST_IPC2        ON  CACHE BOOL "Compile rtos_ipc2.c (S01/S03/S04)" )
+set(RTOS_SELFTEST_STRESS      ON  CACHE BOOL "Compile rtos_stress.c" )
+set(RTOS_SELFTEST_P4          ON  CACHE BOOL "Compile rtos_p4.c" )
+set(RTOS_SELFTEST_USR         ON  CACHE BOOL "Compile rtos_usr.c" )
+set(RTOS_SELFTEST_INV         ON  CACHE BOOL "Compile rtos_inv.c" )
+set(RTOS_SELFTEST_FUZZ        ON  CACHE BOOL "Compile rtos_fuzz.c" )
+set(RTOS_SELFTEST_TIMER       ON  CACHE BOOL "Compile rtos_timer.c" )
+set(RTOS_SELFTEST_IPC2S05     ON  CACHE BOOL "Compile stm32 ipc2_s05.c (TIM3 ISR 发信号量)" )
+set(RTOS_SELFTEST_OSTEST_ISR  ON  CACHE BOOL "Compile stm32 ostest_isr.c (ISR 用例)" )
+set(RTOS_SELFTEST_WATCHDOG_PLAT ON CACHE BOOL "Compile watchdog_plat.c (覆盖弱钩子)" )
+
+# ---- 独立 1h-soak 构建（RTOS_SELFTEST_SOAK）----
+# 把 1h 稳定性 soak（acc_b1_soak_long，在 rtos_accept.c）拆到独立非 RTOSALL 构建，
+# 避免 dev 版(全量 .bss ~195KB)与 MINIMAL+ACCEPT(~149KB)都溢出 F407 128KB 主 SRAM。
+# 开启后仅编译 rtos_accept.c + rtos_selftest.c 框架（其余套件全关，由弱符号兜底），
+# 测试 .bss 约 37.6KB，总 RAM ~102KB 可链接。独立构建目录使用，不混入 dev/发布镜像。
+# 用法：cmake -S . -B build_f407_soak -G Ninja -DRTOS_SELFTEST_SOAK=ON
+option(RTOS_SELFTEST_SOAK "Dedicated 1h-soak build: only rtos_accept.c (+ framework)" OFF)
+if(RTOS_SELFTEST_SOAK)
+  set(RTOS_SELFTEST          ON  CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_BASIC    OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_IPC2     OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_STRESS   OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_P4       OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_USR      OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_INV      OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_FUZZ     OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_TIMER    OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_OSTEST   OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_ROBUST   OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_IRQ      OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_ACCEPT   ON  CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_IPC2S05  OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_OSTEST_ISR OFF CACHE BOOL "" FORCE)
+  set(RTOS_SELFTEST_WATCHDOG_PLAT OFF CACHE BOOL "" FORCE)
+  message(STATUS "RTOS_SELFTEST_SOAK=ON: 仅 rtos_accept.c(含 1h-soak)+框架，独立非 RTOSALL 构建")
+endif()
 
 # P2-1 调度轨迹 trace：在 rtos_pendsv_switch 记录 (tick,from,to,reason) 环形缓冲，
 # 供 RTOSTRACE 命令导出。默认 OFF（零开销、零 RAM）；开发/诊断构建设为 ON。
@@ -91,6 +360,82 @@ else()
   set(RTOS_CCM_DATA_SECTION ".ccm_bss")
 endif()
 
+# ---- STM32F103 RCT6: 48KB SRAM 优化覆盖 ----
+# F103 无 CCM 且仅 48KB SRAM，覆盖默认的 F407 布局（128KB SRAM + 64KB CCM）。
+if(JOC_TARGET STREQUAL "STM32F103RCT6")
+  set(SYS_HEAP_SIZE "0x800u")        # 2KB（RTOS 任务/调度不用 malloc，控制台仅小型解析）
+  set(RTOS_CCM_DATA_SECTION ".bss") # 无 CCM -> CCM 数据回退到主 SRAM
+  # 双分区（轨 B）：Rust App 独立烧录到 APP_FLASH，RTOS 在 boot 时发现并异步拉起
+  set(APP_FLASH_BASE "0x08010000")   # 前 64KB 给 RTOS，之后 192KB 给 App
+  set(APP_RAM_ORIGIN "0x20007000")   # RTOS SRAM 缩到 28KB 后，APP_RAM 从 28KB 边界开始
+  set(APP_RAM_LENGTH "0x4000")       # 16KB 给 Rust App 运行期 .bss
+  set(APP_RAM_MEM "SRAM")
+  set(SYS_HEAP_SECTION ".bss")
+  # F103 的 RAM 优化：缩减编译期静态池大小
+  add_definitions(-DDEVICE_MANAGER_MAX=20)   # 60→20：F103 仅 ~10 设备
+  add_definitions(-DRTOS_MAX_TASKS=16)       # 48→16：常驻任务约 6 个
+  add_definitions(-DKOBJ_MAX=48)             # 128→48 ：按活跃对象(16任务+~20 IPC)减半
+  add_definitions(-DRTOS_BH_MAX=6)           # 8→6 ：F103 外设较少
+  add_definitions(-DIRQ_MGR_POOL=20)          # 48→20：F103 IRQ 注册更少
+  add_definitions(-DMARATHON_N=2)            # 3→2 ：F103 仅 16 任务上限
+  add_definitions(-DMARATHON_STACK_SZ=256)   # 512→256：缓冲减半
+  add_definitions(-DRTOS_TIMER_STACK_SIZE=512)  # 1024→512
+  add_definitions(-DRTOS_WORKQ_STACK_WORDS=128) # 256→128 字（512 字节栈）
+  add_definitions(-DIRQ_MAX_HANDLERS_PER_LINE=2) # 4→2：F103 无共享 IRQ 线
+  message(STATUS "F103 RAM layout: 1KB heap, no CCM, 48KB SRAM")
+endif()
+
+# ---- STM32H750VBT6: 轨 B 双分区覆盖（DTCM 128K + AXI SRAM 512K + QSPI 16M）----
+# RTOS 固件烧内部 Flash(128K)，Rust App 独立烧 QSPI 并经 memory-mapped
+# (0x90000000) XIP 执行；App 运行期 .data/.bss 放 AXI SRAM(0x24000000/512K)。
+# H7 无 CCM：.ccm_bss/.ccm_heap 由 H750 链接脚本并入 DTCM（仅 CPU 可访问）。
+if(JOC_TARGET STREQUAL "STM32H750VBT6")
+  set(APP_FLASH_BASE "0x90000000")   # QSPI memory-mapped 区（16MB）
+  set(APP_RAM_ORIGIN "0x24000000")   # AXI SRAM 起点
+  set(APP_RAM_LENGTH "0x80000")      # 512KB 全量给 App 运行期
+  set(APP_RAM_MEM "AXI_SRAM")
+  set(SYS_HEAP_SIZE "0x2000u")       # 8KB（SRAM1 非缓存堆，DMA 一致）
+  set(SYS_HEAP_SECTION ".sram1_heap")  # H7：堆搬到 SRAM1 (MPU non-cacheable)
+  set(RTOS_CCM_DATA_SECTION ".ccm_bss") # 任务栈/TCB 池 -> DTCM
+  set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
+  message(STATUS "H750 轨 B: APP_FLASH=QSPI 0x90000000, APP_RAM=AXI_SRAM 0x24000000/512K")
+endif()
+
+# ---- ESP32-C3: 192 KB DRAM 内存分区（Phase-1 最小集）----
+if(JOC_TARGET STREQUAL "ESP32C3")
+  set(APP_FLASH_BASE "0x40200000")       # flash memory-mapped（app header 探针）
+  set(APP_RAM_ORIGIN "0x3FCAF000")       # DRAM 顶 ~0x3FCB0000，留 4KB + 1KB slot
+  set(APP_RAM_LENGTH "0x1000")           # 4 KB 桩（Phase-1 无 Rust App）
+  set(APP_RAM_MEM "APP_RAM")
+  set(APP_SLOT_ORIGIN "0x3FCAFC00")      # 紧接 APP_RAM 之上 1 KB
+  set(SYS_HEAP_SIZE "0x800u")            # 2 KB（仅 clock + uart 设备 malloc）
+  set(SYS_HEAP_SECTION ".bss")           # 堆放 .bss（无独立堆段）
+  set(RTOS_CCM_DATA_SECTION ".bss")      # 无 CCM
+  # 不定义 SYS_STATIC_HEAP：用链接器堆（_end .. __HeapLimit）
+  message(STATUS "ESP32C3 Phase-1: APP_FLASH=0x40200000, APP_RAM=0x3FCAF000/4K")
+endif()
+
+# ---- POST_BUILD RAM 占用统计：主 RAM 区域定义（供 cmake/ram_summary.cmake）----
+# 与各 linker 模板 MEMORY 主数据区域一致（F103=SRAM、F407=RAM、H750=DTCM、
+# ESP32C3=DRAM）。构建后打印占用率 + OK/WARN/OVERFLOW 状态，便于直接核对。
+if(JOC_TARGET STREQUAL "STM32F103RCT6")
+  set(RAM_REGION_NAME   "SRAM")
+  set(RAM_REGION_ORIGIN "0x20000000")
+  set(RAM_REGION_LENGTH 28672)         # 28 KB
+elseif(JOC_TARGET STREQUAL "STM32F407VGT6")
+  set(RAM_REGION_NAME   "RAM")
+  set(RAM_REGION_ORIGIN "0x20000000")
+  set(RAM_REGION_LENGTH 131072)        # 128 KB
+elseif(JOC_TARGET STREQUAL "STM32H750VBT6")
+  set(RAM_REGION_NAME   "DTCM")
+  set(RAM_REGION_ORIGIN "0x20000000")
+  set(RAM_REGION_LENGTH 131072)        # 128 KB DTCM
+elseif(JOC_TARGET STREQUAL "ESP32C3")
+  set(RAM_REGION_NAME   "DRAM")
+  set(RAM_REGION_ORIGIN "0x3FC80000")
+  set(RAM_REGION_LENGTH 196608)        # 192 KB
+endif()
+
 # 独立静态系统堆(SYS_STATIC_HEAP，开发版/发布版均启用)：根治原链接器堆
 # (开发版 ~440B、发布版 ~4.6KB) 耗尽导致靠后设备(如 usb0 第 54 个)注册失败
 # (usb0: NOT REGISTERED)。g_sys_heap 段由 SYS_HEAP_SECTION 决定：
@@ -102,17 +447,16 @@ endif()
 # 供链接脚本 .ccm_heap 段尺寸 @SYS_HEAP_SIZE_LD@ 注入使用。必须在 configure_file 之前。
 string(REGEX REPLACE "u$" "" SYS_HEAP_SIZE_LD "${SYS_HEAP_SIZE}")
 
-configure_file(
-  ${CMAKE_SOURCE_DIR}/linker/STM32F407VGTX_FLASH.ld.in
-  ${CMAKE_BINARY_DIR}/linker/STM32F407VGTX_FLASH.ld
-  @ONLY
-)
+# Configure linker script (substitute @VAR@ placeholders for F407 targets)
+get_filename_component(LINKER_LD_NAME ${LINKER_TEMPLATE} NAME_WE)
+set(LINKER_OUTPUT ${CMAKE_BINARY_DIR}/linker/${LINKER_LD_NAME}.ld)
+configure_file(${LINKER_TEMPLATE} ${LINKER_OUTPUT} @ONLY)
 
 add_executable(${PROJECT_NAME}.elf
     # startup MUST come early so its sections are at the base of .text.
     # When placed last, any growth in .o files before it shifts startup
     # sections, which causes a boot hang on this platform.
-    startup/startup_stm32f407xx.s
+    ${STARTUP_SRC_FILE}
     src/main.c
     src/app_shared.c         # 跨任务共享状态（g_app_ctx 实例 + 心跳/就绪标志）
     src/console.c            # 命令解释器（命令表 + handler，从 main.c 抽出）
@@ -130,7 +474,7 @@ add_executable(${PROJECT_NAME}.elf
     # src/task/task_bist.c     # 板级自测后台任务（RTOS_SELFTEST=OFF 时本就不编译）
     src/system_init.c        # 系统早期初始化（从 main.c 抽出）
     src/syscalls.c
-    src/system_stm32f4xx.c
+    ${SYSTEM_SRC_FILE}
     # interface layer (single unified driver interface — header-only, platform-independent)
     src/iface/stream_device.c    # stream_device transfer_sync/async default impl
     src/iface/io_xfer.c          # io_xfer_t descriptor + io_xfer_complete (driver/ISR helper)
@@ -146,31 +490,7 @@ add_executable(${PROJECT_NAME}.elf
     # OS abstraction layer (semaphore + critical section; RTOS-portable)
     # src/osal: 见下方 RTOS 开关（osal_rtos.c 或 osal_baremetal.c 二选一）
     # driver layer (implements interfaces, delegates to HAL — platform-independent)
-    src/drv/adc.c
-    src/drv/gpio_pin.c
-    src/drv/clock.c
-    src/drv/temp_sensor.c
-    src/drv/uart.c
-    src/drv/pinmux.c
-    src/drv/systick.c
-    src/drv/timer.c
-    src/drv/pwm.c
-    src/drv/exti.c
-    src/drv/i2c.c
-    src/drv/spi.c
-    src/drv/sdio.c
-    src/drv/sd_card.c
-    src/drv/dac.c
-    src/drv/rtc.c
-    src/drv/rng.c
-    src/drv/crc.c
-    src/drv/iwdg.c
-    src/drv/wwdg.c
-    src/drv/flash.c
-    src/drv/i2s.c
-    src/drv/can.c
-    src/drv/usb.c
-    src/drv/dma.c
+    ${DRV_SRCS}
     # interrupt framework (platform-independent API + callback registry)
     src/irq/irq.c
     src/irq/irq_manager.c   # centralized interrupt manager (registry + dump)
@@ -181,41 +501,8 @@ add_executable(${PROJECT_NAME}.elf
     # device manager (generic name -> device* registry — platform-independent)
     src/devmgr/device_manager.c
     # board layer (per-board: the only place that knows the real peripherals)
-    src/board/stm32f4_discovery.c
-    # hardware abstraction layer (chip-specific register ops)
-    src/hal/stm32/adc_hal.c
-    src/hal/stm32/gpio_hal.c
-    src/hal/stm32/clock_hal.c
-    src/hal/stm32/uart_hal.c
-    src/hal/stm32/temp_hal.c
-    src/hal/stm32/pinmux_hal.c
-    src/hal/stm32/pinmux_af_stm32f4.c
-    src/hal/stm32/irq_hal.c
-    src/hal/stm32/tim_hal.c
-    src/hal/stm32/exti_hal.c
-    src/hal/stm32/i2c_hal.c
-    src/hal/stm32/spi_hal.c
-    src/hal/stm32/sdio_hal.c
-    src/hal/stm32/dac_hal.c
-    src/hal/stm32/rtc_hal.c
-    src/hal/stm32/rng_hal.c
-    src/hal/stm32/crc_hal.c
-    src/hal/stm32/iwdg_hal.c
-    src/hal/stm32/wwdg_hal.c
-    src/hal/stm32/flash_hal.c
-    src/hal/stm32/i2s_hal.c
-    src/hal/stm32/can_hal.c
-    src/hal/stm32/usb_hal.c
-    src/hal/stm32/dma_hal.c
-    # ST USB OTG FS device library (silicon + control engine + CDC class) wrapped in our HAL
-    src/hal/stm32/st_usb/usb_core.c
-    src/hal/stm32/st_usb/usb_dcd.c
-    src/hal/stm32/st_usb/usb_dcd_int.c
-    src/hal/stm32/st_usb/usbd_core.c
-    src/hal/stm32/st_usb/usbd_req.c
-    src/hal/stm32/st_usb/usbd_ioreq.c
-    src/hal/stm32/st_usb/usb_bsp.c
-    src/hal/stm32/st_usb/usbd_cdc_core.c
+    ${BOARD_SRC_FILE}
+    ${HAL_SRCS}
     # src/selftest.c         # 板载集成自测（RTOS_SELFTEST=OFF 时剔除，见下方条件编译）
 )
 
@@ -242,33 +529,113 @@ if(RTOS)
     src/rtos/rtos_watchdog.c    # §6.4 看门狗喂狗(定时任务驱动) + 马拉松长跑任务组 + 复位原因
                                 #     （含生产函数 rtos_watchdog_*/rtos_marathon_*，常编；仅末尾
                                 #      自测函数 rtos_watchdog_selftest 受 #if RTOS_SELFTEST 门控）
-    # arch 层（与底层硬件的唯一边界）：Cortex-M4 实现
-    src/rtos/arch/cortex_m/port.c
-    src/rtos/arch/cortex_m/context.S
-    src/rtos/arch/cortex_m/mpu.c)
+    # arch 层（与底层硬件的唯一边界，由 ARCH_DIR 选 cortex_m / riscv）
+    src/rtos/arch/${ARCH_DIR}/port.c
+    src/rtos/arch/${ARCH_DIR}/context.S)
+
+  # Cortex-M MPU support (only on ARM targets)
+  if(ARCH_DIR STREQUAL "cortex_m")
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+      src/rtos/arch/cortex_m/mpu.c)
+  elseif(ARCH_DIR STREQUAL "riscv")
+    # RISC-V stubs (MPU/stack-guard symbols — no-op on RV32IMC)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+      src/rtos/arch/riscv/port_stubs.c)
+  endif()
 
   # ---- RTOS 纯自测源码（仅 RTOS_SELFTEST=ON 编译；发布构建剔除，不进固件）----
+  # 平台无关用例留在 src/rtos/；依赖芯片外设的用例下沉到 hal/<plat>/test/（见下），
+  # RTOS 核心目录不出现平台宏。无平台测试文件的芯片由 rtos_selftest.c 的弱符号兜底。
   if(RTOS_SELFTEST)
+    # rtos_selftest.c 常编：含自测运行框架 + 全部测入口弱符号兜底（console 命令依赖，
+    # 未编译的套件由弱符号兜底返回 1）。其余套件按 RTOS_SELFTEST_* 开关按需编译
+    # （dev 版 RAM 控制：F407 全量 .bss ~195KB 溢出 128KB，MINIMAL 默认裁掉重套件）。
     target_sources(${PROJECT_NAME}.elf PRIVATE
       src/rtos/rtos_selftest.c
-      src/rtos/rtos_stress.c
-      src/rtos/rtos_p4.c
-      src/rtos/rtos_usr.c
-      src/rtos/rtos_basic.c       # T01-T05 + §2.2 调度锁/临界区/SysTick 唤醒（RTOSBASIC）
-      src/rtos/rtos_ipc2.c        # S01/S03/S04/S05 边界与 FromISR（RTOSIPC2）
-      src/rtos/rtos_robust.c      # §3.1 异常注入 + §3.2 中断风暴 + §3.3 安全正例（RTOSROBUST）
-      src/rtos/rtos_irq.c         # 中断实时性/抗压：实时响应延迟有界 + 高频风暴不崩溃（RTOSIRQ）
-      src/rtos/rtos_inv.c         # 优先级反转验证：天花板协议把等锁延迟压到有界（RTOSINV）
-      src/rtos/rtos_fuzz.c        # 混沌压力：多优先级随机并发 IPC 不崩溃/不死锁（RTOSFUZZ）
-      src/rtos/rtos_timer.c       # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER；生产定时器在 core/timer.c）
-      src/rtos/rtos_ostest.c      # 对照 docs/ostest.md 补齐的缺口用例（自动进入 RTOSALL）
-      src/rtos/rtos_accept.c)     # 硬实时验收+稳定性soak+深度故障注入（RTOSACCEPT；不进 RTOSALL 长链）
+    )
+    if(RTOS_SELFTEST_BASIC)
+      target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/rtos/rtos_basic.c   # T01-T05 + §2.2 调度锁/临界区/SysTick 唤醒（RTOSBASIC）
+      )
+    endif()
+    if(RTOS_SELFTEST_IPC2)
+      target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/rtos/rtos_ipc2.c    # S01/S03/S04 平台无关边界用例（RTOSIPC2；S05 下沉到 hal）
+      )
+    endif()
+    if(RTOS_SELFTEST_STRESS)
+      target_sources(${PROJECT_NAME}.elf PRIVATE src/rtos/rtos_stress.c)
+    endif()
+    if(RTOS_SELFTEST_P4)
+      target_sources(${PROJECT_NAME}.elf PRIVATE src/rtos/rtos_p4.c)
+    endif()
+    if(RTOS_SELFTEST_USR)
+      target_sources(${PROJECT_NAME}.elf PRIVATE src/rtos/rtos_usr.c)
+    endif()
+    if(RTOS_SELFTEST_INV)
+      target_sources(${PROJECT_NAME}.elf PRIVATE src/rtos/rtos_inv.c)
+    endif()
+    if(RTOS_SELFTEST_FUZZ)
+      target_sources(${PROJECT_NAME}.elf PRIVATE src/rtos/rtos_fuzz.c)
+    endif()
+    if(RTOS_SELFTEST_TIMER)
+      target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/rtos/rtos_timer.c   # §6.3 软件定时器 + 48 天 tick 翻转安全（RTOSTIMER）
+      )
+    endif()
+    if(RTOS_SELFTEST_OSTEST)
+      target_sources(${PROJECT_NAME}.elf PRIVATE
+        src/rtos/rtos_ostest.c  # 对照 docs/ostest.md 补齐的平台无关缺口用例（自动进入 RTOSALL）
+      )
+    endif()
+    # 平台自测（hal/<plat>/test/）：STM32 家族(F103/F407)用 #ifdef STM32F103xx/F407xx
+    # 适配同族芯片；ESP32-C3 提供复位原因 stub 契约；H7 暂无平台测试目录（弱钩子默认通过）。
+    if(JOC_TARGET STREQUAL "STM32F103RCT6" OR JOC_TARGET STREQUAL "STM32F407VGT6")
+      if(RTOS_SELFTEST_ROBUST)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+          src/hal/stm32/test/rtos_robust.c   # §3.1 异常注入 + §3.2 中断风暴 + §3.3 安全正例（RTOSROBUST）
+        )
+      endif()
+      if(RTOS_SELFTEST_IRQ)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+          src/hal/stm32/test/rtos_irq.c      # 中断实时性/抗压：实时响应延迟有界 + 高频风暴不崩溃（RTOSIRQ）
+        )
+      endif()
+      if(RTOS_SELFTEST_ACCEPT)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+          src/hal/stm32/test/rtos_accept.c   # 硬实时验收+稳定性soak+深度故障注入（RTOSACCEPT；不进 RTOSALL 长链）
+        )
+      endif()
+      if(RTOS_SELFTEST_IPC2S05)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+          src/hal/stm32/test/ipc2_s05.c      # S05 从真实 TIM3 溢出中断 ISR 发信号量（RTOSIPC2）
+        )
+      endif()
+      if(RTOS_SELFTEST_OSTEST_ISR)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+          src/hal/stm32/test/ostest_isr.c    # TC-Q-004/KERNEL-004/INT-001/003 ISR 用例（ostest_isr）
+        )
+      endif()
+      if(RTOS_SELFTEST_WATCHDOG_PLAT)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+          src/hal/stm32/test/watchdog_plat.c # 复位原因解码位组合表（覆盖弱钩子）
+        )
+      endif()
+    elseif(JOC_TARGET STREQUAL "ESP32C3")
+      if(RTOS_SELFTEST_WATCHDOG_PLAT)
+        target_sources(${PROJECT_NAME}.elf PRIVATE
+          src/hal/esp32c3/test/watchdog_plat.c # 复位原因 stub 契约（覆盖弱钩子）
+        )
+      endif()
+    endif()
   endif()
 
   target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/rtos
     src/rtos/include
     src/rtos/core)
+  target_include_directories(${PROJECT_NAME}.elf PRIVATE
+    src/rtos/arch/${ARCH_DIR})
   target_compile_definitions(${PROJECT_NAME}.elf PRIVATE JOC_RTOS=1)
   if(RTOS_SCHED_TRACE)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RTOS_SCHED_TRACE=1)
@@ -283,9 +650,13 @@ endif()
 # 门控与编译期段收集（RTOS_SELFTEST_ADD）no-op 生效，自测代码整体不进入发布镜像。
 if(RTOS_SELFTEST)
   target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RTOS_SELFTEST=1)
-  target_sources(${PROJECT_NAME}.elf PRIVATE
-    src/selftest.c               # 板载集成自测（外设统一 device 接口驱动）
-    src/task/task_bist.c)        # BIST 后台任务（prio 24，跑完后阻塞）
+  # F103: skip board-level BIST (F4-only peripheral tests). RTOS self-tests
+  # (rtos_accept, rtos_ostest, etc.) are still enabled via RTOS_SELFTEST=1.
+  if(NOT JOC_TARGET STREQUAL "STM32F103RCT6" AND NOT JOC_TARGET STREQUAL "STM32H750VBT6" AND NOT JOC_TARGET STREQUAL "ESP32C3")
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+      src/selftest.c               # 板载集成自测（外设统一 device 接口驱动）
+      src/task/task_bist.c)        # BIST 后台任务（prio 24，跑完后阻塞）
+  endif()
 else()
   target_compile_definitions(${PROJECT_NAME}.elf PRIVATE RTOS_SELFTEST=0)
 endif()
@@ -300,6 +671,7 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     src/devmgr
     src/board
     src/hal
+    ${HAL_DIR}
     src/hal/stm32
     src/hal/stm32/st_usb
     src/irq
@@ -307,6 +679,7 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
 )
 
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
+    ${CORE_DEFINE}
     ${MCU_DEFINE}
     HSE_VALUE=${HSE_VALUE}UL
     APP_RAM_BASE=${APP_RAM_ORIGIN}
@@ -316,6 +689,45 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
     RTOS_CCM_DATA_SECTION=\"${RTOS_CCM_DATA_SECTION}\"
     ${SYS_STATIC_HEAP_DEF}
 )
+
+if(JOC_TARGET STREQUAL "STM32F103RCT6")
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
+    APP_FLASH_BASE=${APP_FLASH_BASE}
+    RTOS_CPU_HZ=72000000UL
+    RTOS_USE_MPU=0
+    RTOS_SCHED_TRACE=0
+    RTOS_CRIT_MAX_CYCLES=144000U
+    __FPU_PRESENT=0U
+    __MPU_PRESENT=0U
+    __DWT_PRESENT=0U)
+elseif(JOC_TARGET STREQUAL "STM32F407VGT6")
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
+    __FPU_PRESENT=1U
+    __MPU_PRESENT=1U
+    __DWT_PRESENT=1U)
+elseif(JOC_TARGET STREQUAL "STM32H750VBT6")
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
+    APP_FLASH_BASE=${APP_FLASH_BASE}
+    APP_FLASH_SIZE=0x1000000u          # QSPI 16MB（app_slot.h 默认 0x60000u 被覆盖）
+    RTOS_CPU_HZ=480000000UL
+    RTOS_USE_MPU=1                     # 里程碑 2：使能 MPU + D-Cache（SRAM1 非缓存堆）
+    RTOS_SCHED_TRACE=0
+    RTOS_CRIT_MAX_CYCLES=960000U
+    __FPU_PRESENT=1U
+    __MPU_PRESENT=1U
+    __ICACHE_PRESENT=1U
+    __DCACHE_PRESENT=1U
+    __DWT_PRESENT=0U)
+elseif(JOC_TARGET STREQUAL "ESP32C3")
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
+    APP_FLASH_BASE=${APP_FLASH_BASE}
+    RTOS_CPU_HZ=40000000UL
+    RTOS_USE_MPU=0
+    RTOS_SCHED_TRACE=0
+    RTOS_CRIT_MAX_CYCLES=80000U
+    RTOS_MAX_ZERO_LATENCY_IRQS=0
+    __FPU_PRESENT=0U)
+endif()
 
 # Renode 构建：注入 JOC_RENODE=1，驱动/任务层据此规避未模拟外设。
 if(RENODE)
@@ -333,12 +745,13 @@ target_compile_options(${PROJECT_NAME}.elf PRIVATE
 
 target_link_options(${PROJECT_NAME}.elf PRIVATE
     ${CPU_FLAGS}
-    -T${CMAKE_BINARY_DIR}/linker/STM32F407VGTX_FLASH.ld
-    -specs=nano.specs
+    -T${LINKER_OUTPUT}
+    $<IF:$<STREQUAL:${JOC_TARGET},ESP32C3>,, -specs=nano.specs>
     -Wl,-Map=${PROJECT_NAME}.map,--cref
     -Wl,--gc-sections
     -Wl,--no-warn-rwx-segments
     -Wl,--print-memory-usage
+    $<IF:$<STREQUAL:${JOC_TARGET},ESP32C3>,-nostartfiles,>
 )
 
 # ---- Rust 应用层（解耦独立工程：joc-app-rust 独立 cargo build 出 libapp.a）----
@@ -389,8 +802,10 @@ if(COVERAGE AND RTOS)
     # 常态只插桩验收套件 rtos_accept.c（覆盖核心调度/IPC/MPU/故障恢复路径足矣）。
     # 其余纯自测源码默认不插桩（单文件 gcov 计数数组较大，全开 F407 192K SRAM 装不下）；
     # 如需量化"自测代码自身"的覆盖，另开 -DCOVERAGE_SELFTEST=ON（见下方 _cov_st_srcs）。
-    list(APPEND _cov_srcs
-      src/rtos/rtos_accept.c)
+    if(RTOS_SELFTEST_ACCEPT)
+      list(APPEND _cov_srcs
+        src/hal/stm32/test/rtos_accept.c)
+    endif()
   endif()
   set_source_files_properties(${_cov_srcs} PROPERTIES COMPILE_FLAGS --coverage)
   # 选择性插桩纯自测文件（默认关：单文件 gcov 计数数组较大，全开 F407 192K SRAM 装不下）。
@@ -404,26 +819,54 @@ if(COVERAGE AND RTOS)
       src/rtos/rtos_watchdog.c
       src/rtos/arch/cortex_m/port.c
       src/rtos/arch/cortex_m/mpu.c
-      src/rtos/rtos_selftest.c
-      src/rtos/rtos_stress.c
-      src/rtos/rtos_p4.c
-      src/rtos/rtos_usr.c
-      src/rtos/rtos_basic.c
-      src/rtos/rtos_ipc2.c
-      src/rtos/rtos_robust.c
-      src/rtos/rtos_irq.c
-      src/rtos/rtos_inv.c
-      src/rtos/rtos_fuzz.c
-      src/rtos/rtos_timer.c
-      src/rtos/rtos_ostest.c)
+      src/rtos/rtos_selftest.c)
+    if(RTOS_SELFTEST_STRESS)
+      list(APPEND _cov_st_srcs src/rtos/rtos_stress.c)
+    endif()
+    if(RTOS_SELFTEST_P4)
+      list(APPEND _cov_st_srcs src/rtos/rtos_p4.c)
+    endif()
+    if(RTOS_SELFTEST_USR)
+      list(APPEND _cov_st_srcs src/rtos/rtos_usr.c)
+    endif()
+    if(RTOS_SELFTEST_BASIC)
+      list(APPEND _cov_st_srcs src/rtos/rtos_basic.c)
+    endif()
+    if(RTOS_SELFTEST_IPC2)
+      list(APPEND _cov_st_srcs src/rtos/rtos_ipc2.c)
+    endif()
+    if(RTOS_SELFTEST_ROBUST)
+      list(APPEND _cov_st_srcs src/hal/stm32/test/rtos_robust.c)
+    endif()
+    if(RTOS_SELFTEST_IRQ)
+      list(APPEND _cov_st_srcs src/hal/stm32/test/rtos_irq.c)
+    endif()
+    if(RTOS_SELFTEST_INV)
+      list(APPEND _cov_st_srcs src/rtos/rtos_inv.c)
+    endif()
+    if(RTOS_SELFTEST_FUZZ)
+      list(APPEND _cov_st_srcs src/rtos/rtos_fuzz.c)
+    endif()
+    if(RTOS_SELFTEST_TIMER)
+      list(APPEND _cov_st_srcs src/rtos/rtos_timer.c)
+    endif()
+    if(RTOS_SELFTEST_OSTEST)
+      list(APPEND _cov_st_srcs src/rtos/rtos_ostest.c)
+    endif()
     set_source_files_properties(${_cov_st_srcs} PROPERTIES COMPILE_FLAGS --coverage)
   endif()
 endif()
 
-# ---- Post-build: generate .bin / .hex and print size ----
+# ---- Post-build: generate .bin / .hex, print size, and log main-RAM usage ----
 add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_NAME}.bin
     COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_NAME}.hex
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${PROJECT_NAME}.elf>
+    COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:${PROJECT_NAME}.elf>
+        -DSIZE_TOOL=${CMAKE_SIZE}
+        -DREGION_NAME=${RAM_REGION_NAME}
+        -DREGION_ORIGIN=${RAM_REGION_ORIGIN}
+        -DREGION_LENGTH=${RAM_REGION_LENGTH}
+        -P ${CMAKE_SOURCE_DIR}/cmake/ram_summary.cmake
     COMMENT "Generating ${PROJECT_NAME}.bin / .hex"
 )

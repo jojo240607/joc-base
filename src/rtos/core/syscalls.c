@@ -108,6 +108,12 @@ void rtos_svc_dispatch(uint32_t *frame, uint32_t nr) {
     case RTOS_SYS_TASK_RESUME:
         rtos_task_resume((task_t *)u0);
         break;
+    case RTOS_SYS_TASK_EXIT:
+        /* 非特权任务返回后由 rtos_task_exit 触发：在特权 Handler 模式执行退出
+         * （标记 TASK_DEAD + 请求切换），避免 U 模式直接调 rtos_crit_enter
+         * 读 mstatus 触发 Illegal instruction。 */
+        rtos_task_exit_priv();
+        break;
     default: ret = (uint32_t)-1; break;
     }
     frame[0] = ret;   /* 返回值经 r0 带回用户态任务 */
