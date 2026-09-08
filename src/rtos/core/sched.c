@@ -429,8 +429,23 @@ void rtos_yield(void) {
         g_running->state = TASK_READY;
         ready_add(g_running);
     }
+    /* 空切防护（mcu_simulater PendSV 高密度风暴根因）：
+     * 若就绪队列里除本任务外没有其它候选，置 PENDSVSET 后在 PendSV 里 ready_pick
+     * 仍会选回本任务（rtos_pendsv_switch 的 `if (!nxt) nxt = cur`），纯空切一次。
+     * idle 忙等 `for(;;) rtos_yield();` 时每轮空切一次，模拟器把墙钟全花在 PendSV
+     * 进/出上（实测 ~124 次 PendSV/SysTick），真机同样白烧 CPU。判定：
+     *   - 无更高优先级就绪（g_ready_bmp 比 p 更小的位全 0）——
+     *     更高优先级就绪时当前任务本就不该运行，且唤醒路径已各自置位请求，不依赖本处；
+     *   - 本优先级无同伴（ready_add 后 g_ready_head[p]==自己，即加入时该级队列为空）——
+     *     有同伴则保持 yield 轮转语义，必须请求。
+     * 更低优先级就绪不阻止跳过：yield 时 ready_pick 取最高优先级，仍会选回本任务。
+     * 若 g_running 为空或未入队（异常态），保守不跳过，维持旧行为。 */
+    int p = g_running ? g_running->prio : 0;
+    int only_me = g_running
+        && ((g_ready_bmp & ((1u << p) - 1u)) == 0)  /* 无更高优先级(更小位)就绪 */
+        && (g_ready_head[p] == g_running);          /* 本优先级仅自己（加入时队列空） */
     rtos_crit_exit(st);
-    rtos_schedule_request();
+    if (!only_me) rtos_schedule_request();
 }
 
 void rtos_msleep(uint32_t ms) {
