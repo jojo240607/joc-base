@@ -282,7 +282,12 @@ uint32_t tim_hal_pwm_get_duty(tim_hal_handle_t *h, int ch)
 
 uint32_t tim_hal_pwm_period_ticks(tim_hal_handle_t *h)
 {
-    return h ? (h->tim->ARR + 1U) : 0U;
+    /* ARR==0（协调定时器尚未 open 配置）视为“未配置周期”返回 0，
+     * 使协调模式（pwm open 的 existing==0 判断）正确走 1kHz fallback，
+     * 而不是把 ARR+1=1 误当已有周期（period_ticks=1 的缺陷）。 */
+    if (!h) return 0U;
+    uint32_t arr = h->tim->ARR;
+    return arr == 0U ? 0U : (arr + 1U);
 }
 
 /* ===========================================================================

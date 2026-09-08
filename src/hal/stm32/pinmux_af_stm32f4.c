@@ -126,11 +126,15 @@ static const af_entry_t g_af[] = {
     {PINMUX_PORT_B, 8, 4, "I2C1_SCL_PB8"},
     {PINMUX_PORT_B, 9, 4, "I2C1_SDA_PB9"},
 
+    {PINMUX_PORT_B,10, 4, "I2C2_SCL_PB10"},
     {PINMUX_PORT_B,10, 4, "I2C2_SCL"},
+    {PINMUX_PORT_B,11, 4, "I2C2_SDA_PB11"},
     {PINMUX_PORT_B,11, 4, "I2C2_SDA"},
     {PINMUX_PORT_B,12, 4, "I2C2_SMBA"},
 
+    {PINMUX_PORT_A, 8, 4, "I2C3_SCL_PA8"},
     {PINMUX_PORT_A, 8, 4, "I2C3_SCL"},
+    {PINMUX_PORT_C, 9, 4, "I2C3_SDA_PC9"},
     {PINMUX_PORT_C, 9, 4, "I2C3_SDA"},
     {PINMUX_PORT_A, 9, 4, "I2C3_SMBA"},
 
