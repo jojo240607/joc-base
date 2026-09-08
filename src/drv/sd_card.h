@@ -5,6 +5,18 @@
 #include "iface/device.h"
 #include <stdint.h>
 
+/* ioctl 命令面（SDK ioctl.rs 同步镜像） */
+#define SD_CARD_IOCTL_INIT        0x60   /* arg: none — SD 卡初始化序列 */
+#define SD_CARD_IOCTL_READ_BLOCK  0x61   /* arg: *const sd_block_io_t — 读扇区 */
+#define SD_CARD_IOCTL_WRITE_BLOCK 0x62   /* arg: *const sd_block_io_t — 写扇区 */
+
+/* 块读写参数（与 SDK ioctl.rs 的 SdBlockIo 布局一致，repr(C)） */
+typedef struct {
+    uint64_t lba;     /* 起始扇区（512B 块） */
+    uint32_t count;   /* 扇区数（1 = 单块 CMD17/24） */
+    uint8_t *buf;     /* 数据缓冲（count*512 字节） */
+} sd_block_io_t;
+
 /*
  * SD Card driver — a BLOCK device that implements the SD protocol.
  *

@@ -85,7 +85,11 @@ void sdio_hal_data_config(sdio_hal_handle_t *h, uint32_t dir,
     h->reg->DLEN = blk_size * count;
     uint32_t blocksize_bits = 0;
     for (uint32_t s = blk_size; s > 1; s >>= 1) blocksize_bits++;
-    h->reg->DCTRL = (dir ? SDIO_DCTRL_DTDIR : 0)
+    /* DTDIR 硬件语义：0=写（内存→卡）、1=读（卡→内存）。
+     * 驱动层 data_dir 抽象为 0=read(P2M)、1=write(M2P)，二者相反——必须翻转。
+     * 旧实现 `dir ? DTDIR : 0` 会把“写”配置成 DTDIR=1（读），真机/模拟器写路径
+     * 都会变读方向 → 无 DATAEND → 超时。由 C 类块读写用例暴露并修正。 */
+    h->reg->DCTRL = (dir ? 0 : SDIO_DCTRL_DTDIR)
                   | ((blocksize_bits << 4) & SDIO_DCTRL_DBLOCKSIZE)
                   | SDIO_DCTRL_DTEN;
 }
@@ -140,8 +144,12 @@ void sdio_hal_data_config_dma(sdio_hal_handle_t *h, uint32_t dir,
                               uint32_t blk_size, uint32_t count)
 {
     if (!h) return;
-    sdio_hal_data_config(h, dir, blk_size, count);   /* sets DTEN + DTDIR */
-    h->reg->DCTRL |= SDIO_DCTRL_DMAEN;
+    /* 只设 DTEN + DTDIR；DCTRL.DMAEN 由 sdio_dma_xfer 在 DMA 流使能（EN）之后
+     * 再置位——模拟器在 DMAEN 写入时发布 SdioDma 请求，此时 DMA 流必须已 EN
+     * 才会搬运（service_stream 的 EN 检查）。旧实现 config 时即置 DMAEN，早于
+     * 固件 DMA start（CMD 之后），请求被忽略 → 写/读数据路径无搬运 → DATAEND
+     * 超时。真机 DMA 请求由 SDIO 持续发出，DMAEN 晚置同样成立。 */
+    sdio_hal_data_config(h, dir, blk_size, count);
 }
 
 void sdio_hal_dma_enable(sdio_hal_handle_t *h, int on)

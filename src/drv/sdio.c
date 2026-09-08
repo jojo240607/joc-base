@@ -2,6 +2,8 @@
 #include "devmgr/device_manager.h"
 #include "drv/pinmux.h"
 #include "pinmux_hal.h"
+#include "log/log.h"
+#include "log/app_log.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -157,15 +159,19 @@ static int sdio_dma_xfer(sdio *p, sdio_cmd_data_t *x)
     }
 
     /* Arm the DMA AFTER the command so a write can never overfill the FIFO
-     * before the SDIO data phase begins. */
+     * before the SDIO data phase begins. 先使能 DMA 流（EN），再置 DCTRL.DMAEN：
+     * 模拟器在 DMAEN 写入时发布 SdioDma 请求，DMA 流必须已 EN 才响应搬运。 */
     e->dma_dev->fun->start(e->dma_dev, e->dma_s, NULL, NULL);
+    sdio_hal_dma_enable(p->hal, 1);
 
     if (sdio_hal_wait_data_end(p->hal, 5000000U) != 0) {
+        log_printf(app_log(), LOG_ERROR, "sdio", "%s: wait_data_end timeout\n", p->parent.parent.name);
         e->dma_dev->fun->stop(e->dma_dev, e->dma_s);
         sdio_hal_dma_enable(p->hal, 0); sdio_hal_data_enable(p->hal, 0);
         return -1;
     }
     int rc = e->dma_dev->fun->wait_done(e->dma_dev, e->dma_s, 2000);
+    if (rc != 0) log_printf(app_log(), LOG_ERROR, "sdio", "%s: wait_done rc=%d\n", p->parent.parent.name, rc);
     e->dma_dev->fun->stop(e->dma_dev, e->dma_s);
     sdio_hal_dma_enable(p->hal, 0); sdio_hal_data_enable(p->hal, 0);
     sdio_hal_clear_data_icr(p->hal);

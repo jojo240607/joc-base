@@ -162,8 +162,11 @@ static int sc_init(sd_card *p)
     int is_sdhc = 0;
     if (sc_cmd(p, SD_CMD8, 0x1AA, 1, &r7) == 0 && (r7 & 0xFF) == 0xAA) is_sdhc = 1;
     uint32_t aarg = is_sdhc ? 0x40000000U : 0;
+    /* 轮询 ACMD41 直到 OCR bit31（busy/上电中）清除——真机 SD 卡初始化完成
+     * 语义（busy 从 1→0）。原 `while (!(r1 & bit31))` 方向反（等 busy 置位），
+     * 由 C 类块读写 + m14 固件期望 OCR=0x40FF8000（bit31=0）暴露并修正。 */
     int tmo = 1000;
-    do { if (sc_acmd(p, 41, aarg, 1, &r1)) return -1; if (--tmo <= 0) return -1; } while (!(r1 & 0x80000000U));
+    do { if (sc_acmd(p, 41, aarg, 1, &r1)) return -1; if (--tmo <= 0) return -1; } while ((r1 & 0x80000000U) != 0);
     if (is_sdhc) { if (sc_cmd(p, 58, 0, 1, &r1)) return -1; if (!(r1 & 0x40000000U)) is_sdhc = 0; }
     if (sc_cmd(p, SD_CMD2, 0, 2, resp)) return -1;
     for (int i = 0; i < 4; i++) { p->cid[15-i*4]=(uint8_t)(resp[i]>>24);p->cid[15-i*4-1]=(uint8_t)(resp[i]>>16); p->cid[15-i*4-2]=(uint8_t)(resp[i]>>8);p->cid[15-i*4-3]=(uint8_t)(resp[i]); }
@@ -191,6 +194,20 @@ static int sc_init(sd_card *p)
 static int sc_dev_ioctl(device *self, int cmd, void *arg)
 {
     sd_card *p = (sd_card *)self;
-    if (cmd == 0x60) return sc_init(p);
-    return -1;
+    switch (cmd) {
+    case SD_CARD_IOCTL_INIT:
+        return sc_init(p);
+    case SD_CARD_IOCTL_READ_BLOCK: {
+        const sd_block_io_t *b = (const sd_block_io_t *)arg;
+        if (!b || !b->buf || b->count == 0) return -1;
+        return sc_block_read(&p->parent, b->lba, b->buf, b->count);
+    }
+    case SD_CARD_IOCTL_WRITE_BLOCK: {
+        const sd_block_io_t *b = (const sd_block_io_t *)arg;
+        if (!b || !b->buf || b->count == 0) return -1;
+        return sc_block_write(&p->parent, b->lba, b->buf, b->count);
+    }
+    default:
+        return -1;
+    }
 }
