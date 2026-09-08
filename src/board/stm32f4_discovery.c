@@ -44,6 +44,7 @@
 #include "drv/i2s.h"
 #include "drv/usb.h"
 #include "drv/dma.h"
+#include "drv/fsmc.h"
 #include "drv/can.h"
 
 #include "temp_hal.h"
@@ -385,6 +386,9 @@ static const usb_config_t g_usb0 = {
  * The driver is CONTROL-class (resource manager), not a byte stream. */
 static const dma_config_t g_dma1 = { "dma1", (void *)DMA1 };
 static const dma_config_t g_dma2 = { "dma2", (void *)DMA2 };
+/* FSMC 灵活静态存储器控制器（NOR/SRAM 片选窗口）。验证面：BCR/BTR/BWTR
+ * 寄存器配置读写往返 + Bank1 片选窗口（0x60000000）32 位读写往返。 */
+static const fsmc_config_t g_fsmc0 = { "fsmc0", (void *)FSMC_R_BASE };
 
 /* the board is just a list of (create-fn, config) pairs — no type switch.
  * pinmux is listed FIRST so it is registered before any driver claims pins.
@@ -451,6 +455,7 @@ static const board_node_t g_nodes[] = {
     { usb_create,         &g_usb0 },
     { dma_create,         &g_dma1 },
     { dma_create,         &g_dma2 },
+    { fsmc_create,        &g_fsmc0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

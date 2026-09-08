@@ -99,6 +99,7 @@ elseif(JOC_TARGET STREQUAL "STM32F407VGT6")
     ${HAL_DIR}/flash_hal.c
     ${HAL_DIR}/i2s_hal.c
     ${HAL_DIR}/can_hal.c
+    ${HAL_DIR}/fsmc_hal.c
     ${HAL_DIR}/usb_hal.c
     ${HAL_DIR}/dma_hal.c
     ${HAL_DIR}/st_usb/usb_core.c
@@ -135,7 +136,8 @@ elseif(JOC_TARGET STREQUAL "STM32F407VGT6")
     src/drv/i2s.c
     src/drv/can.c
     src/drv/usb.c
-    src/drv/dma.c)
+    src/drv/dma.c
+    src/drv/fsmc.c)
   message(STATUS "Target: STM32F407VGT6 (Cortex-M4, ${CPU_FLAGS})")
 elseif(JOC_TARGET STREQUAL "STM32H750VBT6")
   # STM32H750B-DK: Cortex-M7 @ 480 MHz, double-precision FPU, MPU,
