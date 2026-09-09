@@ -74,12 +74,39 @@ static const struct deviceVtable uart_dev_vtable = {
 /* Uniform create signature for the board layer: takes ONLY the driver's own
  * config pointer and returns a device *. The board lists this fn directly as a
  * node — no per-driver build wrapper. */
+
+/* --- Static per-UART engine memory ---
+ * The boot heap (SYS_HEAP_SIZE 8KB, main SRAM .bss) is nearly exhausted by the
+ * time the app opens its uarts: engine malloc() (IRQ ~160B, DMA ~552B) then
+ * fails and the driver degrades GPS/SBUS uarts to slow POLL (1 byte / poll
+ * cycle), starving high-rate virtual-peripheral RX. Give every UART a static
+ * engine block so the requested engine is ALWAYS available regardless of heap
+ * pressure. 4 × sizeof(uart_dma_t) = ~2.2KB of .bss (fits: __bss_end 0x20002598
+ * vs APP_RAM 0x20004000). */
+#define UART_MAX_ENGINE_SLOTS 4
+static uint8_t g_uart_eng_pool[UART_MAX_ENGINE_SLOTS][sizeof(uart_dma_t)]
+    __attribute__((aligned(8)));
+static int g_uart_eng_next = 0;
+
+/* Allocate the static engine block for a uart (assigned at create). The whole
+ * block is zeroed so every (re)setup starts from a clean state. Returns NULL
+ * only when every slot is taken (defensive: caller falls back to POLL). */
+static void *uart_eng_alloc(uart *u)
+{
+    if (!u || u->eng_slot < 0 || u->eng_slot >= UART_MAX_ENGINE_SLOTS)
+        return NULL;
+    void *p = g_uart_eng_pool[u->eng_slot];
+    memset(p, 0, sizeof(uart_dma_t));
+    return p;
+}
+
 device *uart_create(const void *config)
 {
     const uart_config_t *c = (const uart_config_t *)config;
     uart *self = (uart *)malloc(sizeof(uart));
     if (!self) return NULL;
     memset(self, 0, sizeof(uart));
+    self->eng_slot = (g_uart_eng_next < UART_MAX_ENGINE_SLOTS) ? g_uart_eng_next++ : -1;
     self->hal = uart_hal_create(c->periph, c->baud);
     if (!self->hal) { free(self); return NULL; }   /* #9: HAL alloc failure */
     self->parent.parent.type = DEVICE_TYPE_UART;    /* driver sets its own class */
@@ -250,8 +277,9 @@ static void uart_free_engine(uart *u)
     if (!u->eng) return;
     if (u->parent.mode == STREAM_MODE_DMA && u->framing == UART_FRAME_IDLE)
         uart_idle_dma_disarm(u);          /* stop the circular RX DMA first */
-    stream_device_free_ringbuffer((stream_device *)u);  /* release RX ring (heap) */
-    free(u->eng);
+    /* the ring OBJECT lives inside the static engine pool — never free() it */
+    stream_device_detach_ringbuffer((stream_device *)u);
+    /* engine state lives in the static pool (g_uart_eng_pool) — never free() it */
     u->eng = NULL;
 }
 
@@ -278,43 +306,39 @@ static int uart_setup_engine(uart *u, stream_xfer_mode_t engine, uart_frame_t fr
 
     /* --- allocate + init the state the new (engine, framing) needs --- */
     if (engine == STREAM_MODE_IRQ) {
-        uart_irq_t *e = (uart_irq_t *)malloc(sizeof(uart_irq_t));
-        if (!e) {                       /* heap too tight: degrade to POLL */
+        uart_irq_t *e = (uart_irq_t *)uart_eng_alloc(u);
+        if (!e) {                       /* no free engine slot: degrade to POLL */
             u->eng = NULL;
             u->parent.mode = STREAM_MODE_POLL;
             u->framing = (framing == UART_FRAME_IDLE) ? UART_FRAME_NONE : framing;
             uart_select_rx_engine(u);
             return 0;
         }
-        memset(e, 0, sizeof(*e));
         osal_sem_init(&e->ctl.tx_idle, 1);   /* line starts free */
         u->eng = e;
-        /* embedded ring storage (no extra heap alloc for the 64 B buffer) */
-        stream_device_init_ringbuffer((stream_device *)u,
-                                      (uint8_t *)e->rx_storage, UART_RX_BUF_SIZE);
+        /* ring OBJECT embedded in the static engine pool — IRQ RX must not
+         * depend on the boot heap (a heap ring struct failed here before and
+         * silently dropped every pushed byte → GPS/SBUS never assembled). */
+        stream_device_init_ringbuffer_embedded((stream_device *)u, &e->rb,
+                                               (uint8_t *)e->rx_storage, UART_RX_BUF_SIZE);
     } else if (engine == STREAM_MODE_DMA) {
         /* omit the IDLE tail when framing == NONE to save ~264 B */
-        size_t sz = (framing == UART_FRAME_IDLE)
-                        ? sizeof(uart_dma_t)
-                        : offsetof(uart_dma_t, idle_buf);
-        uart_dma_t *e = (uart_dma_t *)malloc(sz);
-        if (!e) {                       /* heap too tight: try IRQ, then POLL */
-            if (uart_setup_engine(u, STREAM_MODE_IRQ, framing) == 0)
-                return 0;
+        uart_dma_t *e = (uart_dma_t *)uart_eng_alloc(u);
+        if (!e) {                       /* no free engine slot: degrade to POLL */
             u->eng = NULL;
             u->parent.mode = STREAM_MODE_POLL;
             u->framing = UART_FRAME_NONE;
             uart_select_rx_engine(u);
             return 0;
         }
-        memset(e, 0, sz);
         osal_sem_init(&e->ctl.tx_idle, 1);
         u->eng = e;
         if (framing == UART_FRAME_IDLE) {
             e->idle_bufsize = UART_DMA_BOUNCE;
             e->idle_total   = 0;
             /* ring so IDLE-flushed bytes are readable via read()/getc() */
-            stream_device_init_ringbuffer((stream_device *)u, NULL, UART_RX_BUF_SIZE);
+            stream_device_init_ringbuffer_embedded((stream_device *)u, &e->rb,
+                                                   (uint8_t *)e->idle_buf, UART_RX_BUF_SIZE);
         }
         /* DMA + NONE uses bulk per-read DMA and needs no standing RX ring. */
     } else { /* POLL: zero state */
@@ -493,12 +517,24 @@ static int uart_tx_blocking(uart *u, const char *s, size_t len)
     uart_ctl_t *c = uart_ctl(u);
     if (!c || len == 0) return 0;
     osal_sem_wait(&c->tx_idle);          /* wait for the line to be free */
+    /* Direct TXE polling — deliberately NOT the TXE-interrupt path. On this
+     * simulator the TXE ISR enable can be clobbered by a spurious TXEIE-clear
+     * (interrupt race under pressure), which would deadlock an ISR-only
+     * transmit mid-line and hang the console/boot/app. TXE is set instantly
+     * after each DR write here, so polling is effectively zero-cost; it is
+     * also exactly what the former POLL engine did. Kept mutually exclusive
+     * with any async TX via tx_idle. */
     c->async_tx = NULL;
     c->tx_ptr   = s;
     c->tx_rem   = len;
-    osal_sem_init(&c->tx_done_sem, 0);
-    uart_hal_enable_tx_irq(u->hal);      /* TXE ISR drains tx_rem */
-    osal_sem_wait(&c->tx_done_sem);      /* block until the last byte is sent */
+    uart_hal_disable_tx_irq(u->hal);     /* blocking TX takes over: no TXE ISR */
+    while (c->tx_rem > 0) {
+        if (uart_hal_tx_ready(u->hal)) {
+            uart_hal_write_dr(u->hal, *c->tx_ptr++);
+            c->tx_rem--;
+        }
+    }
+    osal_sem_give(&c->tx_idle);          /* line free for the next TX */
     return (int)len;
 }
 
@@ -731,17 +767,19 @@ static int uart_stream_read(stream_device *self, void *buf, size_t len)
         return uart_dma_read(u, buf, len);
     /* IRQ, or DMA+IDLE: the ISR feeds a ring buffer. Return NON-blocking so a
      * caller can poll without stalling its loop (the main command loop also
-     * services other devices such as USB). If a byte is present, pop it now. */
+     * services other devices such as USB). Drain UP TO `len` bytes already in
+     * the ring: the stream-read contract is "return up to len", and app-layer
+     * GPS/SBUS drivers read into a 64 B buffer expecting a whole burst per call
+     * (a 1-byte-per-call return would under-drain a 20-100 Hz push stream, the
+     * 64 B ring overflows, and in-ring byte order scrambles so NMEA/SBUS frames
+     * never assemble). Empty ring → 0 (non-blocking). */
     ringbuffer *rb = stream_device_get_ringbuffer(self);
-    if (!rb || rb->fun->is_empty(rb)) return 0;   /* no ring or empty → non-blocking */
-    /* Ring is known non-empty here (checked above). Pop directly instead of
-     * calling the blocking uart_rx_getc busy-wait, which would otherwise stall
-     * the calling task (and every lower-priority task) whenever the ring state
-     * is transiently inconsistent. */
-    uint8_t c = 0;
-    rb->fun->get(rb, &c);
-    *(char *)buf = (char)c;
-    return 1;
+    if (!rb) return 0;
+    uint8_t *dst = (uint8_t *)buf;
+    size_t got = 0;
+    while (got < len && rb->fun->get(rb, &dst[got]) == 0)
+        got++;
+    return (int)got;
 }
 
 static int uart_stream_write(stream_device *self, const void *buf, size_t len)

@@ -9,8 +9,11 @@
 #include "osal/osal.h"        /* osal_sem_t (TX completion + line serialization) */
 #include <stdint.h>
 
-/* Size of the RX ring buffer fed by the UART receive ISR. */
-#define UART_RX_BUF_SIZE 64
+/* Size of the RX ring buffer fed by the UART receive ISR.
+ * MUST comfortably hold one whole virtual-peripheral frame: a $GNGGA line is
+ * ~70 B, so 64 truncated every frame tail (checksum + CRLF) and NMEA parsing
+ * never completed a line under IRQ engine. 256 holds several frames. */
+#define UART_RX_BUF_SIZE 256
 
 /* DMA-accessible (main SRAM) bounce scratch used by the DMA TX/RX paths. The
  * STM32F4 DMA controllers CANNOT reach CCM (0x10000000) — only the CPU can — so
@@ -87,12 +90,14 @@ typedef struct {
     io_xfer_t *async_rx;
 } uart_ctl_t;
 
-/* IRQ engine: control block + the per-byte RX ring storage (the embedded ring
- * buffer object is heap-allocated by stream_device_init_ringbuffer and backed
- * by this storage). */
+/* IRQ engine: control block + the per-byte RX ring storage. The ringbuffer
+ * OBJECT itself is ALSO embedded here (static engine pool), so IRQ RX never
+ * depends on the boot heap (a failed ringbuffer_create() malloc used to leave
+ * rx_rb == NULL and silently drop every pushed byte). */
 typedef struct {
     uart_ctl_t ctl;
-    char rx_storage[UART_RX_BUF_SIZE];
+    ringbuffer rb;                       /* embedded ring object (see stream_device.h) */
+    char rx_storage[UART_RX_BUF_SIZE];   /* ring byte store */
 } uart_irq_t;
 
 /* DMA engine: control block + a main-SRAM bounce (TX source / bulk RX dest).
@@ -100,6 +105,7 @@ typedef struct {
  * UART_FRAME_IDLE, so allocating without it (DMA + NONE) saves ~264 B. */
 typedef struct {
     uart_ctl_t ctl;
+    ringbuffer rb;                       /* embedded ring object (static pool) */
     uint8_t dma_bounce[UART_DMA_BOUNCE];
     /* --- IDLE tail (allocated only when framing == UART_FRAME_IDLE) --- */
     uint8_t idle_buf[UART_DMA_BOUNCE];
@@ -128,8 +134,13 @@ struct _uart {
     int dma_tx_dir;               /* cached direction for config() */
     int dma_rx_dir;
     /* per-engine state (see uart_ctl_t / uart_irq_t / uart_dma_t above). NULL for
-     * POLL (zero state); heap-allocated in open() for IRQ / DMA, freed in close(). */
+     * POLL (zero state); for IRQ / DMA it points into the STATIC engine pool
+     * (g_uart_eng_pool, see uart.c) — engine state must never depend on the boot
+     * heap, which can be exhausted by the time the app opens its uarts (a failed
+     * malloc used to silently degrade GPS/SBUS uarts to slow POLL). */
     void *eng;
+    /* index into the static engine pool (assigned at create; -1 = none) */
+    int eng_slot;
 };
 
 device *uart_create(const void *config);

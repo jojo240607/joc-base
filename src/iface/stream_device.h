@@ -98,10 +98,16 @@ struct _stream_device {
  * let the ring allocate its own). Call once at open() time for devices that need
  * an RX ring. Re-attaching frees any previously attached ring first. */
 void stream_device_init_ringbuffer(stream_device *self, uint8_t *buf, size_t size);
+/* Same, but the ringbuffer OBJECT is embedded at `rb` (static pool — no heap
+ * alloc and no destroy needed; detach via stream_device_detach_ringbuffer). */
+void stream_device_init_ringbuffer_embedded(stream_device *self, ringbuffer *rb,
+                                            uint8_t *buf, size_t size);
 
 /* Free the attached RX ring buffer (if any). Call from the device's destroy path
  * so the heap object is released. Safe to call when no ring was attached. */
 void stream_device_free_ringbuffer(stream_device *self);
+/* Detach an embedded ring without freeing it (lives in a static pool). */
+void stream_device_detach_ringbuffer(stream_device *self);
 
 /* Access the attached RX ring buffer (e.g. to push from an ISR / pop in read).
  * Returns NULL if `self` is NULL or no ring is attached — callers MUST NULL-check

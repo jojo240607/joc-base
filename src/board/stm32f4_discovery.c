@@ -119,8 +119,12 @@ static const uart_config_t g_uart0 = {
     .engine     = STREAM_MODE_IRQ,        /* Renode: interrupt-driven TX/RX */
     .framing    = UART_FRAME_NONE,        /* Renode: no IDLE-line DMA framing */
 #else
-    .engine     = STREAM_MODE_DMA,        /* RX engine: circular DMA */
-    .framing    = UART_FRAME_IDLE,        /* framing: IDLE marks frame end (zero per-byte ISR) */
+    /* 控制台也走 IRQ 引擎（静态引擎池保证可用）：基线里 DMA 引擎 malloc 失败即回退
+     * IRQ（实测 FINAL mode=1），本配置与其一致且不再依赖堆；TX 经 TXE 中断逐字节发、
+     * RX 经 RXNE 中断收（Renode 同路径）。DMA 引擎（circular RX/TX）在模拟器无
+     * 环形 DMA 语义，且 wait_done 会空转 2M 指令预算——故统一 IRQ。 */
+    .engine     = STREAM_MODE_IRQ,        /* RX: per-byte RXNE interrupt */
+    .framing    = UART_FRAME_NONE,        /* 控制台无帧语义，无需 IDLE */
 #endif
 };
 /* uart1: GPS 串口（飞控 Rust 应用层经此收 NMEA/UBX）。USART2@PA2/PA3，非控制台。
@@ -134,8 +138,8 @@ static const uart_config_t g_uart1 = {
     .rx_signal  = "USART2_RX_PA3",        /* RX = PA3, AF7 */
     .dma_tx_req = DMA_REQ_USART2_TX,      /* TX -> DMA1_Stream6 CH4 */
     .dma_rx_req = DMA_REQ_USART2_RX,      /* RX -> DMA1_Stream5 CH4 */
-    .engine     = STREAM_MODE_DMA,        /* RX engine: circular DMA */
-    .framing    = UART_FRAME_IDLE,        /* framing: IDLE marks frame end */
+    .engine     = STREAM_MODE_IRQ,        /* RX: per-byte RXNE interrupt（静态引擎池，绝不回退 POLL） */
+    .framing    = UART_FRAME_NONE,        /* NMEA 由 CRLF 分帧，无需 IDLE */
 };
 /* uart2: USART3 @ PD8(TX)/PD9(RX)，AF7，非控制台。TX->DMA1_Stream3 CH4，
  * RX->DMA1_Stream1 CH4。PD8/PD9 在 Discovery 上空闲，未与其它驱动冲突。 */
@@ -148,8 +152,8 @@ static const uart_config_t g_uart2 = {
     .rx_signal  = "USART3_RX_PD9",        /* RX = PD9, AF7 */
     .dma_tx_req = DMA_REQ_USART3_TX,      /* TX -> DMA1_Stream3 CH4 */
     .dma_rx_req = DMA_REQ_USART3_RX,      /* RX -> DMA1_Stream1 CH4 */
-    .engine     = STREAM_MODE_DMA,
-    .framing    = UART_FRAME_IDLE,
+    .engine     = STREAM_MODE_IRQ,        /* RX: per-byte RXNE interrupt（静态引擎池，绝不回退 POLL） */
+    .framing    = UART_FRAME_NONE,        /* NMEA 由 CRLF 分帧，无需 IDLE */
 };
 /* uart3: USART6 @ PC6(TX)/PC7(RX)，AF8，非控制台（飞控遥测下行）。
  * TX 放弃 DMA2_Stream7 CH5 —— 该流已被 uart0(USART1_TX CH4) 占用(F4 上

@@ -97,6 +97,33 @@ void stream_device_free_ringbuffer(stream_device *self)
     }
 }
 
+/* Initialize the RX ring with an EMBEDDED ringbuffer object (no heap alloc —
+ * for drivers whose ring struct lives in a static pool, e.g. uart engines).
+ * `rb` must stay valid for the ring's lifetime; detach with
+ * stream_device_detach_ringbuffer() (never free()). Falls back to the heap
+ * variant when `rb` is NULL. */
+void stream_device_init_ringbuffer_embedded(stream_device *self, ringbuffer *rb,
+                                            uint8_t *buf, size_t size)
+{
+    if (!self || size < 2) return;
+    if (!rb) {
+        stream_device_init_ringbuffer(self, buf, size);
+        return;
+    }
+    memset(rb, 0, sizeof(*rb));
+    rb->buf = buf;
+    rb->size = size;
+    rb->owns_buf = 0;        /* byte store stays in the driver/pool */
+    ringbuffer_init(rb);
+    self->rx_rb = rb;
+}
+
+/* Detach an embedded ring WITHOUT freeing it (it lives in a static pool). */
+void stream_device_detach_ringbuffer(stream_device *self)
+{
+    if (self) self->rx_rb = NULL;
+}
+
 ringbuffer *stream_device_get_ringbuffer(stream_device *self)
 {
     return self ? self->rx_rb : NULL;
