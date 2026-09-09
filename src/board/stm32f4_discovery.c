@@ -32,6 +32,7 @@
 #include "drv/exti.h"
 #include "drv/i2c.h"
 #include "drv/spi.h"
+#include "drv/bmi088.h"
 #include "drv/sdio.h"
 #include "drv/sd_card.h"
 #include "drv/dac.h"
@@ -184,6 +185,10 @@ static const gpio_config_t g_gpio_pb0  = { "gpiob0",  "GPIOB_0",  0 }; /* B0,  o
 static const gpio_config_t g_gpio_pc0  = { "gpioc0",  "GPIOC_0",  0 }; /* C0,  input  */
 static const gpio_config_t g_gpio_pd13 = { "gpiod13", "GPIOD_13", 1 }; /* D13, output */
 static const gpio_config_t g_gpio_pe3  = { "gpioe3",  "GPIOE_3",  0 }; /* E3,  input  */
+/* BMI088 双片选（GPIOE7/8 输出，默认高=不选中；Discovery 上 PE7/PE8 空闲） */
+static const gpio_config_t g_bmi_accel_cs = { "bmi_accel_cs", "GPIOE_7", 1 };
+static const gpio_config_t g_bmi_gyro_cs  = { "bmi_gyro_cs",  "GPIOE_8", 1 };
+static const bmi088_config_t g_bmi088 = { "bmi088", "spi2", "bmi_accel_cs", "bmi_gyro_cs" };
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
@@ -413,6 +418,8 @@ static const board_node_t g_nodes[] = {
     { gpio_pin_create,    &g_gpio_pc0 },
     { gpio_pin_create,    &g_gpio_pd13 },
     { gpio_pin_create,    &g_gpio_pe3 },
+    { gpio_pin_create,    &g_bmi_accel_cs },
+    { gpio_pin_create,    &g_bmi_gyro_cs },
     { adc_create,         &g_adc0 },
     { temp_sensor_create, &g_temp0 },
     { timer_create,       &g_timer0 },
@@ -445,6 +452,7 @@ static const board_node_t g_nodes[] = {
     { spi_create,         &g_spi0 },
     { spi_create,         &g_spi1 },
     { spi_create,         &g_spi2 },
+    { bmi088_create,      &g_bmi088 },
     { sdio_create,        &g_sdio0 },
     { sd_card_create,     &g_sd_card0 },
     { dac_create,         &g_dac0 },

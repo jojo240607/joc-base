@@ -71,6 +71,7 @@ typedef enum {
     DEVICE_TYPE_USB,           /* 23 — USB OTG FS device / CDC-ACM VCP (STREAM) */
     DEVICE_TYPE_DMA,           /* 24 — DMA controller (CONTROL: stream-pool manager) */
     DEVICE_TYPE_FSMC,          /* 25 — FSMC flexible static memory controller */
+    DEVICE_TYPE_BMI088,        /* 26 — BMI088 IMU (CONTROL: SPI + 双片选) */
     DEVICE_TYPE_COUNT         /* number of device classes */
 } driver_type_t;
 
