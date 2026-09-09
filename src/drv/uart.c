@@ -468,8 +468,10 @@ static void uart_isr(void *ctx)
     if (uart_hal_ore_pending(u->hal)) {
         uart_hal_clear_errors(u->hal);
     }
-    /* RX: per-byte path (IRQ mode); reading DR clears RXNE. */
-    if (uart_hal_rx_pending(u->hal)) {
+    /* RX: per-byte path ONLY in non-DMA mode (IRQ engine). In DMA+IDLE the RX is
+     * DMA-driven (bytes land in idle_buf, flushed at IDLE); if we also fed the
+     * ring here, every byte would be delivered twice (ring + idle_buf). */
+    if (u->parent.mode != STREAM_MODE_DMA && uart_hal_rx_pending(u->hal)) {
         uart_rx_putc(u, uart_hal_read_dr(u->hal));
     }
     /* Drain the ring into any in-progress async read (either RX engine). */

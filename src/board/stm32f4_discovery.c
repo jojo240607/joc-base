@@ -138,8 +138,8 @@ static const uart_config_t g_uart1 = {
     .rx_signal  = "USART2_RX_PA3",        /* RX = PA3, AF7 */
     .dma_tx_req = DMA_REQ_USART2_TX,      /* TX -> DMA1_Stream6 CH4 */
     .dma_rx_req = DMA_REQ_USART2_RX,      /* RX -> DMA1_Stream5 CH4 */
-    .engine     = STREAM_MODE_IRQ,        /* RX: per-byte RXNE interrupt（静态引擎池，绝不回退 POLL） */
-    .framing    = UART_FRAME_NONE,        /* NMEA 由 CRLF 分帧，无需 IDLE */
+    .engine     = STREAM_MODE_DMA,        /* TX/RX 全 DMA：TX 经 DMAT+wait_done，RX 经 IDLE 环形 DMA */
+    .framing    = UART_FRAME_IDLE,        /* NMEA 由 CRLF 分帧 → IDLE 帧中断触发环形 flush */
 };
 /* uart2: USART3 @ PD8(TX)/PD9(RX)，AF7，非控制台。TX->DMA1_Stream3 CH4，
  * RX->DMA1_Stream1 CH4。PD8/PD9 在 Discovery 上空闲，未与其它驱动冲突。 */
@@ -152,8 +152,8 @@ static const uart_config_t g_uart2 = {
     .rx_signal  = "USART3_RX_PD9",        /* RX = PD9, AF7 */
     .dma_tx_req = DMA_REQ_USART3_TX,      /* TX -> DMA1_Stream3 CH4 */
     .dma_rx_req = DMA_REQ_USART3_RX,      /* RX -> DMA1_Stream1 CH4 */
-    .engine     = STREAM_MODE_IRQ,        /* RX: per-byte RXNE interrupt（静态引擎池，绝不回退 POLL） */
-    .framing    = UART_FRAME_NONE,        /* NMEA 由 CRLF 分帧，无需 IDLE */
+    .engine     = STREAM_MODE_DMA,        /* TX/RX 全 DMA：TX 经 DMAT+wait_done，RX 经 IDLE 环形 DMA */
+    .framing    = UART_FRAME_IDLE,        /* SBUS 25B 定长帧 → IDLE 帧中断触发环形 flush */
 };
 /* uart3: USART6 @ PC6(TX)/PC7(RX)，AF8，非控制台（飞控遥测下行）。
  * TX 放弃 DMA2_Stream7 CH5 —— 该流已被 uart0(USART1_TX CH4) 占用(F4 上
