@@ -41,7 +41,7 @@ typedef struct {
 
 #ifdef RUST_APP_LIB
 /* 运行时验证 Rust 应用层已挂载：读取 rust_ticks() 心跳计数。
- * 符号由 joc-app-rust/libapp.a 提供，仅当 Rust 层被链接时声明。 */
+ * 符号由应用分区 lib（flyctrl-app 等）提供，仅当 Rust 层被链接时声明。 */
 extern uint32_t rust_ticks(void);
 void cmd_rust(app_ctx_t *c, const char *line);
 #endif

@@ -10,9 +10,9 @@
 
 /* 本文件是 RTOS 固件的【系统启动任务】(main)，不属于用户层 demo。
  * 职责仅限：拉起设备、填充应用上下文、挂载 Rust 应用层、跑控制台循环。
- * 任何 demo / 业务任务都在 Rust 应用层(joc-app-rust)经 rust_app_start() 创建。 */
+ * 任何 demo / 业务任务都在 Rust 应用分区（flyctrl/app 等）经 rust_app_start() 创建。 */
 
-/* Rust 应用层挂载点：由 joc-app-rust/libapp.a 提供。
+/* Rust 应用层挂载点：由应用分区 lib（flyctrl-app 等）提供。
  * 仅当 Rust 应用层被链接进固件时声明，RTOS 侧只负责调用；
  * 用户层 demo / 飞控示例任务全部在 Rust 层内经 ABI 契约自行创建。
  * App 入口无参、经 g_app_slot 服务表拿到所有能力（方案 Y 解耦）。 */
@@ -20,7 +20,7 @@
 #include "rust_app.h"   /* int rust_app_start(void); app/rust 已在 RUST_APP_LIB include 路径 */
 
 /* 兜底实现：正常情况下 rust_ticks() 由链入的 libapp.a(Rust 应用层) 提供。
- * 当前 joc-app-rust 尚未落地该符号时，此处提供定义以保链接/烧录/启动；
+ * 当前应用分区尚未落地该符号时，此处提供定义以保链接/烧录/启动；
  * Rust 侧补齐后本兜底应删去，避免重复符号。它不改变设备注册等启动行为。 */
 uint32_t rust_ticks(void) { return 0u; }
 #endif

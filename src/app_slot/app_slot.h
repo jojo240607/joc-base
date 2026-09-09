@@ -2,7 +2,7 @@
 #define APP_SLOT_H
 
 /* ===========================================================================
- * 方案 Y（轻量版）App 服务表：RTOS 系统暴露给独立 App 层（joc-app-rust）的
+ * 方案 Y（轻量版）App 服务表：RTOS 系统暴露给独立 App 分区（flyctrl/app 等）的
  * 「函数指针表 + 中断回调注册位」契约。
  *
  * 设计要点：
@@ -12,7 +12,7 @@
  *  - g_app_slot 由系统在固定链接地址定义（APP_SLOT 段），App 经 extern 引用。
  *  - 字段变更必须 +RTOS_ABI_VERSION（见 tools/abi/rtos_abi.h）。
  *
- * 本文件被系统侧 app_slot.c 填充，也被 joc-app-rust 镜像成 abi/app_slot.rs。
+ * 本文件被系统侧 app_slot.c 填充，也被 SDK（joc-rtos-app-sdk）镜像成 abi.rs。
  * ========================================================================= */
 
 #include <stdint.h>

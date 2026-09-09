@@ -170,7 +170,7 @@ void cmd_rust(app_ctx_t *c, const char *line)
 {
     (void)line;
     char out[64];
-    /* rust_ticks() 由 joc-app-rust 的 rust_task_entry 每 500ms 自增，
+    /* rust_ticks() 由 Rust 应用分区（flyctrl/app）的 rust_task_entry 每 500ms 自增，
      * 读取到 >0 即证明 Rust 应用层任务已挂载并在运行。 */
     uint32_t t = rust_ticks();
     int n = snprintf(out, sizeof(out),
