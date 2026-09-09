@@ -125,6 +125,7 @@ elseif(JOC_TARGET STREQUAL "STM32F407VGT6")
     src/drv/i2c.c
     src/drv/spi.c
     src/drv/bmi088.c
+    src/drv/spi_flash.c
     src/drv/sdio.c
     src/drv/sd_card.c
     src/drv/dac.c
@@ -354,7 +355,7 @@ else()
   set(APP_RAM_LENGTH "0x1BC00")  # 0x2001FC00 - 0x20004000 = 111KB（回收 g_app_slot 上方 ~9KB 死区；g_app_slot 占顶端 1KB）
   set(APP_RAM_MEM "APP_RAM")     # 发布版 Rust 全局搬进 APP_RAM，释放主 SRAM 系统堆
   set(SYS_STATIC_HEAP_DEF "SYS_STATIC_HEAP")
-  set(SYS_HEAP_SIZE "0x2200u")   # 8.5KB：发布版容纳全部设备 malloc（含 bmi088 后的 61 设备；原 8KB 在 bmi088 加入后耗尽导致 usb0 RX ring malloc 失败）
+  set(SYS_HEAP_SIZE "0x2800u")   # 10KB：发布版容纳全部设备 malloc（bmi088+spi_flash 后 63 设备；8.5KB 时 dma/sdio 相关 create malloc 失败变 skip）
   set(SYS_HEAP_SECTION ".bss")
   # 发布版 CCM 仅用 ~19KB(30%)，余量充足，故把纯软件的 RTOS 管理表/池/注册表
   # (device_manager 节点池/irq 表/kobj/TCB 之外对象/watchdog 栈快照等) 搬入 CCM，
