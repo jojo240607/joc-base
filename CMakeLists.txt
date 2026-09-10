@@ -743,6 +743,15 @@ if(RENODE)
   message(STATUS "Renode build ENABLED (JOC_RENODE=1: skip usb0, uart0 IRQ engine)")
 endif()
 
+# mcu_simulater 构建：注入 JOC_MCU_SIM=1。模拟器有完整 OTG_FS 模型、无需真实硬件
+# 时序，ST 库 USB_OTG_CoreInit 的 mDelay(200ms/100ms) CPU 忙等会拖死 boot（每次
+# 忙等 ~6000 万指令）。开启后 usb_bsp 的 uDelay/mDelay 变空实现；其余行为同真机。
+option(MCU_SIM "Build for mcu_simulater (no busy-wait USB delays, full OTG model)" OFF)
+if(MCU_SIM)
+  target_compile_definitions(${PROJECT_NAME}.elf PRIVATE JOC_MCU_SIM=1)
+  message(STATUS "mcu_simulater build ENABLED (JOC_MCU_SIM=1: empty USB uDelay/mDelay)")
+endif()
+
 target_compile_options(${PROJECT_NAME}.elf PRIVATE
     ${CPU_FLAGS}
     -Wall -Wextra -Wno-unused-parameter

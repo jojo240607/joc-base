@@ -363,6 +363,12 @@ static void usb_tx_pump(usb *u)
          * consumer and runs from the main loop, so this is safe here. */
         if (usb_hal_tx_ep_complete(u->hal, 0x81)) {
             u->bulk_tx_pending = 0;
+            /* [HIL 联调诊断] SELF-HEAL 触发：XFRC 丢失，强制清 pending */
+            static uint32_t heal_cnt;
+            if ((++heal_cnt % 20) == 1) {
+                log_printf(app_log(), LOG_WARN, "usb",
+                           "TX_PUMP self-heal #%u: lost-XFRC force-clear", heal_cnt);
+            }
         } else if (usb_hal_is_suspended(u->hal) && !rb->fun->is_empty(rb)) {
             /* BREAK THE HOST-SUSPEND DEADLOCK: if the bus went into SUSPEND
              * (host stopped issuing IN tokens), a pending bulk-IN can never
@@ -373,6 +379,17 @@ static void usb_tx_pump(usb *u)
             u->bulk_tx_pending = 0;
             usb_hal_remote_wakeup(u->hal);
         } else {
+            /* [HIL 联调诊断] SELF-HEAL 失败：打印 xfer_len/xfer_count/DIEPTSIZ 定位
+             * pump 停（IN busy 但 never complete）根因。 */
+            static uint32_t busy_cnt;
+            if ((++busy_cnt % 20) == 1) {
+                USB_OTG_EP *ep = &u->hal->pdev->dev.in_ep[1];
+                uint32_t dieptsiz = u->hal->pdev->regs.INEP_REGS[1]->DIEPTSIZ;
+                log_printf(app_log(), LOG_WARN, "usb",
+                           "TX_PUMP busy #%u: xfer_len=%d xfer_count=%d dieptsiz=0x%08x",
+                           busy_cnt, (int)ep->xfer_len, (int)ep->xfer_count,
+                           (unsigned)dieptsiz);
+            }
             return;                               /* IN busy: wait for XFRC */
         }
     }
@@ -457,6 +474,14 @@ static int usb_stream_write(stream_device *self, const void *buf, size_t len)
      * the caller task model, so free_space-check + write is safe enough.) */
     size_t fs = rb->fun->free_space(rb);
     if (fs < len) {
+        /* [HIL 联调诊断] ring 满丢帧：打印 ISR 清 pending 计数 + 可用空间 */
+        static uint32_t drop_cnt;
+        if ((++drop_cnt % 50) == 1) {
+            log_printf(app_log(), LOG_WARN, "usb",
+                       "stream_write DROP #%u free=%u len=%u dbg_in=%u pending=%d",
+                       drop_cnt, (unsigned)fs, (unsigned)len,
+                       u->dbg_in, u->bulk_tx_pending);
+        }
         return 0;                                  /* not enough room: reject whole frame */
     }
     size_t stored = rb->fun->write(rb, buf, len);

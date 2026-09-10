@@ -45,13 +45,21 @@ void USB_OTG_BSP_TimerIRQ(void) { }
 
 void USB_OTG_BSP_uDelay(const uint32_t usec)
 {
+#ifdef JOC_MCU_SIM
+    (void)usec;   /* mcu_simulater：无真实硬件时序，忙等纯浪费（见 CMake MCU_SIM） */
+#else
     /* Rough busy delay; ~168 MHz core, calibrated loosely. */
     volatile uint32_t n = usec * 120UL;
     while (n--) ;
+#endif
 }
 
 void USB_OTG_BSP_mDelay(const uint32_t msec)
 {
+#ifdef JOC_MCU_SIM
+    (void)msec;   /* mcu_simulater：ST 库 CoreInit 的 200ms/100ms 忙等会拖死 boot */
+#else
     volatile uint32_t n = msec * 120000UL;
     while (n--) ;
+#endif
 }
