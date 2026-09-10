@@ -126,6 +126,7 @@ elseif(JOC_TARGET STREQUAL "STM32F407VGT6")
     src/drv/spi.c
     src/drv/bmi088.c
     src/drv/spi_flash.c
+    src/drv/dshot.c
     src/drv/sdio.c
     src/drv/sd_card.c
     src/drv/dac.c

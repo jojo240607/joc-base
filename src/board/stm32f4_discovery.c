@@ -34,6 +34,7 @@
 #include "drv/spi.h"
 #include "drv/bmi088.h"
 #include "drv/spi_flash.h"
+#include "drv/dshot.h"
 #include "drv/sdio.h"
 #include "drv/sd_card.h"
 #include "drv/dac.h"
@@ -193,6 +194,9 @@ static const bmi088_config_t g_bmi088 = { "bmi088", "spi2", "bmi_accel_cs", "bmi
 /* SPI NOR Flash（W25Q128 类，保存/存储）：片选 GPIOE_9 输出，默认高=不选中 */
 static const gpio_config_t g_spi_flash_cs = { "spi_flash_cs", "GPIOE_9", 1 };
 static const spi_flash_config_t g_spi_flash0 = { "spi_flash0", "spi1", "spi_flash_cs" };
+/* DShot 电调数字协议输出（GPIOE_10 输出，默认高=行空闲；Discovery 上 PE10 空闲） */
+static const gpio_config_t g_dshot_gpio = { "dshot_gpio", "GPIOE_10", 1 };
+static const dshot_config_t g_dshot0 = { "dshot0", "dshot_gpio" };
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
@@ -425,6 +429,7 @@ static const board_node_t g_nodes[] = {
     { gpio_pin_create,    &g_bmi_accel_cs },
     { gpio_pin_create,    &g_bmi_gyro_cs },
     { gpio_pin_create,    &g_spi_flash_cs },
+    { gpio_pin_create,    &g_dshot_gpio },
     { adc_create,         &g_adc0 },
     { temp_sensor_create, &g_temp0 },
     { timer_create,       &g_timer0 },
@@ -459,6 +464,7 @@ static const board_node_t g_nodes[] = {
     { spi_create,         &g_spi2 },
     { bmi088_create,      &g_bmi088 },
     { spi_flash_create,   &g_spi_flash0 },
+    { dshot_create,       &g_dshot0 },
     { sdio_create,        &g_sdio0 },
     { sd_card_create,     &g_sd_card0 },
     { dac_create,         &g_dac0 },

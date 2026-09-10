@@ -28,7 +28,7 @@
  * （57+3 余量）在开发版仍落界内。见记忆 36069048：超过上限的节点会被静默丢弃，
  * 新增板级设备后务必回头核对本值（尤其开发版 RAM 占用）。 */
 #ifndef DEVICE_MANAGER_MAX
-#define DEVICE_MANAGER_MAX 64
+#define DEVICE_MANAGER_MAX 66
 #endif
 
 /* Register a device under `name` (overwrites if the name already exists). */
