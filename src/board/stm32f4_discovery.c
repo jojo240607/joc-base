@@ -35,6 +35,8 @@
 #include "drv/bmi088.h"
 #include "drv/spi_flash.h"
 #include "drv/dshot.h"
+#include "drv/pmw3901.h"
+#include "drv/vl53l1x.h"
 #include "drv/sdio.h"
 #include "drv/sd_card.h"
 #include "drv/dac.h"
@@ -197,6 +199,12 @@ static const spi_flash_config_t g_spi_flash0 = { "spi_flash0", "spi1", "spi_flas
 /* DShot 电调数字协议输出（GPIOE_10 输出，默认高=行空闲；Discovery 上 PE10 空闲） */
 static const gpio_config_t g_dshot_gpio = { "dshot_gpio", "GPIOE_10", 1 };
 static const dshot_config_t g_dshot0 = { "dshot0", "dshot_gpio" };
+/* PMW3901 光流：CS GPIOE_11 输出（默认高=不选中），与 bmi088 共享 SPI3 总线
+ *（"spi2"，不同 CS 引脚 PE11 vs PE7/8）；Discovery 上 PE11 空闲 */
+static const gpio_config_t g_pmw3901_cs = { "pmw3901_cs", "GPIOE_11", 1 };
+static const pmw3901_config_t g_pmw3901 = { "pmw3901", "spi2", "pmw3901_cs" };
+/* VL53L1X ToF 激光测距：I2C 0x29 挂 i2c0（I2C1，PB6/7）总线 */
+static const vl53l1x_config_t g_vl53l1x = { "vl53l1x", "i2c0" };
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
@@ -430,6 +438,7 @@ static const board_node_t g_nodes[] = {
     { gpio_pin_create,    &g_bmi_gyro_cs },
     { gpio_pin_create,    &g_spi_flash_cs },
     { gpio_pin_create,    &g_dshot_gpio },
+    { gpio_pin_create,    &g_pmw3901_cs },
     { adc_create,         &g_adc0 },
     { temp_sensor_create, &g_temp0 },
     { timer_create,       &g_timer0 },
@@ -465,6 +474,8 @@ static const board_node_t g_nodes[] = {
     { bmi088_create,      &g_bmi088 },
     { spi_flash_create,   &g_spi_flash0 },
     { dshot_create,       &g_dshot0 },
+    { pmw3901_create,     &g_pmw3901 },
+    { vl53l1x_create,     &g_vl53l1x },
     { sdio_create,        &g_sdio0 },
     { sd_card_create,     &g_sd_card0 },
     { dac_create,         &g_dac0 },

@@ -247,6 +247,12 @@ static int spi_dev_open(device *self)
 {
     spi *p = (spi *)self;
 
+    /* 共享总线：已打开则引用计数 +1，不重复配置（避免 DMA 流/IRQ 重入） */
+    if (p->open_count > 0) {
+        p->open_count++;
+        return 0;
+    }
+
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, p->sck_port, p->sck_pin, p->sck_af, p->parent.parent.name) != 0) {
@@ -285,12 +291,18 @@ static int spi_dev_open(device *self)
     if (spi_setup_engine(p, p->parent.mode) != 0)
         spi_setup_engine(p, STREAM_MODE_POLL);
 
+    p->open_count = 1;
     return 0;
 }
 
 static int spi_dev_close(device *self)
 {
     spi *p = (spi *)self;
+    if (p->open_count > 1) {
+        p->open_count--;              /* 还有其他设备引用此总线 */
+        return 0;
+    }
+    p->open_count = 0;
     spi_free_engine(p);               /* free per-engine state (idempotent) */
     spi_dma_release(p);               /* release reserved DMA streams */
     if (p->irq >= 0) {

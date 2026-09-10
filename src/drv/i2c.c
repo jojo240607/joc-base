@@ -64,6 +64,10 @@ void i2c_destroy(i2c *self) { if (!self) return; i2c_hal_destroy(self->hal); fre
 static int i2c_dev_open(device *self)
 {
     i2c *p = (i2c *)self;
+    if (p->open_count > 0) {
+        p->open_count++;
+        return 0;
+    }
     pinmux *pm = (pinmux *)device_manager_get("pinmux");
     if (pm) {
         if (pm->fun->request(pm, p->scl_port, p->scl_pin, p->scl_af, p->parent.parent.name) != 0 ||
@@ -76,6 +80,7 @@ static int i2c_dev_open(device *self)
     i2c_hal_software_reset(p->hal);
     i2c_hal_config(p->hal, p->clk_hz, p->speed_hz);
     p->ev_irq = i2c_hal_ev_irq_id(p->hal);
+    p->open_count = 1;
     p->er_irq = i2c_hal_er_irq_id(p->hal);
     /* Build per-engine state for the default (POLL) engine. IRQ registers its
      * EV/ER ISRs and DMA reserves its streams only when that engine is selected
@@ -86,6 +91,11 @@ static int i2c_dev_open(device *self)
 static int i2c_dev_close(device *self)
 {
     i2c *p = (i2c *)self;
+    if (p->open_count > 1) {
+        p->open_count--;
+        return 0;
+    }
+    p->open_count = 0;
     i2c_free_engine(p);          /* unregister ISR (IRQ) / release streams (DMA) */
     i2c_hal_set_peripheral_enable(p->hal, 0);
     pinmux *pm = (pinmux *)device_manager_get("pinmux");

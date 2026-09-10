@@ -78,6 +78,7 @@ struct _i2c {
     dma_req_id_t dma_tx_req;     /* cached from config */
     dma_req_id_t dma_rx_req;     /* cached from config */
     void *eng;                   /* per-engine: i2c_irq_t* / i2c_dma_t* / NULL(POLL) */
+    int open_count;              /* 共享总线引用计数（同 i2c 总线上多从设备） */
 };
 
 device *i2c_create(const void *config);

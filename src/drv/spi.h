@@ -97,6 +97,11 @@ struct _spi {
      * close(). NULL for POLL (zero state); the active variant is selected by
      * parent.mode (spi_irq_t for IRQ, spi_dma_t for DMA). */
     void *eng;
+
+    /* 共享总线引用计数：同一条 SPI 总线上多个从设备（如 BMI088 + PMW3901 共挂
+     * SPI3）各自 open 同一 spi 设备——首次 open 做完整配置，后续 open 仅计数；
+     * close 递减，归零才真正关闭（释放 DMA 流/IRQ/引脚）。 */
+    int open_count;
 };
 
 device *spi_create(const void *config);
