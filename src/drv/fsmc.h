@@ -20,6 +20,10 @@
 #define FSMC_IOCTL_GET_BTR   0x83   /* arg: *mut u32 BTR1 回读 */
 #define FSMC_IOCTL_GET_BWTR  0x84   /* arg: *mut u32 BWTR1 回读 */
 #define FSMC_IOCTL_BANK1_ENABLE 0x85 /* arg: none — BCR1.MBKEN=1（窗口可用） */
+#define FSMC_IOCTL_BANK2_ENABLE  0x86 /* arg: none — BCR2.MBKEN=1（Bank2 窗口；LCD 留 Bank1） */
+#define FSMC_IOCTL_BANK2_WRITE32 0x87 /* arg: *const fsmc_win32_t — Bank2 32 位窗口写 */
+#define FSMC_IOCTL_BANK2_READ32  0x88 /* arg: *mut fsmc_win32_t — Bank2 32 位窗口读 */
+
 
 /* BCR 位（F407 FSMC_BCR1，CMSIS 宏同义） */
 #define FSMC_BCR_MBKEN  0x00000001UL   /* memory bank enable */
@@ -37,6 +41,12 @@ struct _fsmc {
 
 device *fsmc_create(const void *config);
 void fsmc_destroy(fsmc *self);
+
+/* Bank2 窗口 32 位访问描述符 */
+typedef struct {
+    uint32_t off;      /* 窗口内偏移（< 0x10000） */
+    uint32_t value;    /* 读回/写入值 */
+} fsmc_win32_t;
 
 /* Driver-specific board config — defined HERE, filled by the board. */
 typedef struct {

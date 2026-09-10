@@ -35,6 +35,9 @@ uint32_t fsmc_hal_get_bwtr(fsmc_hal_handle_t *h, int bank);
 
 /* Bank1 片选使能：BCR1.MBKEN=1（窗口映射生效，后续窗口读写可用）。 */
 void fsmc_hal_bank1_enable(fsmc_hal_handle_t *h);
+void fsmc_hal_bank2_enable(fsmc_hal_handle_t *h);
+int fsmc_hal_bank2_read32(fsmc_hal_handle_t *h, uint32_t off, uint32_t *v);
+int fsmc_hal_bank2_write32(fsmc_hal_handle_t *h, uint32_t off, uint32_t v);
 int  fsmc_hal_bank1_enabled(fsmc_hal_handle_t *h);
 
 /* Bank1 片选窗口（0x60000000）32 位读写。off 为窗口内偏移。 */

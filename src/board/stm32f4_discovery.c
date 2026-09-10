@@ -37,6 +37,7 @@
 #include "drv/dshot.h"
 #include "drv/pmw3901.h"
 #include "drv/vl53l1x.h"
+#include "drv/lcd_st7789.h"
 #include "drv/sdio.h"
 #include "drv/sd_card.h"
 #include "drv/dac.h"
@@ -205,6 +206,8 @@ static const gpio_config_t g_pmw3901_cs = { "pmw3901_cs", "GPIOE_11", 1 };
 static const pmw3901_config_t g_pmw3901 = { "pmw3901", "spi2", "pmw3901_cs" };
 /* VL53L1X ToF 激光测距：I2C 0x29 挂 i2c0（I2C1，PB6/7）总线 */
 static const vl53l1x_config_t g_vl53l1x = { "vl53l1x", "i2c0" };
+/* ST7789 LCD：FSMC Bank1 NE1 8080 并行接口（A16 接 RS；模拟器 vperiph/fsmc） */
+static const lcd_st7789_config_t g_lcd0 = { "lcd0", "fsmc0" };
 static const clock_config_t g_clk  = { "clk" };
 static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must precede temp0 */
 static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
@@ -491,6 +494,7 @@ static const board_node_t g_nodes[] = {
     { dma_create,         &g_dma1 },
     { dma_create,         &g_dma2 },
     { fsmc_create,        &g_fsmc0 },
+    { lcd_st7789_create,  &g_lcd0 },
 };
 
 /* generic dispatcher — forwards ONLY the config pointer, no switch */

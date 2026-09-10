@@ -7,6 +7,7 @@
 #define FSMC_BANK1E_REG ((FSMC_Bank1E_TypeDef *)(FSMC_R_BASE + 0x104UL))
 /* Bank1 片选窗口映射基址（真机外部存储器总线；模拟器 64KB 后备缓冲）。 */
 #define FSMC_BANK1_WIN  0x60000000UL
+#define FSMC_BANK2_WIN  0x64000000UL
 
 struct fsmc_hal_handle {
     FSMC_Bank1_TypeDef *b1;
@@ -74,6 +75,30 @@ int fsmc_hal_bank1_enabled(fsmc_hal_handle_t *h)
 {
     if (!h) return 0;
     return (h->b1->BTCR[0] & FSMC_BCR1_MBKEN) != 0;
+}
+
+void fsmc_hal_bank2_enable(fsmc_hal_handle_t *h)
+{
+    if (!h) return;
+    h->b1->BTCR[2] |= FSMC_BCR1_MBKEN;   /* BCR2 @BTCR[2] */
+}
+
+int fsmc_hal_bank2_read32(fsmc_hal_handle_t *h, uint32_t off, uint32_t *v)
+{
+    if (!h || !v || off >= 0x10000UL) return -1;
+    if (!(h->b1->BTCR[2] & FSMC_BCR1_MBKEN)) return -2;
+    volatile uint32_t *p = (volatile uint32_t *)(FSMC_BANK2_WIN + off);
+    *v = *p;
+    return 0;
+}
+
+int fsmc_hal_bank2_write32(fsmc_hal_handle_t *h, uint32_t off, uint32_t v)
+{
+    if (!h || off >= 0x10000UL) return -1;
+    if (!(h->b1->BTCR[2] & FSMC_BCR1_MBKEN)) return -2;
+    volatile uint32_t *p = (volatile uint32_t *)(FSMC_BANK2_WIN + off);
+    *p = v;
+    return 0;
 }
 
 int fsmc_hal_bank1_read32(fsmc_hal_handle_t *h, uint32_t off, uint32_t *v)

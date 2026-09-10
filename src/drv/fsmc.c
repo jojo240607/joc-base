@@ -121,6 +121,19 @@ static int fsmc_dev_ioctl(device *self, int cmd, void *arg)
     case FSMC_IOCTL_BANK1_ENABLE:
         fsmc_hal_bank1_enable(p->hal);
         return 0;
+    case FSMC_IOCTL_BANK2_ENABLE:
+        fsmc_hal_bank2_enable(p->hal);
+        return 0;
+    case FSMC_IOCTL_BANK2_WRITE32: {
+        if (!arg) return -1;
+        const fsmc_win32_t *w = (const fsmc_win32_t *)arg;
+        return fsmc_hal_bank2_write32(p->hal, w->off, w->value);
+    }
+    case FSMC_IOCTL_BANK2_READ32: {
+        if (!arg) return -1;
+        fsmc_win32_t *w = (fsmc_win32_t *)arg;
+        return fsmc_hal_bank2_read32(p->hal, w->off, &w->value);
+    }
     default:
         return -1;
     }
