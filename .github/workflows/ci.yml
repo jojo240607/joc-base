@@ -1,0 +1,11 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 arm-none-eabi 工具链
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+      - name: MCU_SIM 构建
+        run: cmake -S . -B build -DMCU_SIM=ON -DRTOS_SELFTEST=OFF && cmake --build build
