@@ -534,9 +534,45 @@ void *rtos_pendsv_switch(void *old_sp) {
         }
     }
     task_t *nxt = ready_pick();
-    if (!nxt) nxt = cur;                    /* 无其它就绪：继续当前（idle 保证不会空） */
+    if (!nxt) {
+        /* 【修复】就绪队列为空时的回退不能直接选 cur：cur 可能正处于 SLEEPING/
+         * BLOCKED，此时对其执行 ready_remove 会按睡眠/等待链表的 sched_next/prev
+         * 指针做摘除，把睡眠链表节点写进就绪链表头、并把睡眠任务从链表摘除
+         * （mcu_simulater x_fault_injection::midrun_nack_isolates_slave 复现：
+         * main 睡眠中被回退摘除 → 全部睡眠任务丢失 → control/sensors 冻结 +
+         * PendSV 风暴 + 无主机 USB 洪泛；真机无 host 时同样触发）。
+         * 对策：
+         *  1) 失步修复——把 state==READY 却不在任何链表上的任务（idle 偶发失步）
+         *     补回就绪队列（就绪链表维护任务即应持成员资格；补回是安全且必要的）；
+         *  2) 仍空才回退 cur，且绝不 ready_remove 睡眠/阻塞中的 cur：对其所在链表
+         *     做正规摘除再续跑，维持调度器不变量（下次 sleep_add/阻塞不会双挂）。
+         * 由于 syscall 的状态写入与链表挂接均在同一 BASEPRI 临界区内完成，PendSV
+         * 不可能插到中间态，此处 cur->state==SLEEPING 必已挂睡眠链表、
+         * BLOCKED 且 wait_obj 必已挂等待队列，可安全摘除。 */
+        for (int i = 0; i < g_task_count; i++) {
+            task_t *t = &g_task_pool[i];
+            if (t && t != cur && t->state == TASK_READY
+                && t->sched_next == (task_t *)0 && t->sched_prev == (task_t *)0) {
+                ready_add(t);   /* 修复 READY-但不在队列 的失步（idle 等） */
+            }
+        }
+        nxt = ready_pick();
+        if (!nxt) nxt = cur;
+    }
     if (nxt) {
-        ready_remove(nxt);
+        if (nxt != cur) {
+            ready_remove(nxt);
+        } else if (cur && cur->state == TASK_READY) {
+            ready_remove(cur);   /* yield/时间片竞态残留：cur 确在就绪队列，正常摘除 */
+        } else if (cur) {
+            /* 回退到睡眠/阻塞中的 cur：正规摘除其链表成员资格再续跑（见上注释）。 */
+            if (cur->state == TASK_SLEEPING) {
+                sleep_remove(cur);
+            } else if (cur->state == TASK_BLOCKED && cur->wait_obj) {
+                rtos_waitq_remove(cur->wait_obj, cur);
+                cur->wait_obj = (void *)0;
+            }
+        }
         nxt->state = TASK_RUNNING;
         g_running = nxt;
         /* 硬实时：新建首次运行的任务 release_tick 仍为 0，以当前 tick 为释放基准，
