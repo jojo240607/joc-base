@@ -226,8 +226,10 @@ static int i2c_dma_xfer(i2c *p, uint16_t addr, const uint8_t *tx, uint8_t *rx, u
         (void)i2c_hal_read_sr2(p->hal);   /* clear ADDR */
         e->dma_dev->fun->config(e->dma_dev, e->dma_tx, dr, (void *)tx, len,
                                 DMA_DATA_8, 0 /*PINC*/, 1 /*MINC*/, DMA_PRIO_MED);
-        i2c_hal_dma_enable(p->hal, 1);
+        /* 先 arm 流（SxCR.EN=1）再使能 I2C DMAEN：DMA 请求在 DMAEN 置位时即发布，
+         * 若流未 EN 请求会被丢弃（模拟器同步分发；真机无此问题但顺序更规范）。 */
         e->dma_dev->fun->start(e->dma_dev, e->dma_tx, NULL, NULL);
+        i2c_hal_dma_enable(p->hal, 1);
         int rc = e->dma_dev->fun->wait_done(e->dma_dev, e->dma_tx, 2000);
         /* Wait for the last byte to finish shifting out before STOP. */
         i2c_hal_wait_btf(p->hal, 200000U);
@@ -248,8 +250,9 @@ static int i2c_dma_xfer(i2c *p, uint16_t addr, const uint8_t *tx, uint8_t *rx, u
     (void)i2c_hal_read_sr2(p->hal);     /* clear ADDR */
     e->dma_dev->fun->config(e->dma_dev, e->dma_rx, dr, rx, len,
                             DMA_DATA_8, 0 /*PINC*/, 1 /*MINC*/, DMA_PRIO_MED);
-    i2c_hal_dma_enable(p->hal, 1);
+    /* 同上：先 arm 流再使能 I2C DMAEN（DMA 请求发布时流必须已 EN）。 */
     e->dma_dev->fun->start(e->dma_dev, e->dma_rx, NULL, NULL);
+    i2c_hal_dma_enable(p->hal, 1);
     int rc = e->dma_dev->fun->wait_done(e->dma_dev, e->dma_rx, 2000);
     i2c_hal_set_stop(p->hal);           /* ensure STOP (len>1 case) */
     i2c_hal_dma_enable(p->hal, 0);
