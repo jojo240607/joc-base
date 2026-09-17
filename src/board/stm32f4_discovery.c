@@ -243,10 +243,12 @@ static const pwm_config_t g_pwm0 = { "pwm0", (void *)TIM3, 84000000, 400, 1,
  * 冲突被 pinmux 拒绝，故改到 PA15。 */
 static const pwm_config_t g_pwm1 = { "pwm1", (void *)TIM2, 84000000, 400, 1,
                                       "TIM2_CH1_PA15", NULL, 0, 0, 0, 0 };
-/* pwm2: CH1 of TIM1 (ADVANCED TIM, 168 MHz APB2), 400 Hz INDEPENDENT.
- * Output pin PA8 (AF1)。PA8 亦为 i2c2 SCL，二者不会同时 open。 */
-static const pwm_config_t g_pwm2 = { "pwm2", (void *)TIM1, 168000000, 400, 1,
-                                      "TIM1_CH1_PA8", NULL, 0, 0, 0, 0 };
+/* pwm2: CH2 of TIM5 (GP TIM, 84 MHz APB1), 400 Hz INDEPENDENT.
+ * Output pin PA1 (AF2)。PA1 全板空闲；原 TIM1_CH1_PA8 与 i2c2(I2C3) 的 SCL
+ * (PA8) 引脚冲突——飞控 app 同时 open 4 路 ESC PWM 与 baro/mag 总线，
+ * 故 pwm2 改挂 TIM5_CH2_PA1，把 PA8 让给 I2C3。 */
+static const pwm_config_t g_pwm2 = { "pwm2", (void *)TIM5, 84000000, 400, 2,
+                                      "TIM5_CH2_PA1", NULL, 0, 0, 0, 0 };
 /* pwm3: CH1 of TIM4 (GP TIM, 84 MHz APB1), 400 Hz INDEPENDENT.
  * Output pin PD12 (AF2)。注意避开 PB6（i2c0 SCL）与 PB7。 */
 static const pwm_config_t g_pwm3 = { "pwm3", (void *)TIM4, 84000000, 400, 1,
