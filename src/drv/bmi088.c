@@ -95,6 +95,10 @@ static int bmi088_dev_open(device *self)
     bmi088 *b = (bmi088 *)self;
     /* 依赖在 create 时已解析并拉起；open 幂等返回 0 */
     if (!b->spi || !b->accel_cs || !b->gyro_cs) return -1;
+    /* [SPI DMA] 总线切 STREAM_MODE_DMA：SPI 事务经 DMA 引擎搬运（SET_MODE 内部
+     * 补 acquire——DMA 控制器晚于 spi 注册；流被占用/未配置则回退 POLL，不阻塞启动）。 */
+    uint32_t dma_mode = STREAM_MODE_DMA;
+    b->spi->vtable->ioctl(b->spi, STREAM_IOCTL_SET_MODE, &dma_mode);
     return 0;
 }
 

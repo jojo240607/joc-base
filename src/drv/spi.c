@@ -231,10 +231,15 @@ static int spi_dma_xfer(spi *p, const uint8_t *tx, uint8_t *rx, uint16_t len)
                             DMA_DATA_8, 0, tx_inc, DMA_PRIO_MED);
     p->dma_dev->fun->config(p->dma_dev, p->dma_rx, dr, rx_dst, len,
                             DMA_DATA_8, 0, rx_inc, DMA_PRIO_MED);
-    spi_hal_enable_rx_dma(p->hal);
-    spi_hal_enable_tx_dma(p->hal);
+    /* 先 arm 流（SxCR.EN=1）再使能 SPI DMAEN：DMA 请求在 DMAEN 置位时即发布，
+     * 若流未 EN 请求会被丢弃（模拟器同步分发；真机无此问题但顺序更规范，
+     * 与 i2c.c 的 i2c_dma_xfer 一致）。RXDMAEN 先写（RXDMAEN+RXNE 才发请求，
+     * 此时 RXNE 未置位无请求），TXDMAEN 写时 TXE 已置位 → 发布 TX 请求，
+     * 流已 EN 才会被模拟器接受。 */
     p->dma_dev->fun->start(p->dma_dev, p->dma_rx, NULL, NULL);
     p->dma_dev->fun->start(p->dma_dev, p->dma_tx, NULL, NULL);
+    spi_hal_enable_rx_dma(p->hal);
+    spi_hal_enable_tx_dma(p->hal);
     int rc = p->dma_dev->fun->wait_done(p->dma_dev, p->dma_tx, 2000);
     if (rc == 0) rc = p->dma_dev->fun->wait_done(p->dma_dev, p->dma_rx, 2000);
     spi_hal_disable_tx_dma(p->hal);
@@ -436,6 +441,11 @@ static int spi_dev_ioctl(device *self, int cmd, void *arg)
     case STREAM_IOCTL_SET_MODE: {
         if (!arg) return -1;
         stream_xfer_mode_t m = *(const stream_xfer_mode_t *)arg;
+        /* DMA 流在 open() 时已尝试 acquire，但 DMA 控制器可能晚于本设备注册
+         * （设备表顺序），open 时 acquire 静默失败 → 这里补一次 acquire。
+         * 仍失败（流被占用/未配置）则 spi_setup_engine 返回 -1，保持原模式。 */
+        if (m == STREAM_MODE_DMA && (!p->dma_tx || !p->dma_rx))
+            spi_dma_acquire(p);
         /* (re)build per-engine state for the new engine (frees the old, allocates
          * the new, selects the RX producer). Returns -1 (leaving the spi in its
          * previous configuration) if the engine is unavailable. */

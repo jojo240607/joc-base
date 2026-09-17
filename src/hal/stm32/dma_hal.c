@@ -203,13 +203,16 @@ dma_route_t dma_hal_route(dma_req_id_t req)
      * SPI/I2S request lines are wired to CHANNEL 0 (NOT 3 — that is SPI1's
      * DMA2 channel, a common copy-paste error). Streams are per RM0090
      * Table 30/31: SPI2=I2S2 -> TX DMA1_Stream4 / RX DMA1_Stream3;
-     * SPI3=I2S3 -> TX DMA1_Stream5 / RX DMA1_Stream2. */
+     * SPI3=I2S3 -> TX DMA1_Stream5/Stream7、RX DMA1_Stream2/Stream0。
+     * 注意：SPI3 的默认流（TX S5 / RX S2）在飞控应用里与 USART2_RX(S5)、
+     * I2C3_RX(S2) 冲突，故取备用流 TX S7_CH0 / RX S0_CH0（与模拟器 SpiDma
+     * 路由一致，见 mcu_simulater machine 装配）。 */
     case DMA_REQ_SPI1_TX:   return (dma_route_t){ "dma2", 3, 3 };
     case DMA_REQ_SPI1_RX:   return (dma_route_t){ "dma2", 2, 3 };
     case DMA_REQ_SPI2_TX:   return (dma_route_t){ "dma1", 4, 0 };   /* I2S2 TX */
     case DMA_REQ_SPI2_RX:   return (dma_route_t){ "dma1", 3, 0 };   /* I2S2 RX */
-    case DMA_REQ_SPI3_TX:   return (dma_route_t){ "dma1", 5, 0 };   /* I2S3 TX */
-    case DMA_REQ_SPI3_RX:   return (dma_route_t){ "dma1", 2, 0 };   /* I2S3 RX */
+    case DMA_REQ_SPI3_TX:   return (dma_route_t){ "dma1", 7, 0 };   /* I2S3 TX（备用流） */
+    case DMA_REQ_SPI3_RX:   return (dma_route_t){ "dma1", 0, 0 };   /* I2S3 RX（备用流） */
     /* ---- ADC (DMA channel 0 on DMA2) ---- */
     case DMA_REQ_ADC1:      return (dma_route_t){ "dma2", 0, 0 };
     case DMA_REQ_ADC2:      return (dma_route_t){ "dma2", 2, 1 };
