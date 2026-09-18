@@ -28,7 +28,7 @@ logger *app_log(void)
          * sink). set_sink clears any existing sinks and keeps only this one. */
         g_log.fun->set_sink(&g_log, uart_log_sink, NULL);
         /* Show debug-and-below so USB diagnostics (LOG_DEBUG) are emitted. */
-        g_log.fun->set_level(&g_log, LOG_DEBUG);
+        g_log.fun->set_level(&g_log, LOG_INFO);
         g_log_ready = 1;
     }
     return &g_log;
