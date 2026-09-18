@@ -18,7 +18,7 @@
 #include <stddef.h>
 
 /* 契约版本：任何结构体字段/签名变更都必须 +1；Rust 侧 build.rs 比对，不符则失败。 */
-#define RTOS_ABI_VERSION 1
+#define RTOS_ABI_VERSION 2
 
 /* ---- 优先级常量（来自 rtos.h / rtos_config.h 的公开档位） ---- */
 #define RTOS_PRIO_BH_HIGH 4    /* 硬实时任务上限：prio <= 此值才允许 rt_class=RTOS_RT_HARD */
@@ -59,6 +59,10 @@ uint32_t rtos_tick_count(void);
 
 /* 高精度周期计数（DWT CYCCNT @HCLK，不受 BASEPRI 影响），供飞控测延迟/相位补偿。 */
 uint32_t rtos_cycle_now(void);
+
+/* 绝对延时（FreeRTOS vTaskDelayUntil 语义）：睡到 *last+inc_ticks 时刻并推进 *last，
+ * 周期不随任务执行时间/被抢占时间漂移。已超期则不睡、重同步到当前时刻。 */
+void rtos_delay_until(uint32_t *last, uint32_t inc_ticks);
 
 /* ===========================================================================
  * IPC 原语（信号量 / 互斥量 / 消息队列 / 事件标志）

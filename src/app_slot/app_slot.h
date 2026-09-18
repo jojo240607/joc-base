@@ -33,7 +33,7 @@ typedef struct app_irq_reg {
 
 #define APP_SLOT_MAGIC    0x41505053u   /* "APPS" */
 #define APP_IRQ_REG_MAX   8             /* 轻量版：App 最多注册 8 个 ISR 回调 */
-#define APP_SLOT_VERSION  1   /* MUST match tools/abi/rtos_abi.h RTOS_ABI_VERSION */
+#define APP_SLOT_VERSION  2   /* MUST match tools/abi/rtos_abi.h RTOS_ABI_VERSION */
 
 typedef void (*rtos_task_entry_t)(void *);   /* 镜像 rtos_abi.h；rtos.h 用字面量 */
 
@@ -52,6 +52,7 @@ typedef struct app_slot {
     void (*msleep)(uint32_t ms);
     uint32_t (*tick_count)(void);
     uint32_t (*cycle_now)(void);
+    void (*delay_until)(uint32_t *last, uint32_t inc_ticks);
 
     /* ---- IPC 服务指针 ---- */
     void (*sem_init)(rtos_sem_t *s, uint32_t initial, uint32_t limit);

@@ -21,7 +21,7 @@
  * 头部硬编码值三处必须一致）。此处不 include rtos_abi.h（其 device 结构体
  * 与系统 device.h 重复定义会冲突）；版本号作为单一标量本地定义。
  * 改契约（app_slot_t 字段/签名）时必须同步 +1 本值。 */
-#define RTOS_ABI_VERSION 1
+#define RTOS_ABI_VERSION 2
 
 /* H750 轨 B：扫分区前须先把 QSPI 置为 memory-mapped 模式（0x90000000 可读）。
  * qspi_hal.c 提供强符号（H750 构建）；F103/F407 无 QSPI，走本弱实现 no-op。

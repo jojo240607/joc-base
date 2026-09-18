@@ -161,6 +161,10 @@ int  rtos_timer_is_active(rtos_timer_t *t);
  *           for (;;) { work(); rtos_delay_until(&next, 10); }  // 每 10 tick 一次，无漂移 */
 void rtos_delay_until(uint32_t *last, uint32_t inc_ticks);
 
+/* 绝对时刻睡眠：睡到 g_tick == target_tick。target 已在过去则立即返回。
+ * rtos_delay_until 的底层原语，也可直接用于需要“固定相位”的周期任务。 */
+void rtos_sleep_until_abs(uint32_t target_tick);
+
 /* 无符号 tick 比较辅助（翻转安全，见准则 §2.5）：
  *   rtos_tick_expired(d, now)  : now 已到/过截止点 d（含 d 本身）
  *   rtos_tick_elapsed(s, now)  : 从 s 到 now 流逝的 tick 数（翻转安全） */

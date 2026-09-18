@@ -472,17 +472,65 @@ void rtos_msleep(uint32_t ms) {
  * *last + inc_ticks。用无符号 tick 算术计算剩余 tick（翻转安全），再经相对倒计时
  * rtos_msleep 睡眠——相对倒计时本身亦翻转安全。典型用法：循环里把 next 累加 inc_ticks
  * 得稳定节拍，无累积漂移；48 天(0xFFFFFFFF→0)翻转后 remain 计算仍正确。 */
+/* 绝对时刻睡眠：睡到 g_tick == target_tick（vTaskDelayUntil 语义的底层原语）。
+ *
+ * 与 rtos_msleep 的唯一区别：delay_ticks 按【目标时刻 − 当前时刻】计算，而不是
+ * 固定相对量。任务被抢占、或本轮执行时间波动，都不会让唤醒时刻漂移——tick ISR
+ * 在目标时刻把它 ready_add，这是最精确的周期唤醒路径（不经 daemon 中转）。
+ *
+ * 已过期（target 已在过去）则立即返回，由调用方重同步基准；绝不用无符号减法
+ * 去睡（下溢会变成 ~43 亿 tick 的长眠）。 */
+/* 底层睡眠原语：按【相对 tick 数】睡眠，不做任何时间换算、不读 g_tick。
+ * 与 rtos_msleep 同一语义（delay_ticks 前置递减到 0 由 tick ISR 置就绪）。
+ * 关键：由调用方用【同一次读到的 now】算好 ticks 传入，避免二次读 g_tick
+ * 导致 remain 偏小、任务早醒、下一轮周期抖动（实测二次读 227Hz vs 单次读更高）。 */
+static void sleep_ticks_raw(uint32_t ticks) {
+    unsigned st = rtos_crit_enter();
+    RTOS_SCHED_ASSERT(g_running->state == TASK_RUNNING
+                      || g_running->state == TASK_READY);
+    if (g_running->state == TASK_READY) ready_remove(g_running);
+    g_running->state = TASK_SLEEPING;
+    g_running->delay_ticks = ticks;
+    sleep_add(g_running);
+    rtos_crit_exit(st);
+    rtos_schedule_request();
+}
+
+void rtos_sleep_until_abs(uint32_t target_tick) {
+    if (!g_rtos_started) return;
+    uint32_t now = g_tick;
+    int32_t  remain = (int32_t)(target_tick - now);
+    if (remain <= 0) return;
+    if (rtos_need_svc()) {
+        /* 非特权任务：复用 msleep 的 SVC 通道（语义退化为相对量，仅影响
+         * 非特权调用方；飞控关键任务均为特权 priv=1）。 */
+        uint32_t ms = ((uint32_t)remain * 1000U + (RTOS_TICK_HZ - 1U)) / RTOS_TICK_HZ;
+        if (ms == 0) ms = 1;
+        rtos_msleep(ms);
+        return;
+    }
+    sleep_ticks_raw((uint32_t)remain);
+}
+
 void rtos_delay_until(uint32_t *last, uint32_t inc_ticks) {
     if (!g_rtos_started) return;
     if (!last) return;
     uint32_t now  = g_tick;
     uint32_t next = (uint32_t)(*last + inc_ticks);   /* 翻转安全加法 */
+    /* 已超期（被抢占或本轮执行超过一个周期）：重同步基准到当前时刻并【立即
+     * 返回，不睡】——这与已验证 249Hz 的应用层写法完全一致（`else { next = now; }`）。
+     * 教训：曾在此多睡 1 tick「防霸占 CPU」，实测把周期从 4ms 撑到 5ms
+     * （249Hz → 196Hz）。不睡也不会霸占：下一轮会重新按格点算 remain 再睡。 */
+    if ((int32_t)(next - now) <= 0) {
+        *last = now;
+        return;
+    }
     *last = next;
-    uint32_t remain = (uint32_t)(next - now);        /* 翻转安全剩余 tick */
-    if (remain == 0) return;
-    uint32_t ms = (remain * 1000U + (RTOS_TICK_HZ - 1U)) / RTOS_TICK_HZ;
-    if (ms == 0) ms = 1;
-    rtos_msleep(ms);
+    if (rtos_need_svc()) {
+        rtos_sleep_until_abs(next);   /* 非特权：走上面的 SVC 退化路径 */
+        return;
+    }
+    sleep_ticks_raw((uint32_t)(next - now));   /* 用同一次 now，不二次读 g_tick */
 }
 
 /* 抢占点（docs/rtos-design.md §3）：仅当存在更高（或同优先级 FIFO 中更靠前）

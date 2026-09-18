@@ -57,6 +57,7 @@ void app_slot_init(void) {
     g_app_slot.msleep         = rtos_msleep;
     g_app_slot.tick_count     = rtos_tick_count;
     g_app_slot.cycle_now      = rtos_cycle_now;
+    g_app_slot.delay_until    = rtos_delay_until;
 
     /* IPC 服务 */
     g_app_slot.sem_init   = rtos_sem_init;
