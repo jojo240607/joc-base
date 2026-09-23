@@ -214,7 +214,11 @@ static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
                                      DMA_REQ_TIM2_UP }; /* TIM2_UP -> DMA1_Stream7 CH3 */
 static const timer_config_t g_timer1 = { "timer1", (void *)TIM1,  168000000, 20 }; /* TIM1,  APB2 168MHz, 20Hz, IRQ25(TIM1_UP) */
 static const timer_config_t g_timer2 = { "timer2", (void *)TIM6,  84000000, 20 }; /* TIM6,  APB1 84MHz, 20Hz, IRQ54 */
-static const timer_config_t g_timer3 = { "timer3", (void *)TIM7,  84000000, 20 }; /* TIM7,  APB1 84MHz, 20Hz, IRQ55 */
+/* ★timer3 = TIM7（basic timer，无 CC 通道，不与 PWM 争用）改为 **250Hz** ⇒
+ * 周期 = 4.000ms 精确（84MHz 时钟域，不受 1ms 系统 tick 网格限制 ✓）。
+ * 用途：飞控控制任务的精确节拍源（见 flyctrl/docs/c1-migration-plan.md §5.91–5.94，
+ * 对齐 PX4 `hrt_call_every`）。App 侧经 dev_get("timer3") + dev_ioctl(ENABLE) 使用。 */
+static const timer_config_t g_timer3 = { "timer3", (void *)TIM7,  84000000, 250 }; /* TIM7,  APB1 84MHz, 250Hz(4.000ms), IRQ55 */
 static const timer_config_t g_timer4 = { "timer4", (void *)TIM8,  168000000, 20 }; /* TIM8,  APB2 168MHz, 20Hz, IRQ44(TIM8_UP) */
 static const timer_config_t g_timer5 = { "timer5", (void *)TIM9,  168000000, 20 }; /* TIM9,  APB2 168MHz, 20Hz, IRQ24 */
 static const timer_config_t g_timer6 = { "timer6", (void *)TIM11, 168000000, 20 }; /* TIM11, APB2 168MHz, 20Hz, IRQ26 */
