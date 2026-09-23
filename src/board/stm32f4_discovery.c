@@ -220,7 +220,10 @@ static const timer_config_t g_timer2 = { "timer2", (void *)TIM6,  84000000, 20 }
  * 对齐 PX4 `hrt_call_every`）。App 侧经 dev_get("timer3") + dev_ioctl(ENABLE) 使用。 */
 static const timer_config_t g_timer3 = { "timer3", (void *)TIM7,  84000000, 250 }; /* TIM7,  APB1 84MHz, 250Hz(4.000ms), IRQ55 */
 static const timer_config_t g_timer4 = { "timer4", (void *)TIM8,  168000000, 20 }; /* TIM8,  APB2 168MHz, 20Hz, IRQ44(TIM8_UP) */
-static const timer_config_t g_timer5 = { "timer5", (void *)TIM9,  168000000, 20 }; /* TIM9,  APB2 168MHz, 20Hz, IRQ24 */
+/* ★timer5 = TIM9 改为 **500Hz**（= 2.000ms 精确；168MHz APB2 时钟域 ✓）。
+ * 用途：传感器任务（500Hz 采样）的精确节拍源，与控制系统（timer3 @250Hz）同型，
+ * 见 flyctrl/docs/c1-migration-plan.md §5.97。App 侧 dev_get("timer5") + ioctl(ENABLE)。 */
+static const timer_config_t g_timer5 = { "timer5", (void *)TIM9,  168000000, 500 }; /* TIM9,  APB2 168MHz, 500Hz(2.000ms), IRQ24 */
 static const timer_config_t g_timer6 = { "timer6", (void *)TIM11, 168000000, 20 }; /* TIM11, APB2 168MHz, 20Hz, IRQ26 */
 static const timer_config_t g_timer7 = { "timer7", (void *)TIM12, 84000000, 20 }; /* TIM12, APB1 84MHz, 20Hz, IRQ43 */
 static const timer_config_t g_timer8 = { "timer8", (void *)TIM14, 84000000, 20 }; /* TIM14, APB1 84MHz, 20Hz, IRQ45 */
