@@ -188,7 +188,12 @@ dma_route_t dma_hal_route(dma_req_id_t req)
     /* ---- USART / UART (DMA channel 4) ---- */
     case DMA_REQ_USART1_TX: return (dma_route_t){ "dma2", 7, 4 };
     case DMA_REQ_USART1_RX: return (dma_route_t){ "dma2", 5, 4 };
-    case DMA_REQ_USART2_TX: return (dma_route_t){ "dma1", 6, 4 };
+    case DMA_REQ_USART2_TX: return (dma_route_t){ "dma1", 7, 4 };
+    /* ★§5.136：USART2_TX 默认 DMA1_Stream6(CH4)，与 I2C1_TX(Stream6_CH1) **硬冲突**。
+     *   两外设都要用时改走 RM0090 表 30 的第二条硬件流：USART2_TX 亦可用
+     *   DMA1_Stream7_CH4（Stream7 仅 I2C2_TX/USART2_TX/SPI3_TX/UART5_TX 共享；
+     *   本飞控 I2C2 未使用 ✓、UART5 未使用 ✓、SPI3_TX 已用 Stream5 ✓ ⇒ 独占 ✓）。
+     *   使能“气压计与磁力计分挂 I2C1/I2C3 各自 DMA”而不牺牲 GPS 的 DMA TX ✓ */
     case DMA_REQ_USART2_RX: return (dma_route_t){ "dma1", 5, 4 };
     case DMA_REQ_USART3_TX: return (dma_route_t){ "dma1", 3, 4 };
     case DMA_REQ_USART3_RX: return (dma_route_t){ "dma1", 1, 4 };

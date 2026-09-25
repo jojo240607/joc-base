@@ -315,7 +315,8 @@ static const spi_config_t g_spi1 = { "spi1", (void *)SPI2, 42000000, 1000000,
                                      DMA_REQ_SPI2_RX };    /* RX -> DMA1_Stream3 CH0 */
 /* SPI master demo: spi2 is SPI3 on PB3(SCK)/PB4(MISO)/PB5(MOSI), ~1 MHz SCK.
  * PB3/4/5 在 Discovery 上空闲（JTAG 默认已禁用，仅 SWD 用 PA13/14），AF6。
- * TX->DMA1_Stream5 CH0，RX->DMA1_Stream2 CH0。 */
+ * 实际路由见 dma_hal.c：TX->DMA1_Stream7 CH0，RX->DMA1_Stream0 CH0（备用流；
+ * 默认流 S5/S2 与 USART2_RX(S5)/I2C3_RX(S2) 冲突）。★§5.136 更正过时注释。 */
 static const spi_config_t g_spi2 = { "spi2", (void *)SPI3, 42000000, 1000000,
                                      "SPI3_SCK_PB3", "SPI3_MISO_PB4",
                                      "SPI3_MOSI_PB5",
