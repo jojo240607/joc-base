@@ -202,8 +202,30 @@ void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, s
      * 故留到首次 `workq_add_periodic`（任务上下文）时再建 ✓。 */
 }
 
-/* ★design.md §5：注册/注销周期 WorkItem（period_cycles=0 ⇒ 注销）。 */
-void rtos_workq_add_periodic(uint8_t q, rtos_work_t *w, uint32_t period_cycles) {
+/* ★design.md §5：**每 ms 的核周期数** —— 开机用 SysTick 实测，不用标称主频常量。
+ *   为何必要：DWT->CYCCNT 速率未必等于标称主频（**实测仿真器 ≈84/µs，而非 168/µs** ✗）
+ *   ⇒ 若用标称常量把 ms 换成 cycles，实际拍率会差 2× ✗（实测 harness 锁相漂移 2×）。 */
+static uint32_t g_cycles_per_ms;
+
+uint32_t rtos_cycles_per_ms(void) {
+    if (g_cycles_per_ms) return g_cycles_per_ms;
+    /* 任务上下文调用（中断开启）⇒ 自旋等 SysTick 推进 1 ms。 */
+    for (int guard = 0; guard < 4 && !g_cycles_per_ms; guard++) {
+        uint32_t t0 = rtos_tick_count();
+        uint32_t c0 = rtos_cycle_now();
+        uint32_t spins = 0;
+        while (rtos_tick_count() == t0 && ++spins < 200000000u) { }
+        uint32_t d = rtos_cycle_now() - c0;
+        if (d > 1000u) g_cycles_per_ms = d;   /* 合理下界（>1 cycle/ms）*/
+    }
+    if (!g_cycles_per_ms) g_cycles_per_ms = 168000u;  /* 兜底：标称（DWT 不可用时）*/
+    return g_cycles_per_ms;
+}
+
+/* ★design.md §5：注册/注销周期 WorkItem。**period_ms = 0 ⇒ 注销**；周期由内核按实测
+ *   速率换算成 cycles ⇒ App 侧不写任何频率常量 ✓（频率只声明一次、单位是人类可读的 ms）。*/
+void rtos_workq_add_periodic(uint8_t q, rtos_work_t *w, uint32_t period_ms) {
+    uint32_t period_cycles = period_ms ? period_ms * rtos_cycles_per_ms() : 0;
     if (q >= RTOS_WORKQ_N || !w || !g_wqs[q].inited) return;
     rtos_workq_t *wq = &g_wqs[q];
     unsigned st = irq_lock();

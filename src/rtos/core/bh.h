@@ -78,7 +78,9 @@ void rtos_work_submit_q(uint8_t q, rtos_work_t *w);
 /* ★design.md §5：把 WorkItem **注册为周期任务**（队列调度器按 period 派发；同一队列内
  * 多周期 item 由 EDF 排序）。period_cycles=0 ⇒ 注销（退回一次性 submit）。
  * 注册后无需任何外部定时器 ⇒ 频率写在工作项上，而不是散落在定时器里 ✓。 */
-void rtos_workq_add_periodic(uint8_t q, rtos_work_t *w, uint32_t period_cycles);
+void rtos_workq_add_periodic(uint8_t q, rtos_work_t *w, uint32_t period_ms);
+/* ★design.md §5：每 ms 的核周期数（开机用 SysTick 实测；DWT 不可用时退回标称 168000）。 */
+uint32_t rtos_cycles_per_ms(void);
 
 void rtos_work_submit(rtos_work_t *w);
 

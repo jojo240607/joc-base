@@ -33,7 +33,7 @@ typedef struct app_irq_reg {
 
 #define APP_SLOT_MAGIC    0x41505053u   /* "APPS" */
 #define APP_IRQ_REG_MAX   8             /* 轻量版：App 最多注册 8 个 ISR 回调 */
-#define APP_SLOT_VERSION  11   /* MUST match tools/abi/rtos_abi.h RTOS_ABI_VERSION */
+#define APP_SLOT_VERSION  12   /* MUST match tools/abi/rtos_abi.h RTOS_ABI_VERSION */
 
 typedef void (*rtos_task_entry_t)(void *);   /* 镜像 rtos_abi.h；rtos.h 用字面量 */
 
@@ -99,7 +99,9 @@ typedef struct app_slot {
     void (*work_submit_q)(uint8_t q, void *w);
     /* ★design.md §5：**周期 WorkItem 注册**（period 由 WorkItem 声明，队列自带调度器按 EDF 派发；
      * period_cycles=0 ⇒ 注销）。位置**必须与 Rust 侧 AbiSlot 一致** ✗（错位会导致该槽读成 None）。 */
-    void (*workq_add_periodic)(uint8_t q, void *w, uint32_t period_cycles);
+    void (*workq_add_periodic)(uint8_t q, void *w, uint32_t period_ms);
+    /* ★design.md §5：内核实测的 cycles/ms（App 用它做预算/耗时换算；勿再硬编码 168000 ✗）。 */
+    uint32_t (*cycles_per_ms)(void);
 
     /* ---- ★design.md P2-3：软件定时器（"定时器→队列桥"）----
      * t 须 App 静态分配 `rtos_timer_t`；cb 在**定时器任务上下文**执行，
