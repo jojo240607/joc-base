@@ -52,6 +52,7 @@ extern void rtos_workq_set_quota(uint8_t q, uint32_t quota_cycles);
 /* bh.h: P2-2f 多队列 */
 extern void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, size_t stack_bytes);
 extern void rtos_work_submit_q(uint8_t q, void *w);
+extern void rtos_workq_add_periodic(uint8_t q, void *w, uint32_t period_cycles);
 /* rtos.h: 软件定时器（P2-3 桥）*/
 static void app_slot_timer_init(void *t, const char *name, void (*cb)(void *, void *), void *arg) {
     rtos_timer_init((rtos_timer_t *)t, name, (rtos_timer_cb_t)cb, arg);
@@ -119,6 +120,7 @@ void app_slot_init(void) {
     /* ★design.md P2-2f：多队列 */
     g_app_slot.workq_create = rtos_workq_create;
     g_app_slot.work_submit_q = rtos_work_submit_q;
+    g_app_slot.workq_add_periodic = rtos_workq_add_periodic;   /* ★design.md §5 */
     /* ★design.md P2-3：定时器→队列桥 */
     g_app_slot.timer_init = app_slot_timer_init;
     g_app_slot.timer_start_ticks = app_slot_timer_start_ticks;

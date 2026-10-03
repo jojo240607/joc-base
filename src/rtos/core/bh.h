@@ -56,6 +56,13 @@ typedef struct work {
     /* ★design.md §8：连续超时 → 降级 */
     uint32_t miss_count;       /* 连续超预算次数（成功一次清零）*/
     uint8_t  degraded;         /* 连续 ≥5 次 ⇒ 1（宿主据此降级/跳过）*/
+    /* ★design.md §5：**周期由 WorkItem 自己声明**，由【队列自带调度器】按 period
+     *   派发（不是一个 item 一个外部硬件定时器 ✗）。同队列内多个不同周期的 item
+     *   由调度器按 EDF 排序派发 ⇒ §5#1「每个 WorkItem 声明预算」+ §5#3「队列内 EDF」。 */
+    uint32_t period_cycles;    /* 0 = 一次性（仅显式 submit）；>0 = 周期任务 */
+    uint32_t next_run_cycles;  /* 内部：下次应运行时刻（cycles，由调度器维护）*/
+    uint8_t  queued;           /* 内部：已入队/运行中 ⇒ **防重复入队**（防链表自环 ✗）*/
+    struct work *pnext;        /* 内部：**周期链**专用（绝不能复用 next —— 它属运行队列 ✗）*/
 } rtos_work_t;
 
 /* ★design.md P2-2：工作队列统计 out3 = [submitted, soft_overrun, hard_overrun]。 */
@@ -68,6 +75,10 @@ void rtos_workq_set_quota(uint8_t q, uint32_t quota_cycles);   /* [submitted, so
 void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, size_t stack_bytes);
 /* 提交到指定队列（ISR 安全）；rtos_work_submit(w) == rtos_work_submit_q(0,w)。 */
 void rtos_work_submit_q(uint8_t q, rtos_work_t *w);
+/* ★design.md §5：把 WorkItem **注册为周期任务**（队列调度器按 period 派发；同一队列内
+ * 多周期 item 由 EDF 排序）。period_cycles=0 ⇒ 注销（退回一次性 submit）。
+ * 注册后无需任何外部定时器 ⇒ 频率写在工作项上，而不是散落在定时器里 ✓。 */
+void rtos_workq_add_periodic(uint8_t q, rtos_work_t *w, uint32_t period_cycles);
 
 void rtos_work_submit(rtos_work_t *w);
 

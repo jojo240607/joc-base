@@ -109,6 +109,10 @@ typedef struct {
     uint8_t      inited;
     uint32_t     quota_cycles;  /* design.md 5#4: bandwidth quota per burst (0=off) */
     uint32_t     used_cycles;
+    /* ★design.md §5：队列**自带调度器** —— period 由 WorkItem 声明，调度器按 EDF 派发。 */
+    rtos_work_t *plist;         /* 已注册的周期 item 链（注册顺序）*/
+    rtos_timer_t sched;         /* 调度 tick（1ms 分辨率）*/
+    uint8_t      sched_inited;
 } rtos_workq_t;
 /* 纯软件，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
 static rtos_workq_t RTOS_CCM_BSS g_wqs[RTOS_WORKQ_N];
@@ -133,6 +137,7 @@ static void rtos_workq_worker(void *arg) {
             if (w) {
                 wq->head = w->next;
                 if (!wq->head) wq->tail = (rtos_work_t *)0;
+                w->queued = 0;   /* ★已出队 ⇒ 允许下次（周期）派发再入队 */
             }
             irq_unlock(st);
             if (!w) { wq->used_cycles = 0; break; }  /* 队列空 ⇒ 突发结束，配额计数清零 */
@@ -164,6 +169,27 @@ static void rtos_workq_worker(void *arg) {
  * 关键约束：绝不能在 ISR 里懒创建——rtos_work_submit 可由上半部(ISR)调用，若在此
  * 首次提交才建任务，rtos_task_create 会在中断上下文执行，破坏调度器（实测会卡死）。
  * 故 wq 在 rtos_start 里提前建好，rtos_work_submit 只做 ISR 安全的入队 + 唤醒。 */
+/* ★design.md §5：队列调度器 tick —— 扫描周期链，把**已到期**的 item 派发进运行队列。
+ * 派发时写 `deadline_cycles = next_run + period`（隐式截止期）⇒ 同队列多周期 item 由
+ * 既有 EDF 插入逻辑排序 ⇒ 周期短者先跑（RMS/EDF 语义 ✓）。 */
+static void rtos_workq_sched_tick(rtos_timer_t *t, void *arg) {
+    (void)t;
+    int q = (int)(intptr_t)arg;
+    if (q < 0 || q >= RTOS_WORKQ_N) return;
+    rtos_workq_t *wq = &g_wqs[q];
+    uint32_t now = rtos_cycle_now();
+    for (rtos_work_t *w = wq->plist; w; w = w->pnext) {  /* ★周期链用 pnext（next 属运行队列）*/
+        if (w->period_cycles == 0) continue;
+        /* 未到期 ⇒ 跳过（注意 cycles 回绕：用有符号差 ✓） */
+        if ((int32_t)(now - w->next_run_cycles) < 0) continue;
+        /* 追平（若调度被延迟，避免"补跑风暴"：只推进到最近的将来 ✓） */
+        do { w->next_run_cycles += w->period_cycles; }
+        while ((int32_t)(now - w->next_run_cycles) >= 0);
+        w->deadline_cycles = w->next_run_cycles;   /* 绝对截止期（= 下次到点时刻）*/
+        rtos_work_submit_q((uint8_t)q, w);
+    }
+}
+
 void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, size_t stack_bytes) {
     if (q >= RTOS_WORKQ_N || g_wqs[q].inited || !stack) return;
     rtos_sem_init(&g_wqs[q].sem, 0, 1);
@@ -171,6 +197,33 @@ void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, s
     g_wqs[q].tail = (rtos_work_t *)0;
     rtos_task_create(name, rtos_workq_worker, (void *)(intptr_t)q, prio, stack, stack_bytes);
     g_wqs[q].inited = 1;
+    /* ★队列自带调度器**惰性创建**：`rtos_workq_create` 在 `rtos_start` 早期（调度器未跑）
+     * 调用，此时建定时器会破坏调度器（实测：App 挂载成功但业务任务永不运行 ✗）。
+     * 故留到首次 `workq_add_periodic`（任务上下文）时再建 ✓。 */
+}
+
+/* ★design.md §5：注册/注销周期 WorkItem（period_cycles=0 ⇒ 注销）。 */
+void rtos_workq_add_periodic(uint8_t q, rtos_work_t *w, uint32_t period_cycles) {
+    if (q >= RTOS_WORKQ_N || !w || !g_wqs[q].inited) return;
+    rtos_workq_t *wq = &g_wqs[q];
+    unsigned st = irq_lock();
+    /* 先从周期链摘除（若已在链上）*/
+    rtos_work_t **pp = &wq->plist;
+    while (*pp && *pp != w) pp = &(*pp)->pnext;
+    if (*pp == w) *pp = w->pnext;
+    w->period_cycles = period_cycles;
+    if (period_cycles) {
+        /* 首次注册 ⇒ 惰性建调度器（任务上下文 ✓）*/
+        if (!wq->sched_inited) {
+            rtos_timer_init(&wq->sched, "wqsched", rtos_workq_sched_tick, (void *)(intptr_t)q);
+            rtos_timer_start_ticks(&wq->sched, RTOS_TIMER_PERIODIC, 1);
+            wq->sched_inited = 1;
+        }
+        w->next_run_cycles = rtos_cycle_now() + period_cycles;  /* 首个周期后运行 */
+        w->pnext = wq->plist;
+        wq->plist = w;
+    }
+    irq_unlock(st);
 }
 
 void rtos_workq_init(void) {
@@ -198,6 +251,9 @@ void rtos_work_submit_q(uint8_t q, rtos_work_t *w) {
     if (q >= RTOS_WORKQ_N || !g_wqs[q].inited) return;   /* 防护：队列未初始化 */
     rtos_workq_t *wq = &g_wqs[q];
     unsigned st = irq_lock();          /* ISR 安全：保护链表头/尾 */
+    /* ★防重复入队：同一 WorkItem 已在队列/正在运行 ⇒ 直接返回，否则链表自环 ✗ */
+    if (w->queued) { irq_unlock(st); return; }
+    w->queued = 1;
     g_wq_submitted++;
     w->next = (rtos_work_t *)0;
     if (w->deadline_cycles) {
