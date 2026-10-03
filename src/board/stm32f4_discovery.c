@@ -213,7 +213,12 @@ static const temp_config_t g_temp0 = { "temp0", "adc0", 3300 };   /* adc0 must p
 static const timer_config_t g_timer0 = { "timer0", (void *)TIM2,  84000000, 20,
                                      DMA_REQ_TIM2_UP }; /* TIM2_UP -> DMA1_Stream7 CH3 */
 static const timer_config_t g_timer1 = { "timer1", (void *)TIM1,  168000000, 20 }; /* TIM1,  APB2 168MHz, 20Hz, IRQ25(TIM1_UP) */
-static const timer_config_t g_timer2 = { "timer2", (void *)TIM6,  84000000, 20 }; /* TIM6,  APB1 84MHz, 20Hz, IRQ54 */
+/* ★timer2 = TIM6（basic timer，专用 IRQ54，与已验证的 timer3/TIM7 同类 ✓）改为 **1000Hz**
+ * ⇒ 周期 = 1.000ms 精确（84MHz APB1 时钟域）。用途：飞控【独立速率环任务】的精确节拍源
+ *（PX4 `mc_rate_control` 跑在陀螺率上 ✓，见 docs/c3-rate-cascade-design.md）。
+ * App 侧经 dev_get("timer2") + dev_ioctl(ENABLE) 使用（同 timer3 路径 ✓）。
+ * 注：DAC 测试固件自行配置 TIM6（不经本设备 ✓）⇒ 改此速率不影响它。 */
+static const timer_config_t g_timer2 = { "timer2", (void *)TIM6,  84000000, 1000 }; /* TIM6,  APB1 84MHz, 1000Hz(1.000ms), IRQ54 */
 /* ★timer3 = TIM7（basic timer，无 CC 通道，不与 PWM 争用）改为 **250Hz** ⇒
  * 周期 = 4.000ms 精确（84MHz 时钟域，不受 1ms 系统 tick 网格限制 ✓）。
  * 用途：飞控控制任务的精确节拍源（见 flyctrl/docs/c1-migration-plan.md §5.91–5.94，
@@ -282,6 +287,9 @@ static const exti_config_t g_btn  = { "btn",   "GPIOA_2", EXTI_EDGE_RISING, 2 };
  * 下半部由共享 wq worker 执行"（不新建专属任务）。用 PA3（EXTI line3 / IRQ9），
  * 与 btn(PA2/line2)、exti0/1/2 的 line 都不冲突；PA3 未被任何驱动占用。 */
 static const exti_config_t g_btn2 = { "btn2",  "GPIOA_3", EXTI_EDGE_RISING, 2 };
+/* ★design.md §3：BMI088 **data-ready INT** —— 仿真器在 GPIOE4 上按 1kHz 产电平事件
+ *（`Event::GpioLevel` → EXTI）；固件在此线上挂 ISR 做采样节拍。line4 → IRQ10（空闲 ✓）。 */
+static const exti_config_t g_exti_imu = { "exti_imu", "GPIOE_4", EXTI_EDGE_RISING, 2 };
 /* I2C master demo: i2c0 is I2C1 on PB6(SCL)/PB7(SDA), 100 kHz. There is no I2C
  * slave on the Discovery board, so this node exists to prove the driver + HAL
  * configure the CORRECT F4 I2C registers and that the polling state machine runs
@@ -478,6 +486,7 @@ static const board_node_t g_nodes[] = {
     { exti_create,        &g_exti2 },
     { exti_create,        &g_btn },
     { exti_create,        &g_btn2 },
+    { exti_create,        &g_exti_imu },
     { i2c_create,         &g_i2c0 },
     { i2c_create,         &g_i2c1 },
     { i2c_create,         &g_i2c2 },

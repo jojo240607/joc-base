@@ -43,6 +43,32 @@ static int app_slot_dev_close(device *self) {
     return self ? self->vtable->close(self) : -1;
 }
 
+/* ★design.md P2-1：共享工作队列提交（bh.h: void rtos_work_submit(rtos_work_t*)）。
+ * 本地声明为 void* 以避免 include bh.h（rtos.h 不含它）；符号名一致、C 无重载 ⇒ 安全 ✓。 */
+extern void rtos_work_submit(void *w);
+/* bh.h: void rtos_workq_stats(uint32_t *out3) */
+extern void rtos_workq_stats(uint32_t *out6);
+extern void rtos_workq_set_quota(uint8_t q, uint32_t quota_cycles);
+/* bh.h: P2-2f 多队列 */
+extern void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, size_t stack_bytes);
+extern void rtos_work_submit_q(uint8_t q, void *w);
+/* rtos.h: 软件定时器（P2-3 桥）*/
+static void app_slot_timer_init(void *t, const char *name, void (*cb)(void *, void *), void *arg) {
+    rtos_timer_init((rtos_timer_t *)t, name, (rtos_timer_cb_t)cb, arg);
+}
+static void app_slot_timer_start_ticks(void *t, int mode, uint32_t period_ticks) {
+    rtos_timer_start_ticks((rtos_timer_t *)t, (rtos_timer_mode_t)mode, period_ticks);
+}
+
+/* ★design.md P0-2：RT 违约计数（可观测性）—— 只读、无副作用、零挂起风险。
+ * out3 = [deadline_violation, wcet_violation, sched_invalid]。 */
+static void app_slot_rt_violation(uint32_t *out3) {
+    if (!out3) return;
+    out3[0] = g_rtos_deadline_violation;
+    out3[1] = g_rtos_wcet_violation;
+    out3[2] = g_rtos_sched_invalid;
+}
+
 /* ===========================================================================
  * app_slot_init：在 app_main 早期、调用 App 入口之前填充 g_app_slot。
  * ========================================================================= */
@@ -81,6 +107,21 @@ void app_slot_init(void) {
     /* 生命周期：由 App 实现并通过 extern 接好（见 task_app_main.c） */
     g_app_slot.app_start = 0;
     g_app_slot.app_stop  = 0;
+
+    /* ★design.md P0-2：违约计数查询（可观测性） */
+    g_app_slot.rt_violation = app_slot_rt_violation;
+
+    /* ★design.md P2-1：共享工作队列提交 */
+    g_app_slot.work_submit = rtos_work_submit;
+    /* ★design.md P2-2：工作队列统计 */
+    g_app_slot.work_stats = rtos_workq_stats;
+    g_app_slot.workq_set_quota = rtos_workq_set_quota;
+    /* ★design.md P2-2f：多队列 */
+    g_app_slot.workq_create = rtos_workq_create;
+    g_app_slot.work_submit_q = rtos_work_submit_q;
+    /* ★design.md P2-3：定时器→队列桥 */
+    g_app_slot.timer_init = app_slot_timer_init;
+    g_app_slot.timer_start_ticks = app_slot_timer_start_ticks;
 }
 
 /* ===========================================================================

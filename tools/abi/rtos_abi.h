@@ -18,7 +18,7 @@
 #include <stddef.h>
 
 /* 契约版本：任何结构体字段/签名变更都必须 +1；Rust 侧 build.rs 比对，不符则失败。 */
-#define RTOS_ABI_VERSION 2
+#define RTOS_ABI_VERSION 10
 
 /* ---- 优先级常量（来自 rtos.h / rtos_config.h 的公开档位） ---- */
 #define RTOS_PRIO_BH_HIGH 4    /* 硬实时任务上限：prio <= 此值才允许 rt_class=RTOS_RT_HARD */

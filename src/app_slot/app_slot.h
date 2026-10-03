@@ -33,7 +33,7 @@ typedef struct app_irq_reg {
 
 #define APP_SLOT_MAGIC    0x41505053u   /* "APPS" */
 #define APP_IRQ_REG_MAX   8             /* 轻量版：App 最多注册 8 个 ISR 回调 */
-#define APP_SLOT_VERSION  2   /* MUST match tools/abi/rtos_abi.h RTOS_ABI_VERSION */
+#define APP_SLOT_VERSION  10   /* MUST match tools/abi/rtos_abi.h RTOS_ABI_VERSION */
 
 typedef void (*rtos_task_entry_t)(void *);   /* 镜像 rtos_abi.h；rtos.h 用字面量 */
 
@@ -79,6 +79,30 @@ typedef struct app_slot {
     /* ---- 生命周期 ---- */
     int  (*app_start)(void);    /* 系统调用：App 入口，返回 0=OK */
     void (*app_stop)(void);     /* 系统调用：App 卸载钩子 */
+
+    /* ---- ★design.md P0-2：RT 违约计数（可观测性）----
+     * out3 = [g_rtos_deadline_violation, g_rtos_wcet_violation, g_rtos_sched_invalid]
+     * 仅置位计数、不停机（零挂起风险）。 */
+    void (*rt_violation)(uint32_t *out3);
+
+    /* ---- ★design.md P2-1：共享工作队列提交（见 bh.h `rtos_work_t`）----
+     * w 须由 App **静态分配**；提交后由共享 worker 任务执行 w->fn(w->arg) ✓。
+     * 用途：把 L2/L3 的周期性工作项提交到队列（而非各自建线程）。 */
+    void (*work_submit)(void *w);
+
+    /* ★design.md P2-2：工作队列统计 out3 = [submitted, soft_overrun, hard_overrun]。 */
+    void (*work_stats)(uint32_t *out6);   /* [submitted,soft,hard,degraded,bw_drop,L2_used_cycles] */
+    void (*workq_set_quota)(uint8_t q, uint32_t quota_cycles);
+
+    /* ★design.md P2-2f：多队列 —— 建队列（各独立 worker/优先级）+ 定向提交。 */
+    void (*workq_create)(uint8_t q, const char *name, uint8_t prio, void *stack, size_t stack_bytes);
+    void (*work_submit_q)(uint8_t q, void *w);
+
+    /* ---- ★design.md P2-3：软件定时器（"定时器→队列桥"）----
+     * t 须 App 静态分配 `rtos_timer_t`；cb 在**定时器任务上下文**执行，
+     * 典型用法：cb 内 `work_submit_q(q, item)` ⇒ 周期队列项 ✓。 */
+    void (*timer_init)(void *t, const char *name, void (*cb)(void *, void *), void *arg);
+    void (*timer_start_ticks)(void *t, int mode, uint32_t period_ticks); /* mode: 0=oneshot 1=periodic */
 } app_slot_t;
 
 /* 系统在固定链接地址定义实例；App 经 extern 引用，不可自行定义。 */

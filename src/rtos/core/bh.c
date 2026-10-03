@@ -94,32 +94,68 @@ void rtos_bh_wait(bh_t *bh) {
  * (B) 工作队列（共享 worker 任务）
  * ========================================================================= */
 #ifndef RTOS_WORKQ_STACK_WORDS
-#define RTOS_WORKQ_STACK_WORDS 256    /* 256 字 = 1 KB 栈（worker 仅出队执行 fn） */
+#define RTOS_WORKQ_STACK_WORDS 256    /* 256 字 = 1 KB 栈/队列（worker 仅出队执行 fn） */
 #endif
-RTOS_TASK_STACK(g_wq_stack, RTOS_WORKQ_STACK_WORDS * 4);
+#ifndef RTOS_WORKQ_N
+#define RTOS_WORKQ_N 3                /* ★design.md P2-2f：多队列（各独立 worker/优先级）*/
+#endif
+#define RTOS_WORKQ_STACK_BYTES (RTOS_WORKQ_STACK_WORDS * 4)
+RTOS_TASK_STACK(g_wq_stack0, RTOS_WORKQ_STACK_BYTES);   /* 默认队列(0)的内核栈；其余队列由 App 提供栈 */
+
+typedef struct {
+    rtos_work_t *head;
+    rtos_work_t *tail;
+    rtos_sem_t   sem;
+    uint8_t      inited;
+    uint32_t     quota_cycles;  /* design.md 5#4: bandwidth quota per burst (0=off) */
+    uint32_t     used_cycles;
+} rtos_workq_t;
 /* 纯软件，不含 DMA 目标缓冲，搬入 CCM(发布版)收缩主 SRAM .bss。 */
-static rtos_work_t *RTOS_CCM_BSS g_wq_head;
-static rtos_work_t *RTOS_CCM_BSS g_wq_tail;
-static rtos_sem_t   RTOS_CCM_BSS g_wq_sem;
-static int          RTOS_CCM_BSS g_wq_inited;
+static rtos_workq_t RTOS_CCM_BSS g_wqs[RTOS_WORKQ_N];
+/* ★design.md P2-2：预算/超时统计（仅计数，零挂起风险）。 */
+static volatile uint32_t g_wq_submitted;
+static volatile uint32_t g_wq_soft_overrun;
+static volatile uint32_t g_wq_hard_overrun;
+static volatile uint32_t g_wq_degraded;   /* design.md 8: degraded items */
+static volatile uint32_t g_wq_bw_drop;    /* design.md 5#4: bandwidth-quota drops */
 
 /* 共享 worker：被唤醒后【排空】整条队列（一次唤醒处理所有已提交工作，
  * 避免“二进制信号量把多次 submit 折叠成一次唤醒、剩余工作饿死”的缺陷）。 */
 static void rtos_workq_worker(void *arg) {
-    (void)arg;
+    int q = (int)(intptr_t)arg;
+    rtos_workq_t *wq = &g_wqs[q];
     for (;;) {
-        rtos_sem_wait(&g_wq_sem);
+        rtos_sem_wait(&wq->sem);
         for (;;) {
             rtos_work_t *w;
             unsigned st = irq_lock();
-            w = g_wq_head;
+            w = wq->head;
             if (w) {
-                g_wq_head = w->next;
-                if (!g_wq_head) g_wq_tail = (rtos_work_t *)0;
+                wq->head = w->next;
+                if (!wq->head) wq->tail = (rtos_work_t *)0;
             }
             irq_unlock(st);
-            if (!w) break;              /* 队列空，回到等待 */
+            if (!w) { wq->used_cycles = 0; break; }  /* 队列空 ⇒ 突发结束，配额计数清零 */
+            /* ★design.md §5#4：带宽隔离 —— 本突发已用超配额 ⇒ 丢弃剩余项，防饿死其他队列 */
+            if (wq->quota_cycles && wq->used_cycles >= wq->quota_cycles) {
+                g_wq_bw_drop++;
+                continue;
+            }
+            /* ★design.md P2-2：实测执行时间，比对 per-item 预算（软/硬超时仅计数）*/
+            uint32_t _t0 = rtos_cycle_now();
             if (w->fn) w->fn(w->arg);
+            {
+                uint32_t _used = (uint32_t)(rtos_cycle_now() - _t0);
+                wq->used_cycles += _used;
+            }
+            if (w->budget_cycles) {
+                uint32_t _dt = (uint32_t)(rtos_cycle_now() - _t0);
+                if (_dt > w->budget_cycles * 3u) { g_wq_hard_overrun++; w->miss_count++; }
+                else if (_dt > w->budget_cycles) { g_wq_soft_overrun++; w->miss_count++; }
+                else { w->miss_count = 0; }
+                /* ★design.md §8：连续 ≥5 次超预算 ⇒ 降级（宿主据此降频/跳过/移出）*/
+                if (w->miss_count >= 5u && !w->degraded) { w->degraded = 1; g_wq_degraded++; }
+            }
         }
     }
 }
@@ -128,25 +164,61 @@ static void rtos_workq_worker(void *arg) {
  * 关键约束：绝不能在 ISR 里懒创建——rtos_work_submit 可由上半部(ISR)调用，若在此
  * 首次提交才建任务，rtos_task_create 会在中断上下文执行，破坏调度器（实测会卡死）。
  * 故 wq 在 rtos_start 里提前建好，rtos_work_submit 只做 ISR 安全的入队 + 唤醒。 */
-void rtos_workq_init(void) {
-    if (g_wq_inited) return;
-    rtos_sem_init(&g_wq_sem, 0, 1);
-    rtos_task_create("wq", rtos_workq_worker, (void *)0, RTOS_PRIO_BH_MED,
-                     g_wq_stack, sizeof(g_wq_stack));
-    g_wq_inited = 1;
+void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, size_t stack_bytes) {
+    if (q >= RTOS_WORKQ_N || g_wqs[q].inited || !stack) return;
+    rtos_sem_init(&g_wqs[q].sem, 0, 1);
+    g_wqs[q].head = (rtos_work_t *)0;
+    g_wqs[q].tail = (rtos_work_t *)0;
+    rtos_task_create(name, rtos_workq_worker, (void *)(intptr_t)q, prio, stack, stack_bytes);
+    g_wqs[q].inited = 1;
 }
 
-void rtos_work_submit(rtos_work_t *w) {
-    if (!w) return;
-    if (!g_wq_inited) return;          /* 防护：wq 未初始化（正常 rtos_start 已建好） */
-    unsigned st = irq_lock();          /* ISR 安全：保护链表头/尾 */
-    w->next = (rtos_work_t *)0;
-    if (g_wq_tail) g_wq_tail->next = w;
-    else g_wq_head = w;
-    g_wq_tail = w;
-    irq_unlock(st);
-    rtos_sem_give(&g_wq_sem);          /* ISR 安全：唤醒 worker */
+void rtos_workq_init(void) {
+    /* 队列 0 = 默认共享队列（内核 1KB 栈 ✓）；队列 1..N-1 由应用提供栈（P2-3）。 */
+    rtos_workq_create(0, "wq", RTOS_PRIO_BH_MED, g_wq_stack0, sizeof(g_wq_stack0));
 }
+
+void rtos_workq_stats(uint32_t *out5) {
+    if (!out5) return;
+    out5[0] = g_wq_submitted;
+    out5[1] = g_wq_soft_overrun;
+    out5[2] = g_wq_hard_overrun;
+    out5[3] = g_wq_degraded;
+    out5[4] = g_wq_bw_drop;    /* design.md 5#4 */
+    out5[5] = (uint32_t)g_wqs[1].used_cycles;  /* design.md 9: L2 队列上突发已用 cycles */
+}
+
+void rtos_workq_set_quota(uint8_t q, uint32_t quota_cycles) {
+    if (q >= RTOS_WORKQ_N) return;
+    g_wqs[q].quota_cycles = quota_cycles;
+}
+
+void rtos_work_submit_q(uint8_t q, rtos_work_t *w) {
+    if (!w) return;
+    if (q >= RTOS_WORKQ_N || !g_wqs[q].inited) return;   /* 防护：队列未初始化 */
+    rtos_workq_t *wq = &g_wqs[q];
+    unsigned st = irq_lock();          /* ISR 安全：保护链表头/尾 */
+    g_wq_submitted++;
+    w->next = (rtos_work_t *)0;
+    if (w->deadline_cycles) {
+        /* ★design.md P2-2：EDF —— 按截止期升序插入（0 截止期项视为最低）*/
+        rtos_work_t **pp = &wq->head;
+        while (*pp && (*pp)->deadline_cycles && (*pp)->deadline_cycles <= w->deadline_cycles) {
+            pp = &(*pp)->next;
+        }
+        w->next = *pp;
+        *pp = w;
+        if (!w->next) wq->tail = w;
+    } else {
+        if (wq->tail) wq->tail->next = w;
+        else wq->head = w;
+        wq->tail = w;
+    }
+    irq_unlock(st);
+    rtos_sem_give(&wq->sem);           /* ISR 安全：唤醒该队列 worker */
+}
+
+void rtos_work_submit(rtos_work_t *w) { rtos_work_submit_q(0, w); }
 
 #if RTOS_SELFTEST
 /* ===========================================================================

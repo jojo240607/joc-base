@@ -50,7 +50,24 @@ typedef struct work {
     struct work *next;
     void (*fn)(void *);
     void *arg;
+    /* ★design.md P2-2：per-item 预算/截止期（cycles，0=不限/无）。 */
+    uint32_t budget_cycles;    /* 执行时间预算：超 1×=软超时、超 3×=硬超时（仅计数，不停机）*/
+    uint32_t deadline_cycles;  /* 绝对截止期（EDF 排序键；0 ⇒ 追加到队尾）*/
+    /* ★design.md §8：连续超时 → 降级 */
+    uint32_t miss_count;       /* 连续超预算次数（成功一次清零）*/
+    uint8_t  degraded;         /* 连续 ≥5 次 ⇒ 1（宿主据此降级/跳过）*/
 } rtos_work_t;
+
+/* ★design.md P2-2：工作队列统计 out3 = [submitted, soft_overrun, hard_overrun]。 */
+void rtos_workq_stats(uint32_t *out6);   /* [submitted,soft,hard,degraded,bw_drop,L2_used_cycles] */
+/* design.md 5#4: per-queue CPU bandwidth quota (cycles per burst; 0=unlimited) */
+void rtos_workq_set_quota(uint8_t q, uint32_t quota_cycles);   /* [submitted, soft, hard, degraded] */
+
+/* ★design.md P2-2f：多队列 —— 每队列独立 worker/优先级（带宽隔离）。
+ * q∈[0,RTOS_WORKQ_N)；栈由内核内部提供；name/prio 为该 worker 的。 */
+void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, size_t stack_bytes);
+/* 提交到指定队列（ISR 安全）；rtos_work_submit(w) == rtos_work_submit_q(0,w)。 */
+void rtos_work_submit_q(uint8_t q, rtos_work_t *w);
 
 void rtos_work_submit(rtos_work_t *w);
 
