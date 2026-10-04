@@ -208,18 +208,12 @@ void rtos_workq_create(uint8_t q, const char *name, uint8_t prio, void *stack, s
 static uint32_t g_cycles_per_ms;
 
 uint32_t rtos_cycles_per_ms(void) {
-    if (g_cycles_per_ms) return g_cycles_per_ms;
-    /* 任务上下文调用（中断开启）⇒ 自旋等 SysTick 推进 1 ms。 */
-    for (int guard = 0; guard < 4 && !g_cycles_per_ms; guard++) {
-        uint32_t t0 = rtos_tick_count();
-        uint32_t c0 = rtos_cycle_now();
-        uint32_t spins = 0;
-        while (rtos_tick_count() == t0 && ++spins < 200000000u) { }
-        uint32_t d = rtos_cycle_now() - c0;
-        if (d > 1000u) g_cycles_per_ms = d;   /* 合理下界（>1 cycle/ms）*/
-    }
-    if (!g_cycles_per_ms) g_cycles_per_ms = 168000u;  /* 兜底：标称（DWT 不可用时）*/
-    return g_cycles_per_ms;
+    /* ★★★2026-10-04【与 SysTick 同时基，精确解】：每 ms 的核周期数**就是** SysTick 的
+     *   节拍周期 = `RTOS_CPU_HZ / RTOS_TICK_HZ`（`port.c: rtos_arch_tick_start` 写的就是
+     *   这个值到 LOAD）⇒ 与宿主 harness 的 `systick_ms()` 是同一时基 ✓，且**无需自旋实测**
+     *   （自旋窗口会被 ISR 延迟/启动期负载污染：实测偏 -3.5% ✗；而 `g_tick` 也未必严格
+     *   等于 SysTick 周期 ✗）。两者一致 ⇒ 声明 period=4ms 恰好等于 4 个 SysTick 周期 ✓。 */
+    return (uint32_t)((uint32_t)RTOS_CPU_HZ / (uint32_t)RTOS_TICK_HZ);
 }
 
 /* ★design.md §5：注册/注销周期 WorkItem。**period_ms = 0 ⇒ 注销**；周期由内核按实测
