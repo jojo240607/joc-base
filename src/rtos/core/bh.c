@@ -122,6 +122,7 @@ static volatile uint32_t g_wq_soft_overrun;
 static volatile uint32_t g_wq_hard_overrun;
 static volatile uint32_t g_wq_degraded;   /* design.md 8: degraded items */
 static volatile uint32_t g_wq_bw_drop;    /* design.md 5#4: bandwidth-quota drops */
+static volatile uint32_t g_wq_degraded_ticks; /* design.md 5#2: 降级运行次数（可观测）*/
 
 /* 共享 worker：被唤醒后【排空】整条队列（一次唤醒处理所有已提交工作，
  * 避免“二进制信号量把多次 submit 折叠成一次唤醒、剩余工作饿死”的缺陷）。 */
@@ -182,8 +183,17 @@ static void rtos_workq_sched_tick(rtos_timer_t *t, void *arg) {
         if (w->period_cycles == 0) continue;
         /* 未到期 ⇒ 跳过（注意 cycles 回绕：用有符号差 ✓） */
         if ((int32_t)(now - w->next_run_cycles) < 0) continue;
+        /* ★design.md §5#2「连续超时（5 次）：移出关键队列，放入 L3 降级运行」——
+         *   被降级（`degraded`）的 item 在此**自动降速**（周期 ×4）⇒ 释放 L2 带宽给
+         *   关键项、且仍保持运行（不是删除 ✗）✓；恢复（宿主清 `degraded`）即回原速率 ✓。 */
+        uint32_t eff_period = w->period_cycles;
+        if (w->degraded) {
+            if (eff_period > (0xFFFFFFFFu / 4u)) eff_period = 0xFFFFFFFFu;
+            else eff_period *= 4u;
+            g_wq_degraded_ticks++;
+        }
         /* 追平（若调度被延迟，避免"补跑风暴"：只推进到最近的将来 ✓） */
-        do { w->next_run_cycles += w->period_cycles; }
+        do { w->next_run_cycles += eff_period; }
         while ((int32_t)(now - w->next_run_cycles) >= 0);
         w->deadline_cycles = w->next_run_cycles;   /* 绝对截止期（= 下次到点时刻）*/
         rtos_work_submit_q((uint8_t)q, w);
