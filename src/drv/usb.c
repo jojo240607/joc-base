@@ -381,8 +381,12 @@ static void usb_tx_pump(usb *u)
         } else {
             /* [HIL 联调诊断] SELF-HEAL 失败：打印 xfer_len/xfer_count/DIEPTSIZ 定位
              * pump 停（IN busy 但 never complete）根因。 */
+            /* ★2026-10-04【本阶段不需要 USB 通道】：
+             *   `TX_PUMP busy` 诊断日志实测 ~560 条/秒 ✗，冲爆 2KB 日志环、把 EKF 等
+             *   关键诊断挤掉（排查 est=NaN 时被完全掩盖 ✗）。当前阶段不使用 USB 下行
+             *   ⇒ 直接关掉本诊断（保留代码路径注释，需要时改回 1 即可 ✓）。 */
             static uint32_t busy_cnt;
-            if ((++busy_cnt % 20) == 1) {
+            if (0 && (++busy_cnt % 20) == 1) {
                 USB_OTG_EP *ep = &u->hal->pdev->dev.in_ep[1];
                 uint32_t dieptsiz = u->hal->pdev->regs.INEP_REGS[1]->DIEPTSIZ;
                 log_printf(app_log(), LOG_WARN, "usb",
