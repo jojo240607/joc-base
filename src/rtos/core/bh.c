@@ -223,7 +223,28 @@ uint32_t rtos_cycles_per_ms(void) {
      *   这个值到 LOAD）⇒ 与宿主 harness 的 `systick_ms()` 是同一时基 ✓，且**无需自旋实测**
      *   （自旋窗口会被 ISR 延迟/启动期负载污染：实测偏 -3.5% ✗；而 `g_tick` 也未必严格
      *   等于 SysTick 周期 ✗）。两者一致 ⇒ 声明 period=4ms 恰好等于 4 个 SysTick 周期 ✓。 */
-    return (uint32_t)((uint32_t)RTOS_CPU_HZ / (uint32_t)RTOS_TICK_HZ);
+    /* ★★★2026-10-04【根因修复：必须用**实测**速率，不能用名义常量 ✗】】
+     *   本函数返回值用于把 `period_ms` 换成 `period_cycles`，而调度器比较用的是
+     *   `rtos_cycle_now()`（**DWT** ✗）。实测仿真器 DWT ≈84k/ms（名义 168k ✗）⇒
+     *   声明 period=5ms 实际要 **10~20ms** 才到 ⇒ 每个周期 WorkItem **慢 2~4 倍** ✗
+     *   ⇒ L2 estimator 名义 200Hz、实测 ~48Hz（`dtt≈20.9ms` ✗ 与设计 5ms 差 4.2× ✓）
+     *   ⇒ EKF 的 dt/协方差/融合全部失配 ⇒ 发散 ✓✓。
+     *   修法：**首次调用时开机实测**（tick 推进 10 拍，量 DWT 增量 ✓），带合理性回退 ✓。
+     *   仅在任务上下文调用（`rtos_workq_add_periodic` ✓）⇒ 自旋 10ms 可接受 ✓。 */
+    if (g_cycles_per_ms) return g_cycles_per_ms;
+    {
+        uint32_t nom = (uint32_t)((uint32_t)RTOS_CPU_HZ / (uint32_t)RTOS_TICK_HZ);
+        uint32_t t0 = rtos_tick_count();
+        uint32_t c0 = rtos_cycle_now();
+        uint32_t guard = 0;
+        while ((uint32_t)(rtos_tick_count() - t0) < 10u && ++guard < 100000000u) { }
+        uint32_t dt = (uint32_t)(rtos_tick_count() - t0);
+        uint32_t dc = (uint32_t)(rtos_cycle_now() - c0);
+        uint32_t r = dt ? (uint32_t)((uint64_t)dc / dt) : nom;
+        if (r < nom / 4u || r > nom * 4u) r = nom;   /* 测量异常 ⇒ 回退名义 ✓ */
+        g_cycles_per_ms = r;
+    }
+    return g_cycles_per_ms;
 }
 
 /* ★design.md §5：注册/注销周期 WorkItem。**period_ms = 0 ⇒ 注销**；周期由内核按实测
